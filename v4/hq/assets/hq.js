@@ -1,0 +1,384 @@
+/* TPA v4 HQ only: MapLibre GL JS + OpenFreeMap, same-origin resources.
+ * The five transport connections accept versioned JSON *data*, never scripts.
+ * No supplier/feed logic, motion algorithms, Admin controls or external URLs.
+ */
+(()=>{'use strict';
+const IDS=Object.freeze(['air','sea','rail','bus','road']);
+const SOCKETS=Object.freeze(Object.fromEntries(IDS.map(id=>[id,Object.freeze({id,contractVersion:'1.0',type:'data-only',path:'/api/v4/components/'+id})])));
+Object.defineProperty(window,'TPA_HQ_SOCKETS',{value:SOCKETS,writable:false,configurable:false});
+const $=id=>document.getElementById(id),root=$('map'),canvas=$('geo-canvas'),ctx=canvas.getContext('2d');
+const HOME={lon:-0.423,lat:53.842,z:11};
+const POI=[
+['Beverley',-0.423,53.842],['Hull',-0.334,53.745],['York',-1.082,53.960],['Leeds',-1.549,53.801],
+['Bridlington',-0.202,54.084],['Scarborough',-0.401,54.284],['Goole',-0.869,53.702],['Doncaster',-1.134,53.523],
+['Sheffield',-1.470,53.381],['Lincoln',-0.540,53.231],['Nottingham',-1.152,52.953],['Manchester',-2.244,53.483],
+['Liverpool',-2.984,53.408],['Newcastle',-1.617,54.978],['Middlesbrough',-1.235,54.576],['Birmingham',-1.892,52.486],
+['London',-0.128,51.508],['Cambridge',0.121,52.205],['Norwich',1.299,52.628],['Oxford',-1.255,51.753],
+['Bristol',-2.588,51.454],['Cardiff',-3.179,51.481],['Swansea',-3.944,51.621],['Exeter',-3.534,50.718],
+['Plymouth',-4.142,50.375],['Southampton',-1.404,50.909],['Brighton',-0.137,50.822],['Edinburgh',-3.189,55.953],
+['Glasgow',-4.252,55.864],['Aberdeen',-2.094,57.149],['Dundee',-2.974,56.462],['Inverness',-4.226,57.477],
+['Stirling',-3.935,56.116],['Perth',-3.432,56.395],['Belfast',-5.930,54.597],['Derry',-7.311,54.997]
+];
+const state={live:Object.fromEntries(IDS.map(id=>[id,false])),notice:Object.fromEntries(IDS.map(id=>[id,''])),overlays:Object.create(null),parked:Object.fromEntries(IDS.map(id=>[id,false])),lon:HOME.lon,lat:HOME.lat,z:HOME.z,visible:Object.fromEntries(IDS.map(id=>[id,true])),status:Object.fromEntries(IDS.map(id=>[id,'not_installed'])),frames:Object.create(null),geo:null,selected:null,renderer:'loading',mapErrors:0};
+let map=null,ready=false,toastTimer=0,pending=false,pan=null;
+const selected=$('map-selection');
+const markerLayer=document.createElement('div');markerLayer.className='marker-layer';root.append(markerLayer);
+const notice=$('map-wait');
+const reported=new Set();
+function reportBrowser(code,stage='general',detail='none'){
+  const safeDetail=String(detail).replace(/https?:\/\/[^ ]+/g,'URL').replace(/[^A-Za-z0-9 .,;:_()!?/+\-]/g,' ').slice(0,180)||'none';
+  const safeStage=String(stage).replace(/[^a-z0-9-]/g,'-').slice(0,40)||'general';
+  // Keep latest useful detail; do not let a generic error overwrite it.
+  fetch('/hq-browser-diagnostic',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code,stage:safeStage,detail:safeDetail})}).catch(()=>{});
+}
+window.TPA_HQ_MAP_REPORT=reportBrowser;
+window.addEventListener('error',e=>{
+  if(e.target&&e.target!==window&&['SCRIPT','LINK'].includes(e.target.tagName))reportBrowser('library-resource-error','dom-resource',e.target.getAttribute('src')||e.target.getAttribute('href')||'none');
+  else if(e.target===window)reportBrowser('script-runtime-error','uncaught',String(e.message||'Unknown runtime error'));
+},true);
+window.addEventListener('unhandledrejection',e=>reportBrowser('script-runtime-error','rejection',String(e.reason?.message||e.reason||'Unknown rejection')));
+
+function showNotice(message,warning=false){notice.textContent=message;notice.classList.remove('hidden');notice.classList.toggle('offline',warning);}
+function toast(message){const el=$('toast');el.textContent=message;el.classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add('hidden'),3000);}
+function clamp(n,a,b){return Math.max(a,Math.min(b,n));}
+function merc(lon,lat,z){const size=256*2**z,r=clamp(lat,-85.051128,85.051128)*Math.PI/180;return [(lon+180)/360*size,(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*size];}
+function inverse(px,py,z){const size=256*2**z,y=Math.PI*(1-2*py/size);return {lon:px/size*360-180,lat:180/Math.PI*Math.atan(Math.sinh(y))};}
+function dims(){return {w:root.clientWidth,h:root.clientHeight};}
+function pixel(lon,lat){if(map){let p=map.latLngToContainerPoint([lat,lon]);return [p.x,p.y];}
+const d=dims(),p=merc(lon,lat,state.z),c=merc(state.lon,state.lat,state.z);return [p[0]-c[0]+d.w/2,p[1]-c[1]+d.h/2];}
+function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}paint();}
+function gotoPlace(lon,lat,z,label){if(map)map.setView([lat,lon],z,{animate:false});state.lon=lon;state.lat=lat;state.z=z;selected.classList.add('hidden');state.selected=null;$('map-place').textContent=(label||'SELECTED LOCATION').toUpperCase();$('sidebar').classList.remove('open');paint();}
+function home(){gotoPlace(HOME.lon,HOME.lat,HOME.z,'BEVERLEY, EAST YORKSHIRE');toast('Home · Beverley, East Yorkshire');}
+function fitUK(){gotoPlace(-3.0,54.55,5.5,'UNITED KINGDOM');}
+function zoom(delta){if(map)map.setZoom(clamp(map.getZoom()+delta,3,18));else{state.z=clamp(state.z+delta,3,17);paint();}}
+function drawFallback(){const {w,h}=dims(),scale=Math.min(2,window.devicePixelRatio||1);if(canvas.width!==Math.round(w*scale)||canvas.height!==Math.round(h*scale)){canvas.width=Math.round(w*scale);canvas.height=Math.round(h*scale);}ctx.setTransform(scale,0,0,scale,0,0);ctx.clearRect(0,0,w,h);if(!state.geo||ready)return;
+ctx.fillStyle='#e8eeea';for(const shape of state.geo.land){if(shape.length<3)continue;ctx.beginPath();shape.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.closePath();ctx.fill();}
+ctx.strokeStyle='#86acb1';ctx.lineWidth=1;for(const seg of state.geo.coastlines){ctx.beginPath();seg.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.stroke();}
+for(const [name,lon,lat] of POI){const [x,y]=pixel(lon,lat);if(x<0||x>w||y<0||y>h)continue;if(state.z<7&&!['Beverley','Hull','York','Leeds','London','Edinburgh','Glasgow','Cardiff','Belfast'].includes(name))continue;ctx.font='600 12px system-ui';ctx.strokeStyle='#e8eeea';ctx.lineWidth=3;ctx.strokeText(name,x+5,y-5);ctx.fillStyle='#2b555c';ctx.fillText(name,x+5,y-5);}}
+function listEntities(){return IDS.flatMap(id=>{
+  if(!state.visible[id]||state.status[id]==='not_installed')return [];
+  const entities=state.frames[id]?.entities||[];
+  // A failed/stale component may keep its last-known markers, but never appear current.
+  return state.status[id]==='ready'?entities:entities.map(e=>({...e,quality:'stale'}));
+});}
+// ICON REVIEW ONLY. The SVG shapes are fixed HQ artwork reproduced from the
+// legacy approved map marker paths; component JSON supplies DATA, never HTML.
+// This review build is physically separate from the working HQ 4.0.8 checkpoint.
+const ICON_PATHS=Object.freeze({
+  air:'M16 2c1.3 0 2 2 2 4v8l10 8v4l-10-5v6l3 2v2l-5-1.5L11 31v-2l3-2v-6l-10 5v-4l10-8V6c0-2 0.7-4 2-4Z',
+  sea:'m16 3 2 3v5h6v4l4 2v3l-4 7H8l-4-7v-3l4-2v-4h6V6l2-3Zm-7 17 2 5h10l2-5H9Zm5-6H9v3h5v-3Zm9 0h-5v3h5v-3Z',
+  rail:'M8 3h16a5 5 0 0 1 5 5v15a4 4 0 0 1-4 4l3 3h-5l-3-3h-8l-3 3H4l3-3a4 4 0 0 1-4-4V8a5 5 0 0 1 5-5Zm1 5v10h14V8H9Zm1 13a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm12 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z'
+});
+const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
+function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋'}[id]||'•';}
+function buildArtwork(e){
+  const icon=document.createElement('span');icon.className='review-art';icon.setAttribute('aria-hidden','true');
+  if(ICON_PATHS[e.component]){
+    const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+    svg.setAttribute('viewBox','0 0 32 32');svg.setAttribute('focusable','false');
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',ICON_PATHS[e.component]);svg.append(path);
+    // Ships always point up on-screen. Course remains as data, not an icon rotation.
+    if(e.component==='air'&&e.position?.headingDeg!=null)svg.style.transform='rotate('+e.position.headingDeg+'deg)';
+    icon.append(svg);
+  }else{icon.textContent=e.component==='bus'?'🚌':'≋';}
+  if(e.component==='rail'||e.component==='bus'){
+    const badge=document.createElement('span');badge.className='review-route';
+    // Only an alphanumeric suffix is used. Sample route/headcode is not a transport algorithm.
+    badge.textContent=e.badge||String(e.id.split('-').pop()||'MOCK').replace(/[^a-zA-Z0-9]/g,'').slice(0,8)||'MOCK';
+    icon.append(badge);
+  }
+  return icon;
+}
+function selectEntity(e){
+  state.selected=e;
+  const h=document.createElement('strong');h.textContent=iconFor(e.component)+' '+e.label;
+  const live=!!state.live[e.component];
+  const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
+  const info=document.createElement('small');info.textContent=live?(e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · may have moved':''):e.component.toUpperCase()+' · '+e.quality.toUpperCase()+' · STATIC MOCK POSITION';
+  const warning=document.createElement('small');warning.className=live?'live-source':'review-no-live';warning.textContent=live?(state.frames[e.component]?.attribution||''):'FICTIONAL DEMONSTRATION — NOT AN ACTUAL VEHICLE';
+  const close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','Close target details');
+  close.onclick=()=>{selected.classList.add('hidden');state.selected=null;paint();};
+  selected.replaceChildren(h,info,warning,close);selected.classList.remove('hidden');
+  $('map-place').textContent=e.label.toUpperCase();paint();
+}
+function markers(){
+  markerLayer.replaceChildren();const d=dims();
+  for(const e of listEntities()){
+    if(!e.position)continue;
+    const [x,y]=pixel(e.position.lon,e.position.lat);
+    if(x<0||y<0||x>d.w||y>d.h)continue;
+    const b=document.createElement('button');b.type='button';
+    const active=!!state.selected&&state.selected.id===e.id&&state.selected.component===e.component;
+    b.className=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}`;
+    b.style.left=x+'px';b.style.top=y+'px';b.append(buildArtwork(e));
+    const prefix=state.live[e.component]?'':'MOCK ';
+    b.title=prefix+e.label+' · '+e.quality;
+    b.setAttribute('aria-label',prefix+e.label+' '+e.quality+(active?' selected':''));
+    b.setAttribute('aria-pressed',String(active));
+    b.onclick=()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
+    markerLayer.append(b);
+  }
+}
+function layerName(id){return ($(id+'-toggle').closest('.layer-toggle')?.querySelector('strong')?.textContent||id).toLowerCase();}
+function counts(){const d=dims();const anyLive=IDS.some(id=>state.live[id]&&!state.parked[id]);
+for(const id of IDS){let entries=state.frames[id]?.entities;
+let count=(entries||[]).filter(e=>{if(!e.position)return false;let [x,y]=pixel(e.position.lon,e.position.lat);return x>=0&&x<=d.w&&y>=0&&y<=d.h;}).length;
+const status=$(id+'-source-status'),chip=$(id+'-chip').querySelector('strong'),n=$(id+'-count');
+if(state.parked[id]){status.textContent='Unavailable · coming soon';chip.textContent='SOON';if(n)n.textContent='—';continue;}
+if(state.live[id]){
+  // 4.0.10: a real engine is connected. Plain wording; never the word MOCK.
+  const overlay=state.frames[id]?.overlay,notice=state.frames[id]?(state.frames[id].notice||''):(state.notice[id]||'');
+  const tooFar=overlay&&state.z<overlay.minZoom;
+  status.textContent=!state.visible[id]?'Hidden':
+    state.status[id]==='ready'?(tooFar?'Zoom in to see '+layerName(id):notice||(overlay?'Live · showing on map':count+' in view')):
+    state.status[id]==='stale'?(notice||'Delayed · showing last update'):
+    (notice||'Unavailable · will retry');
+  chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?'LIVE':state.status[id]==='stale'?'DELAYED':'OFF AIR';
+  if(n)n.textContent=entries&&!overlay?String(count):'—';continue;}
+status.textContent=!state.visible[id]?'Hidden':state.status[id]==='ready'?count+' MOCK in view':state.status[id]==='unavailable'&&entries?.length?'UNAVAILABLE · stale last-known MOCK':state.status[id]==='stale'&&entries?.length?'STALE · last-known MOCK':({not_installed:'Not connected yet',unavailable:'Unavailable',stale:'Delayed'}[state.status[id]]||state.status[id]);
+chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?'MOCK':state.status[id]==='not_installed'?'EMPTY':state.status[id].toUpperCase();
+if(n)n.textContent=entries?String(count):'—';}
+const anyMock=IDS.some(id=>!state.live[id]&&!state.parked[id]&&state.frames[id]?.entities?.length);
+document.querySelector('.onair strong').textContent=anyLive?(anyMock?'TEST · LIVE + MOCK LAYERS':'TEST VERSION · LIVE DATA'):'MOCK ICON REVIEW · NOT LIVE';
+const banner=document.querySelector('.mock-banner');
+if(banner){if(!banner.dataset.original)banner.dataset.original=banner.textContent;
+  const liveNames=IDS.filter(id=>state.live[id]&&!state.parked[id]).map(layerName);
+  banner.textContent=anyLive?'TEST VERSION · LIVE: '+liveNames.join(', ').toUpperCase()+(anyMock?' · OTHER ICONS ARE PRETEND':' · OTHER LAYERS NOT CONNECTED YET'):banner.dataset.original;}
+const statsTitle=document.querySelector('.stats-panel h2');if(statsTitle){if(!statsTitle.dataset.original)statsTitle.dataset.original=statsTitle.textContent;statsTitle.textContent=anyLive?'VEHICLES IN VIEW':statsTitle.dataset.original;}
+const statsMicro=document.querySelector('.stats-panel .micro');if(statsMicro){if(!statsMicro.dataset.original)statsMicro.dataset.original=statsMicro.textContent;statsMicro.textContent=anyLive?'TEST VERSION':statsMicro.dataset.original;}
+const note=document.querySelector('.stats-panel .panel-note');if(note){if(!note.dataset.original)note.dataset.original=note.textContent;note.textContent=anyLive?'Live layers show real reported positions. Layers marked MOCK are pretend.':note.dataset.original;}
+}
+function paint(){if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;drawFallback();markers();counts();syncOverlays();$('zoom-level').textContent='ZOOM '+state.z.toFixed(1);});}
+function validNum(n){return typeof n==='number'&&Number.isFinite(n);}
+function checkFrame(id,f){if(!f||typeof f!=='object'||Array.isArray(f)||f.component!==id||f.contractVersion!=='1.0'||!['ready','stale','unavailable','not_installed'].includes(f.health)||typeof f.receivedAt!=='string'||!Number.isFinite(Date.parse(f.receivedAt))||typeof f.expiresAt!=='string'||!Number.isFinite(Date.parse(f.expiresAt))||Date.parse(f.expiresAt)<Date.parse(f.receivedAt)||typeof f.attribution!=='string'||f.attribution.length>256||!Array.isArray(f.entities)||f.entities.length>10000)throw Error('Invalid component v1 envelope');
+const ids=new Set(),entities=[];for(const e of f.entities){if(!e||typeof e.id!=='string'||!e.id||e.id.length>128||ids.has(e.id)||typeof e.label!=='string'||e.label.length>160||!['observed','estimated','stale'].includes(e.quality)||!Number.isFinite(Date.parse(e.observedAt)))throw Error('Invalid entity');ids.add(e.id);
+const p=e.position;if(p!==null&&(!p||!validNum(p.lon)||!validNum(p.lat)||Math.abs(p.lon)>180||Math.abs(p.lat)>90||(p.headingDeg!=null&&(!validNum(p.headingDeg)||p.headingDeg<0||p.headingDeg>360))))throw Error('Invalid point');entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,position:p===null?null:{lon:p.lon,lat:p.lat,headingDeg:p.headingDeg??null}});}
+// 4.0.10 optional extras: a short notice, and a see-through picture layer served
+// only from this socket's own same-origin tile path. Anything else is ignored.
+const notice=typeof f.notice==='string'?f.notice.slice(0,120):'';
+let overlay=null;const o=f.overlay;
+if(o&&typeof o==='object'&&o.type==='raster'&&o.tiles===`/api/v4/components/${id}/tiles/{z}/{x}/{y}.png`&&Number.isInteger(o.minZoom)&&Number.isInteger(o.maxZoom)&&o.minZoom>=0&&o.maxZoom<=22&&o.minZoom<=o.maxZoom&&validNum(o.opacity)&&o.opacity>0&&o.opacity<=1)
+  overlay={tiles:o.tiles,minZoom:o.minZoom,maxZoom:o.maxZoom,opacity:o.opacity,refreshSeconds:Number.isInteger(o.refreshSeconds)?clamp(o.refreshSeconds,60,3600):300};
+return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now()?'stale':f.health,entities,attribution:f.attribution,notice,overlay};}
+// Only same-origin data. Abort slow snapshots; one spoke must not delay another.
+async function requestBounded(url,maxBytes,timeoutMs){
+  const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
+  try{
+    const response=await fetch(url,{cache:'no-store',signal:ctl.signal});
+    if(!response.ok || Number(response.headers.get('content-length'))>maxBytes)throw Error('unavailable');
+    const body=await response.text();
+    if(new TextEncoder().encode(body).byteLength>maxBytes)throw Error('oversize');
+    return JSON.parse(body);
+  }finally{clearTimeout(timer);}
+}
+function deselectComponent(id){
+  if(state.selected?.component===id){state.selected=null;selected.classList.add('hidden');}
+}
+// 4.0.10: each engine is asked only for what is on screen (plus a margin).
+function viewQuery(){
+  let w=-12.5,s=49,e=4.5,n=61.8;
+  if(map&&typeof map.getBounds==='function'){const b=map.getBounds().pad(0.2);w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();}
+  const f=v=>clamp(v,-180,180).toFixed(4);
+  return `west=${f(w)}&south=${clamp(s,-85,85).toFixed(4)}&east=${f(e)}&north=${clamp(n,-85,85).toFixed(4)}`;
+}
+// 4.0.10: a socket may supply a see-through picture layer (e.g. coloured roads).
+// HQ only places it on the map; the engine decides what the pictures show.
+let overlayPane=null;
+function syncOverlays(){
+  // Only a real Leaflet map can hold picture layers; anything else keeps working without them.
+  if(!map||!window.L||typeof map.createPane!=='function'||typeof L.tileLayer!=='function')return;
+  if(!overlayPane){overlayPane=map.createPane('tpa-socket-overlays');overlayPane.style.zIndex='450';overlayPane.style.pointerEvents='none';}
+  for(const id of IDS){
+    const o=state.frames[id]?.overlay,have=state.overlays[id];
+    const want=!!o&&state.visible[id]&&!state.parked[id]&&(state.status[id]==='ready'||state.status[id]==='stale');
+    if(!want){if(have){map.removeLayer(have.layer);delete state.overlays[id];}continue;}
+    const stamp=Math.floor(Date.now()/1000/o.refreshSeconds);
+    const url=o.tiles+'?v='+stamp;
+    if(have&&have.url===url)continue;
+    if(have){have.layer.setUrl(url);have.url=url;continue;}
+    const layer=L.tileLayer(url,{pane:'tpa-socket-overlays',minZoom:o.minZoom,maxNativeZoom:o.maxZoom,maxZoom:18,opacity:o.opacity,
+      updateWhenIdle:true,updateWhenZooming:false,keepBuffer:1,crossOrigin:false,
+      // Leaflet shows attribution as HTML, so escape the engine's plain text first.
+      attribution:String(state.frames[id]?.attribution||'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';')});
+    layer.addTo(map);state.overlays[id]={layer,url};
+  }
+}
+let refetchTimer=0;
+function refetchLiveView(){clearTimeout(refetchTimer);refetchTimer=setTimeout(()=>{
+  for(const id of IDS)if(state.live[id]&&!state.parked[id]&&!state.frames[id]?.overlay&&(state.status[id]==='ready'||state.status[id]==='stale'))getComponent(id);
+},800);}
+async function getComponent(id){
+  try{
+    const f=checkFrame(id,await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}`,1200000,6000));
+    // Once a new manifest has removed a component, ignore late responses.
+    if(state.status[id]==='not_installed'||state.parked[id])return;
+    if(f.health==='not_installed'){delete state.frames[id];deselectComponent(id);}
+    else state.frames[id]=f;
+    state.status[id]=f.health;
+    if(f.health!=='ready')deselectComponent(id);
+    // 4.0.11: a live socket that is still loading this area is asked again soon,
+    // so new things appear within seconds instead of at the next 30-second check.
+    if(state.live[id]&&!f.overlay&&f.notice&&!f.entities.length)scheduleSoon(id);
+  }catch(_){
+    state.status[id]='unavailable';deselectComponent(id);
+  }
+  paint();
+}
+const soonTimers=Object.create(null);
+function scheduleSoon(id){if(soonTimers[id])return;soonTimers[id]=setTimeout(()=>{soonTimers[id]=0;if(state.live[id]&&!state.parked[id])getComponent(id);},5000);}
+let discovering=false;
+function setParked(id,parked){
+  if(state.parked[id]===parked)return;
+  state.parked[id]=parked;
+  const toggle=$(id+'-toggle'),row=toggle.closest('.layer-toggle');
+  toggle.disabled=parked;toggle.checked=!parked;state.visible[id]=!parked;
+  row.classList.toggle('parked',parked);
+  row.setAttribute('aria-disabled',parked?'true':'false');
+  row.title=parked?'Coming soon':'';
+}
+async function discover(){
+  if(discovering)return;discovering=true;
+  try{
+    const data=await requestBounded('/api/v4/manifest',32768,5000);
+    if(data.contractVersion!=='1.0'||!Array.isArray(data.components)||data.components.length>5)throw Error('manifest-contract');
+    const seen=new Set();
+    for(const entry of data.components){
+      if(!entry||!IDS.includes(entry.id)||seen.has(entry.id)||!['ready','unavailable','not_installed','stale'].includes(entry.status))throw Error('manifest-invalid');
+      seen.add(entry.id);
+    }
+    const requests=[];
+    for(const id of IDS){
+      const entry=data.components.find(e=>e.id===id);
+      // 4.0.9: a socket the server reports as parked is "coming soon": no data,
+      // toggle off and locked. Same code for every socket; nothing is hard-wired.
+      setParked(id,entry?.parked===true);
+      state.live[id]=entry?.live===true;
+      state.notice[id]=typeof entry?.notice==='string'?entry.notice.slice(0,80):'';
+      if(state.parked[id]){
+        state.status[id]='unavailable';delete state.frames[id];deselectComponent(id);
+      }else if(entry?.status==='ready'){
+        // Start all five requests independently rather than awaiting each in series.
+        if(state.status[id]==='not_installed')state.status[id]='unavailable';
+        requests.push(getComponent(id));
+      }else if(entry?.status==='stale'||entry?.status==='unavailable'){
+        state.status[id]=entry.status==='stale'?'stale':'unavailable';deselectComponent(id);
+      }else{
+        state.status[id]='not_installed';delete state.frames[id];deselectComponent(id);
+      }
+    }
+    paint();
+    await Promise.allSettled(requests);
+  }catch(_){
+    // Manifest outage: display prior frames as stale, never silently claim live.
+    for(const id of IDS)if(state.status[id]==='ready'||state.status[id]==='stale'){
+      state.status[id]='unavailable';deselectComponent(id);
+    }
+  }finally{discovering=false;paint();}
+}
+function search(query){let q=query.trim().toLowerCase(),out=$('target-list');out.replaceChildren();if(!q){const p=document.createElement('p');p.className='empty';p.textContent='Search a UK place. Vehicle targets will appear when independently connected.';out.append(p);return;}const places=POI.filter(([name])=>name.toLowerCase().includes(q)).slice(0,10).map(([name,lon,lat])=>({name,kind:'Place',action:()=>gotoPlace(lon,lat,11,name)}));const targets=listEntities().filter(e=>e.position&&(e.label.toLowerCase().includes(q)||e.id.toLowerCase().includes(q))).slice(0,10).map(e=>({name:e.label,kind:e.component.toUpperCase(),action:()=>{gotoPlace(e.position.lon,e.position.lat,13,e.label);selectEntity(e);}}));if(q==='uk'||'united kingdom'.includes(q))places.unshift({name:'United Kingdom overview',kind:'Region',action:fitUK});const items=[...places,...targets];if(!items.length){const p=document.createElement('p');p.className='empty';p.textContent='No matching place or connected target.';out.append(p);return;}for(const item of items){const b=document.createElement('button');b.type='button';b.className='search-result';const name=document.createElement('strong');name.textContent=item.name;const type=document.createElement('small');type.textContent=item.kind;b.append(name,type);b.onclick=()=>{item.action();$('search').value=item.name;};out.append(b);}}
+for(const id of IDS){$(id+'-toggle').addEventListener('change',()=>{state.visible[id]=$(id+'-toggle').checked;paint();});}
+function clock(){$('localclock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false});}clock();setInterval(clock,1000);
+$('home-button').onclick=home;$('zoom-in').onclick=()=>zoom(1);$('zoom-out').onclick=()=>zoom(-1);$('menu-button').onclick=()=>$('sidebar').classList.toggle('open');$('search').addEventListener('input',e=>search(e.target.value));
+document.addEventListener('keydown',e=>{if(e.key==='Escape'){$('sidebar').classList.remove('open');selected.classList.add('hidden');}});
+window.addEventListener('resize',()=>{if(map)map.invalidateSize();paint();});
+// Fallback drag/scroll remains usable only if MapLibre is unavailable.
+root.addEventListener('wheel',e=>{if(map)return;e.preventDefault();zoom(e.deltaY<0?1:-1);},{passive:false});
+root.addEventListener('pointerdown',e=>{if(map||e.button!==0||e.target.closest('button,input'))return;pan={x:e.clientX,y:e.clientY};});
+root.addEventListener('pointermove',e=>{if(map||!pan)return;const dx=e.clientX-pan.x,dy=e.clientY-pan.y;pan={x:e.clientX,y:e.clientY};const c=merc(state.lon,state.lat,state.z),p=inverse(c[0]-dx,c[1]-dy,state.z);state.lon=clamp(p.lon,-180,180);state.lat=clamp(p.lat,-80,80);paint();});
+root.addEventListener('pointerup',()=>{pan=null;});root.addEventListener('pointercancel',()=>{pan=null;});
+root.tabIndex=0;root.addEventListener('keydown',e=>{if(map)return;if(e.key==='+'||e.key==='=')zoom(1);if(e.key==='-')zoom(-1);});
+async function diagnose(){try{const r=await fetch('/hq-map-status',{cache:'no-store'});if(!r.ok)return;const data=await r.json();let error=data.upstreamErrors||{};let message=error['blocked-map-path']?.code||error.openfreemap?.code||error['maplibre-library']?.code||data.browser?.lastCode||'map-resource-unavailable';showNotice('OpenFreeMap map unavailable ('+message+'). UK geographic fallback active.',true);}catch(_){showNotice('Map connection unavailable. UK geographic fallback active.',true);}}
+function beginMap(){
+if(!window.L||!L.map){state.renderer='fallback';reportBrowser('library-missing','leaflet','Leaflet absent');diagnose();return;}
+try{
+  // Historical behaviour: Leaflet owns zoom/pan/markers; MapLibre only paints Liberty.
+  map=L.map('vector-map',{zoomControl:false,preferCanvas:true,minZoom:3,maxZoom:18,worldCopyJump:true,
+    attributionControl:false}).setView([HOME.lat,HOME.lon],HOME.z);
+  L.control.attribution({position:'bottomright',prefix:false}).addTo(map);
+  state.renderer='leaflet-waiting';
+  map.on('move zoom zoomend',()=>syncView());
+  map.on('moveend',refetchLiveView);
+  map.whenReady(()=>syncView());
+  if(!window.TPA_BASEMAP?.attach){
+    throw Error('TPA baseline loader not ready');
+  }
+  window.TPA_BASEMAP.attach(map,{style:'/basemap/openfreemap/styles/liberty',
+    attribution:'<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> | <a href="https://openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'});
+}catch(e){state.renderer='fallback';reportBrowser('map-constructor-error','leaflet-init',String(e?.message||e));map?.remove?.();map=null;diagnose();}}
+window.TPA_HQ_VECTOR_READY=()=>{ready=true;state.renderer='leaflet-maplibre';state.mapErrors=0;
+  document.body.classList.add('vector-ready');notice.classList.add('hidden');syncView();};
+window.TPA_HQ_VECTOR_ERROR=(message)=>{state.mapErrors++;const t=String(message||'Unknown source error');
+  // A source error does not destroy Leaflet controls or the five sockets.
+  // Keep fallback geography; never turn it invisible until the actual basemap loads.
+  if(state.mapErrors>=1){ready=false;state.renderer='leaflet-degraded';document.body.classList.remove('vector-ready');paint();diagnose();}
+};
+fetch('/data/uk-geography.json').then(r=>r.ok?r.json():Promise.reject()).then(data=>{if(!Array.isArray(data.land)||!Array.isArray(data.coastlines))throw Error('geography');state.geo=data;paint();}).catch(()=>{showNotice('Local geography unavailable; map network still being tried.',true);});
+Object.defineProperty(window,'TPA_HQ_READONLY_STATE',{value:()=>Object.freeze({lat:state.lat,lon:state.lon,zoom:state.z,renderer:state.renderer,mapErrors:state.mapErrors,geographyLoaded:!!state.geo,components:Object.freeze({...state.status})}),writable:false});
+/* 4.0.9 welcome screen, optional tip link and Data Sources & Credits.
+ * Text and links come only from /data/site-config.json (same origin, data only).
+ * If the file is missing or invalid, the map works exactly as 4.0.8 did.
+ * Built with textContent only: no HTML from the config is ever injected. */
+const WELCOME_KEY='tpa-welcome-seen-v1';
+function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=String(text);return n;}
+function safeLink(u){if(typeof u!=='string'||!u)return '';try{const x=new URL(u);return x.protocol==='https:'?x.href:'';}catch(_){return '';}}
+function str(v,max){return typeof v==='string'&&v.length<=max?v:'';}
+function tipControl(tip){
+  const label='☕ '+(str(tip?.label,60)||'Buy me a coffee'),url=safeLink(tip?.url);
+  if(url){const a=el('a','tip-button',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
+  const b=el('button','tip-button',label+' · link coming soon');b.type='button';b.disabled=true;return b;
+}
+let lastFocus=null;
+function makeDialog(id,title){
+  const back=el('div','tpa-dialog-back hidden');back.id=id;
+  const card=el('div','tpa-dialog');card.setAttribute('role','dialog');card.setAttribute('aria-modal','true');
+  const h=el('h2','tpa-dialog-title',title);h.id=id+'-title';card.setAttribute('aria-labelledby',h.id);
+  card.append(h);back.append(card);document.body.append(back);
+  back.addEventListener('click',e=>{if(e.target===back)closeDialog(back);});
+  return {back,card};
+}
+function openDialog(back){lastFocus=document.activeElement;back.classList.remove('hidden');back.querySelector('.tpa-primary,button,a')?.focus();}
+function closeDialog(back){back.classList.add('hidden');if(back.id==='tpa-welcome'){try{localStorage.setItem(WELCOME_KEY,'1');}catch(_){}}lastFocus?.focus?.();}
+document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.tpa-dialog-back:not(.hidden)').forEach(closeDialog);});
+function buildCredits(list){
+  const {back,card}=makeDialog('tpa-credits','Data sources & credits');
+  const items=el('ul','credit-list');
+  for(const c of (Array.isArray(list)?list.slice(0,20):[])){
+    const layer=str(c?.layer,40),text=str(c?.text,400);if(!layer||!text)continue;
+    const li=el('li','credit-item');li.append(el('strong','',layer));
+    const status=str(c?.status,30);if(status)li.append(el('span','credit-status',status));
+    li.append(el('p','',text));
+    const url=safeLink(c?.url);if(url){const a=el('a','credit-link',url.replace(/^https:\/\//,'').replace(/\/$/,''));a.href=url;a.target='_blank';a.rel='noopener noreferrer';li.append(a);}
+    items.append(li);
+  }
+  const close=el('button','tpa-primary','Close');close.type='button';close.onclick=()=>closeDialog(back);
+  card.append(items,close);return back;
+}
+function buildWelcome(w,tip,credits){
+  const {back,card}=makeDialog('tpa-welcome',str(w?.title,80)||'Welcome to TPA');
+  const sub=str(w?.subtitle,120);if(sub)card.append(el('p','tpa-dialog-sub',sub));
+  for(const line of (Array.isArray(w?.lines)?w.lines.slice(0,8):[])){const t=str(line,300);if(t)card.append(el('p','tpa-dialog-line',t));}
+  const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
+  const tipBox=el('div','tip-box');tipBox.append(tipControl(tip));const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));
+  const more=el('button','tpa-link-button','Data sources & credits');more.type='button';more.onclick=()=>{closeDialog(back);openDialog(credits);};
+  card.append(enter,tipBox,more);return back;
+}
+async function loadSiteConfig(){
+  let cfg;
+  try{cfg=await requestBounded('/data/site-config.json',65536,5000);}catch(_){return;}
+  if(!cfg||typeof cfg!=='object'||cfg.configVersion!==1)return;
+  const credits=buildCredits(cfg.credits);
+  const welcome=buildWelcome(cfg.welcome,cfg.tip,credits);
+  const about=el('section','panel about-panel');about.setAttribute('aria-label','About TPA');
+  const title=el('div','section-title');title.append(el('h2','','ABOUT TPA'),el('span','micro','FREE, ALWAYS'));
+  const creditsBtn=el('button','tpa-link-button','Data sources & credits');creditsBtn.type='button';creditsBtn.id='credits-button';creditsBtn.onclick=()=>openDialog(credits);
+  const welcomeBtn=el('button','tpa-link-button','Show welcome screen');welcomeBtn.type='button';welcomeBtn.id='welcome-button';welcomeBtn.onclick=()=>openDialog(welcome);
+  about.append(title,tipControl(cfg.tip),creditsBtn,welcomeBtn);
+  $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
+  let seen=false;try{seen=localStorage.getItem(WELCOME_KEY)==='1';}catch(_){}
+  if(cfg.welcome?.enabled===true&&!seen)openDialog(welcome);
+}
+paint();discover();beginMap();setInterval(discover,30000);
+// 4.0.11: also check every 10 s, but only while a live layer is still connecting.
+setInterval(()=>{if(IDS.some(id=>state.live[id]&&!state.parked[id]&&state.status[id]!=='ready'))discover();},10000);
+loadSiteConfig();
+})();

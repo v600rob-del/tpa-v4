@@ -1,0 +1,22 @@
+# TPA web front door (/etc/tpa-web/Caddyfile). Values come from /etc/tpa/web.env, written by "sudo tpa-setup":
+#   TPA_HOST       the site name, e.g. test.tpalive.co.uk (gets a free HTTPS certificate)
+#   TPA_SITE_HASH  scrambled (bcrypt) form of the private test password
+# HQ itself only listens on 127.0.0.1:8778; this is the only way in from the internet.
+{
+	admin off
+}
+
+{$TPA_HOST} {
+	basic_auth {
+		tpa {$TPA_SITE_HASH}
+	}
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+	}
+	reverse_proxy 127.0.0.1:8778
+}

@@ -1,0 +1,98 @@
+#!/bin/bash
+# sudo tpa-setup  - type (hidden) the keys/logins and the private test password.
+# Run it again any time to change one: press Enter to keep what is already saved.
+# Nothing typed here is shown, logged or sent anywhere except to its own engine.
+set -euo pipefail
+umask 077
+[[ $EUID -eq 0 ]] || { echo "Please run:  sudo tpa-setup" >&2; exit 2; }
+DIR=/etc/tpa
+install -d -m 0700 "$DIR"
+
+have() { [[ -f "$DIR/$1" ]] && grep -q "^$2=" "$DIR/$1"; }
+
+# Read one secret, hidden. Prints it on stdout (captured by the caller, never echoed).
+ask_secret() {  # prompt
+    local value=""
+    IFS= read -rs -p "$1: " value || true
+    echo >&2
+    printf '%s' "$value"
+}
+
+# systemd EnvironmentFile line with safe quoting (no newlines allowed).
+envline() {  # NAME value
+    local v=$2
+    [[ "$v" != *$'\n'* && "$v" != *$'\r'* ]] || { echo "That value contains a line break - not saved." >&2; return 1; }
+    v=${v//\\/\\\\}; v=${v//\"/\\\"}
+    printf '%s="%s"\n' "$1" "$v"
+}
+
+save_one() {  # file NAME "label shown to the owner" [optional]
+    local file=$1 name=$2 label=$3 value
+    if have "$file" "$name"; then
+        echo "  $label is already saved. Press Enter to keep it, or type a new one."
+    else
+        echo "  Type or paste your $label, then press Enter."
+    fi
+    echo "  (It is hidden: you will see nothing at all while you type or paste. That is normal.)"
+    value="$(ask_secret "  $label")"
+    value="${value#"${value%%[![:space:]]*}"}"; value="${value%"${value##*[![:space:]]}"}"
+    if [[ -z "$value" ]]; then
+        if have "$file" "$name"; then echo "  Kept the saved one."; else echo "  Skipped - that layer will say it is not set up."; fi
+        return 0
+    fi
+    local tmp; tmp="$(mktemp "$DIR/.tmp.XXXXXX")"
+    { [[ -f "$DIR/$file" ]] && grep -v "^$name=" "$DIR/$file" || true; envline "$name" "$value"; } > "$tmp"
+    chmod 600 "$tmp"; mv "$tmp" "$DIR/$file"
+    echo "  Saved."
+}
+
+echo "================================================================"
+echo "  TPA server setup - keys, logins and the private test password"
+echo "================================================================"
+
+# ---- site name -------------------------------------------------------------------
+current_host="$(sed -n 's/^TPA_HOST="\(.*\)"$/\1/p' "$DIR/web.env" 2>/dev/null || true)"
+default_host="${TPA_SETUP_HOST:-${current_host:-test.tpalive.co.uk}}"
+read -r -p "Site name [$default_host] (press Enter to accept): " host || true
+host="${host:-$default_host}"
+host="$(printf '%s' "$host" | tr 'A-Z' 'a-z')"
+[[ "$host" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] || { echo "That is not a valid site name." >&2; exit 1; }
+
+echo
+echo "1) TomTom (road traffic)";          save_one road.env TOMTOM_API_KEY "TomTom key"
+echo "2) BODS (buses)";                   save_one bus.env  TPA_BODS_API_KEY "BODS key"
+echo "3) Network Rail (trains)";          save_one rail.env TPA_NR_USERNAME "Network Rail login email"
+                                          save_one rail.env TPA_NR_PASSWORD "Network Rail password"
+
+# ---- private test password (the site stays private until Network Rail reply) -------
+echo
+echo "4) Private test password for the website (user name will be: tpa)"
+hash="$(sed -n 's/^TPA_SITE_HASH="\(.*\)"$/\1/p' "$DIR/web.env" 2>/dev/null || true)"
+while true; do
+    if [[ -n "$hash" ]]; then echo "  A password is already set. Press Enter to keep it, or type a new one."; fi
+    echo "  At least 10 characters. Hidden while you type."
+    pw1="$(ask_secret "  New website password")"
+    if [[ -z "$pw1" && -n "$hash" ]]; then echo "  Kept the saved password."; break; fi
+    if (( ${#pw1} < 10 )); then echo "  Too short - please try again."; continue; fi
+    pw2="$(ask_secret "  Type it again")"
+    if [[ "$pw1" != "$pw2" ]]; then echo "  They did not match - please try again."; continue; fi
+    hash="$(printf '%s\n' "$pw1" | /usr/local/bin/caddy hash-password 2>/dev/null)"
+    unset pw1 pw2
+    [[ "$hash" == \$2* ]] || { echo "Could not scramble the password." >&2; exit 1; }
+    echo "  Saved (only a scrambled form is kept)."
+    break
+done
+[[ -n "$hash" ]] || { echo "A website password is needed." >&2; exit 1; }
+
+{ envline TPA_HOST "$host"; envline TPA_SITE_HASH "$hash"; } > "$DIR/.web.tmp" && mv "$DIR/.web.tmp" "$DIR/web.env"
+envline TPA_HQ_PUBLIC_ORIGIN "https://$host" > "$DIR/.hq.tmp" && mv "$DIR/.hq.tmp" "$DIR/hq.env"
+chmod 600 "$DIR"/*.env
+
+echo
+echo "Restarting TPA with the new settings..."
+systemctl restart tpa-road tpa-bus tpa-air tpa-rail tpa-hq
+systemctl restart tpa-web
+sleep 3
+/usr/local/sbin/tpa-status || true
+echo
+echo "Website (private):  https://$host/   user name: tpa   password: the one you just chose"

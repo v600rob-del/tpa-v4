@@ -1,0 +1,57 @@
+{
+  "configVersion": 1,
+  "welcome": {
+    "enabled": true,
+    "title": "Welcome to TPA",
+    "subtitle": "Trains, Planes and Automobiles (and Boats)",
+    "lines": [
+      "A live map of UK transport: planes, trains, buses and road traffic.",
+      "Free for everyone, always. No adverts and no subscriptions.",
+      "This is a test version. Live layers show real data; anything marked MOCK is a pretend example."
+    ],
+    "enterLabel": "Enter the map"
+  },
+  "tip": {
+    "label": "Buy me a coffee",
+    "note": "Completely optional. TPA stays free either way.",
+    "url": ""
+  },
+  "credits": [
+    {
+      "layer": "Map",
+      "text": "Map © OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors",
+      "url": "https://www.openstreetmap.org/copyright",
+      "status": "In use"
+    },
+    {
+      "layer": "Buses",
+      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS).",
+      "url": "https://www.bus-data.dft.gov.uk",
+      "status": "Live in test"
+    },
+    {
+      "layer": "Trains",
+      "text": "Train movements from Network Rail open data feeds (exact wording to follow Network Rail's reply). Station locations: DfT NaPTAN, Open Government Licence. Junction and timing-point locations: YA TIPLOC list (Network Rail and NaPTAN data under OGL; woodpecker and GB Railway Data under CC BY-SA 4.0). Trains are shown at the last station or junction they reported, not by GPS.",
+      "url": "",
+      "status": "Live in test"
+    },
+    {
+      "layer": "Aircraft",
+      "text": "Aircraft positions from ADSB.lol (Open Database License).",
+      "url": "https://www.adsb.lol/",
+      "status": "Live in test"
+    },
+    {
+      "layer": "Road traffic",
+      "text": "Traffic flow © TomTom.",
+      "url": "https://www.tomtom.com/",
+      "status": "Live in test"
+    },
+    {
+      "layer": "Ships",
+      "text": "Coming soon.",
+      "url": "",
+      "status": "Coming soon"
+    }
+  ]
+}

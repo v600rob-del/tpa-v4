@@ -1,0 +1,23 @@
+timing-points.csv - where the locations come from
+=================================================
+
+Built by ../tools/build_timing_points.py from "YA TIPLOC list"
+(https://github.com/Jnction/YA_Tiploc_List, file tiplocs-merged-stanox.csv,
+commit fb3c1e1d23bd7713382afdff276395d3bb8abf01, 2024-11-20).
+
+Each row keeps its original data source in the "source" column:
+- NAPTAN        DfT NaPTAN - Open Government Licence v3.0
+- openRailData  Network Rail FOI2015-01334 - Open Government Licence v3.0
+- BPLAN, TPS, CORPUS  Network Rail - Open Government Licence v3.0
+                (Contains information of Network Rail Infrastructure Limited)
+- ATOC          Rail Delivery Group - CC BY 2.0 UK
+- woodpecker    github.com/anisotropi4/woodpecker - CC BY-SA 4.0
+- railmap       GB Railway Data Ltd (railmap.azurewebsites.net) - CC BY-SA 4.0
+
+Changes made: kept GB coordinates only; dropped STANOX codes whose rows
+disagree by more than 2 km (33 codes); names tidied to Title Case.
+This derived file is shared under CC BY-SA 4.0 with the attributions above.
+
+TO CHECK BEFORE TPA GOES PUBLIC: the YA repository's own LICENSE file is
+GPL-3.0 (for its code/workflows); the data rows carry the licences above.
+Confirm attribution wording on the public credits page at launch.

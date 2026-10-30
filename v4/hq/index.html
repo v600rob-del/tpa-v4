@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="theme-color" content="#080e1a"/>
+  <meta name="description" content="TPA v4 HQ map development preview — five empty transport connections"/>
+  <meta name="referrer" content="no-referrer"/>
+  <title>TPA HQ 4.0.12 — test version</title>
+  <link rel="stylesheet" href="/assets/vendor/leaflet.css"/>
+  <link id="tpa-maplibre-css" rel="stylesheet" media="print" href="/assets/vendor/maplibre-gl.css"/>
+  <link rel="stylesheet" href="/assets/hq.css"/>
+  <script id="tpa-basemap-loader" src="/assets/tpa-basemap-loader.js" defer
+    data-maplibre="/assets/vendor/maplibre-gl.js"
+    data-bridge="/assets/vendor/leaflet-maplibre-gl.js"
+    data-vector="/assets/transport-vector-layer.js"></script>
+  <script id="tpa-leaflet-js" src="/assets/vendor/leaflet.js" defer></script>
+  <script src="/assets/hq.js" defer></script>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true"><span class="rings"></span><span class="brand-plane">✈</span></div>
+      <div><p class="eyebrow">TRAINS · PLANES · AUTOMOBILES · (AND BOATS)</p><h1>TPA <em>HQ</em></h1><p class="subheading">Your world, moving.</p><p class="copyright-top">© 2026 Rob Burnett</p></div>
+    </div>
+    <div class="onair"><span class="pulse"></span><strong>MOCK ICON REVIEW · NOT LIVE</strong><span id="localclock">—</span></div>
+    <section class="panel" aria-label="Tracking layers">
+      <div class="section-title"><h2>TRACKING LAYERS</h2><span class="micro">SHOW / HIDE</span></div>
+      <label class="layer-toggle" for="air-toggle" data-component="air"><span class="layer-icon aircraft">✈</span><span class="layer-copy"><strong>Aircraft</strong><small id="air-source-status">Not installed · connection ready</small></span><input type="checkbox" id="air-toggle" checked/><span class="switch"></span></label>
+      <label class="layer-toggle" for="sea-toggle" data-component="sea"><span class="layer-icon shipping">⛴</span><span class="layer-copy"><strong>Vessels</strong><small id="sea-source-status">Not installed · connection ready</small></span><input type="checkbox" id="sea-toggle" checked/><span class="switch"></span></label>
+      <label class="layer-toggle" for="rail-toggle" data-component="rail"><span class="layer-icon rail">🚂</span><span class="layer-copy"><strong>Trains</strong><small id="rail-source-status">Not installed · connection ready</small></span><input type="checkbox" id="rail-toggle" checked/><span class="switch"></span></label>
+      <label class="layer-toggle" for="bus-toggle" data-component="bus"><span class="layer-icon buses">🚌</span><span class="layer-copy"><strong>Buses</strong><small id="bus-source-status">Not installed · connection ready</small></span><input type="checkbox" id="bus-toggle" checked/><span class="switch"></span></label>
+      <label class="layer-toggle" for="road-toggle" data-component="road"><span class="layer-icon traffic">≋</span><span class="layer-copy"><strong>Road traffic</strong><small id="road-source-status">Not installed · connection ready</small></span><input type="checkbox" id="road-toggle" checked/><span class="switch"></span></label>
+    </section>
+    <section class="panel stats-panel" aria-label="Current map counts">
+      <div class="section-title"><h2>MOCK MARKERS IN VIEW</h2><span class="micro">FICTIONAL DATA</span></div>
+      <div class="stats-grid">
+        <div><span class="stat-num" id="air-count">—</span><span class="stat-label">AIRCRAFT</span></div>
+        <div><span class="stat-num" id="sea-count">—</span><span class="stat-label">VESSELS</span></div>
+        <div><span class="stat-num" id="rail-count">—</span><span class="stat-label">TRAINS</span></div>
+        <div><span class="stat-num" id="bus-count">—</span><span class="stat-label">BUSES</span></div>
+      </div><p class="panel-note">Fixture markers ONLY. No genuine vehicle reports or live traffic.</p>
+    </section>
+    <section class="panel search-panel">
+      <div class="section-title"><h2>FIND A TARGET</h2><span class="micro">ON MAP</span></div>
+      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Place, flight, ship, train, bus…" aria-label="Find a place or target" autocomplete="off"/></div>
+      <div class="target-list" id="target-list"><p class="empty">Search a UK place. Search fictional MOCK vehicle examples or UK places.</p></div>
+    </section>
+    <footer class="sidebar-footer"><span class="little-dot"></span> BEVERLEY · EAST YORKSHIRE <span class="separator">/</span> ICON ARTWORK REVIEW <span class="separator">/</span> MOCK ONLY</footer>
+  </aside>
+  <main class="map-section" aria-label="TPA HQ map area">
+    <div class="map-slot" id="map" role="application" aria-label="Interactive geographic UK basemap">
+      <div id="vector-map" class="vector-map" aria-label="OpenFreeMap interactive vector streets"></div>
+      <canvas id="geo-canvas" class="geo-canvas" aria-hidden="true"></canvas>
+      <div id="map-wait" class="map-wait" role="status" aria-live="polite">Loading UK geography…</div>
+      <div id="map-selection" class="map-selection hidden" aria-live="polite"></div>
+    </div>
+    <div class="topbar">
+      <div class="crumb"><span class="hq-label">HQ</span><span class="dot-green"></span><span>STANDARD PAGE</span><span class="chevron">›</span><strong id="map-place">BEVERLEY, EAST YORKSHIRE</strong></div>
+      <div class="top-actions"><button type="button" class="control-button mobile-menu" id="menu-button">☰ <span>LAYERS</span></button><button type="button" class="control-button home-button" id="home-button">⌂ <span>HOME: BEVERLEY</span></button></div>
+    </div>
+    <div class="mock-banner" role="status">MOCK ICON REVIEW · FICTIONAL STATIC POSITIONS · NO LIVE DATA</div>
+    <div class="map-chips" aria-label="Component statuses">
+      <div class="glass-chip" id="air-chip"><span class="chip-dot cyan"></span>AIR: <strong>EMPTY</strong></div>
+      <div class="glass-chip" id="sea-chip"><span class="chip-dot orange"></span>SEA: <strong>EMPTY</strong></div>
+      <div class="glass-chip" id="rail-chip"><span class="chip-dot purple"></span>RAIL: <strong>EMPTY</strong></div>
+      <div class="glass-chip" id="bus-chip"><span class="chip-dot green"></span>BUS: <strong>EMPTY</strong></div>
+      <div class="glass-chip" id="road-chip"><span class="chip-dot teal"></span>ROAD: <strong>EMPTY</strong></div>
+    </div>
+    <div class="map-controls" aria-label="Map controls"><button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button></div>
+    <div class="map-bottom"><div class="preview-stamp">HQ 4.0.12 · TEST VERSION</div><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+  </main>
+</div>
+</body></html>
