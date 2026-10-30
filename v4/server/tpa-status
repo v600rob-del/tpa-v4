@@ -20,7 +20,8 @@ name = sys.argv[1]
 d = json.load(sys.stdin)
 keep = ("engineVersion", "health", "notice", "loginConfigured", "keyConfigured", "connected", "alwaysOn",
         "trainsTracked", "stationsKnown", "trackMapLoaded", "busesInLastDownload", "busesWithSpeed",
-        "reportAgeMedianSeconds", "mode", "lastError", "referenceError", "trackError")
+        "reportAgeMedianSeconds", "roadMap", "roadMapDetail", "roadPathsKnown", "mode", "lastError",
+        "referenceError", "trackError", "roadMapError")
 parts = [f"{k}={d[k]}" for k in keep if k in d and d[k] not in ("", None)]
 print(f"{name:8s} " + ", ".join(parts))
 ' "$1"

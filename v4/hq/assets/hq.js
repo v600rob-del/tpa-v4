@@ -139,15 +139,16 @@ function estimate(e,now){
   const t0=Date.parse(e.observedAt);let t=(now-t0)/1000;
   if(!m||!(t>0))return {lon:p.lon,lat:p.lat,est:false};
   t=Math.min(t,m.maxSeconds);
+  // slowToStop (4.1.5): steady speed for the first two-thirds, then ease to a stop over the last third.
+  const travelled=()=>{const T0=m.maxSeconds*2/3,E=m.maxSeconds-T0,tau=Math.max(0,t-T0);
+    return m.slow?m.speedMps*(Math.min(t,T0)+tau-tau*tau/(2*E)):m.speedMps*t;};
   if(m.mode==='heading'){
-    // slowToStop (4.1.5): steady speed for the first two-thirds, then ease to a stop over the last third.
-    const T0=m.maxSeconds*2/3,E=m.maxSeconds-T0,tau=Math.max(0,t-T0);
-    const d=m.slow?m.speedMps*(Math.min(t,T0)+tau-tau*tau/(2*E)):m.speedMps*t,h=p.headingDeg*Math.PI/180,R=6371000;
+    const d=travelled(),h=p.headingDeg*Math.PI/180,R=6371000;
     return {lon:p.lon+d*Math.sin(h)/(R*Math.cos(p.lat*Math.PI/180))*180/Math.PI,lat:p.lat+d*Math.cos(h)/R*180/Math.PI,est:t>=1};
   }
   const total=(m.arriveAtMs-t0)/1000,f=total>0?Math.min(1,t/total):1;
   if(m.mode==='path'){
-    const want=f*m.cum[m.cum.length-1];let i=1;while(i<m.cum.length-1&&m.cum[i]<want)i++;
+    const end=m.cum[m.cum.length-1],want=m.speedMps?Math.min(end,travelled()/111195):f*end;let i=1;while(i<m.cum.length-1&&m.cum[i]<want)i++;
     const seg=m.cum[i]-m.cum[i-1]||1e-12,q=Math.max(0,Math.min(1,(want-m.cum[i-1])/seg)),a=m.pts[i-1],b=m.pts[i];
     return {lon:a[0]+(b[0]-a[0])*q,lat:a[1]+(b[1]-a[1])*q,est:t>=1};
   }
@@ -304,7 +305,10 @@ function checkMotion(m,p){
     if(Math.abs(pts[0][0]-p.lon)>0.05||Math.abs(pts[0][1]-p.lat)>0.05)return null;
     const k=Math.cos(p.lat*Math.PI/180),cum=[0];
     for(let i=1;i<pts.length;i++)cum.push(cum[i-1]+Math.hypot((pts[i][0]-pts[i-1][0])*k,pts[i][1]-pts[i-1][1]));
-    return {mode:'path',pts,cum,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds};
+    // 4.1.6 optional speedMps (+ slowToStop): travel along the path at that speed (easing to a
+    // stop like "heading") instead of spreading the path evenly until arriveAt. Buses on roads.
+    const speed=validNum(m.speedMps)&&m.speedMps>0&&m.speedMps<=350?m.speedMps:null;
+    return {mode:'path',pts,cum,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds,speedMps:speed,slow:speed!==null&&m.slowToStop===true};
   }
   return null;
 }

@@ -1,4 +1,4 @@
-"""TPA v4 BUS ENGINE 0.2 — separate process, bus lane only.
+"""TPA v4 BUS ENGINE 0.4 — separate process, bus lane only.
 
 Data: Department for Transport Bus Open Data Service (BODS), SIRI-VM live
 vehicle locations. BODS confirmed in writing (ticket BSD-1280, Oct 2026) that
@@ -20,26 +20,37 @@ Safety: no key -> zero requests. Key read from TPA_BODS_API_KEY only, never
 logged, stored or returned. 127.0.0.1 only. Read-only. Positions are shown
 where BODS last reported them (never invented or animated); older reports are
 marked stale, very old ones dropped. Standard library only.
+
+0.4.0 road map: with TPA_BUS_ROAD_MAP=download (the server sets this) the engine fetches the
+free Ordnance Survey "OS Open Roads" map in a low-priority helper (road_map.py, ~1 GB about
+twice a year, rebuilt only when OS publishes a new edition) and, between reports, sends each
+bus's road ahead as a "path" so HQ glides it along the real road. Without the road map, or
+when a bus isn't clearly on a road, the straight-line "heading" movement of 0.3 is used.
 """
 from __future__ import annotations
 
+import importlib.util
 import io
 import json
 import math
 import os
 import re
 import ssl
+import subprocess
+import sys
 import threading
 import time
 import zipfile
+from collections import deque
 from datetime import datetime, timezone
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.3.1'
+ENGINE_VERSION = '0.4.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -59,11 +70,19 @@ MAX_VIEW_SPAN = 1.6          # degrees of latitude; wider views ask the user to 
 AREA_PADDING = 0.15          # degrees added around the viewed area in "area" mode
 MAX_AREA_SPAN = 3.0          # never ask BODS for an area bigger than this (degrees)
 GB = (49.8, -8.7, 61.0, 2.0)  # south, west, north, east
+GLIDE_SECONDS = 90           # how long a bus is carried forward after its last report
+STEADY_SECONDS = 60          # ...at steady speed, then easing to a stop (HQ "slowToStop")
+ROAD_MODE = os.environ.get('TPA_BUS_ROAD_MAP', 'off').strip().lower()      # 'download' on the server
+DATA_DIR = Path(os.environ.get('TPA_BUS_DATA_DIR', '') or Path(__file__).resolve().parent / 'data')
+ROAD_CHECK_DAYS = 7          # ask OS whether a new edition exists (a tiny request) once a week
+ROAD_RETRY_HOURS = 6
+INLINE_BUDGET = 0.25         # seconds a snapshot may spend working out roads; the rest wait for the helper thread
 
 KEY = (os.environ.get('TPA_BODS_API_KEY') or '').strip()
 _test_area = os.environ.get('TPA_BUS_TEST_AREA_URL', '').strip()
 _test_bulk = os.environ.get('TPA_BUS_TEST_BULK_URL', '').strip()
-for _u in (_test_area, _test_bulk):
+_test_roads = os.environ.get('TPA_BUS_ROADS_TEST_API', '').strip()
+for _u in (_test_area, _test_bulk, _test_roads):
     if _u and not re.match(r'^http://127\.0\.0\.1:\d+/', _u):
         raise SystemExit('Test URLs must point at 127.0.0.1 only')
 AREA_URL = _test_area or BODS_AREA_URL
@@ -74,8 +93,18 @@ STATE = {
     'vehicles': [], 'fetchedAt': 0.0, 'coverage': None, 'lastAttemptAt': 0.0,
     'lastError': '' if KEY else 'no-key', 'lastDemandAt': 0.0, 'wanted': None,
     'downloadBytes': 0, 'downloadsThisRun': 0, 'consecutiveErrors': 0, 'reportAgeMedian': None, 'busesWithSpeed': 0,
+    'roadMap': 'off' if ROAD_MODE != 'download' else 'starting', 'roadMapDetail': '', 'roadMapError': '',
 }
 WAKE = threading.Event()
+
+_spec = importlib.util.spec_from_file_location('tpa_bus_road_map', Path(__file__).resolve().parent / 'road_map.py')
+road_map = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(road_map)
+ROADS = {'map': None, 'licence': ''}
+PATHS: dict = {}             # bus key -> (report time, motion or None)
+PENDING: deque = deque()
+PENDING_SET: set = set()
+PATH_WAKE = threading.Event()
 
 
 def iso(ts: float) -> str:
@@ -235,6 +264,9 @@ def fetch_once(area) -> None:
         ages = sorted(started - v['recorded'] for v in vehicles if v['recorded'] <= started)
         with LOCK:
             add_motion(vehicles, STATE['vehicles'])
+            live = {v['key'] for v in vehicles}
+            for k in [k for k in PATHS if k not in live]:
+                del PATHS[k]
             STATE['reportAgeMedian'] = round(ages[len(ages) // 2]) if ages else None
             STATE['busesWithSpeed'] = sum(1 for v in vehicles if v.get('speed'))
             STATE.update(vehicles=vehicles, fetchedAt=started, coverage=coverage, lastError='',
@@ -328,7 +360,8 @@ def snapshot(view) -> dict:
     received = fetched or now
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
-             'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION, 'entities': []}
+             'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else ''),
+             'entities': []}
     if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame['notice'] = 'Zoom in to see buses'
         return frame
@@ -345,6 +378,7 @@ def snapshot(view) -> dict:
             continue
         inside.append(((v['lat'] - clat) ** 2 + (v['lon'] - clon) ** 2, v, age))
     inside.sort(key=lambda t: t[0])  # nearest the middle of the screen first
+    deadline = time.monotonic() + INLINE_BUDGET
     for _, v, age in inside[:MAX_PER_VIEW]:
         route = v['route'] or 'Bus'
         label = (f'Bus {route}' if v['route'] else 'Bus') + (f' to {v["destination"]}' if v['destination'] else '')
@@ -354,16 +388,150 @@ def snapshot(view) -> dict:
             'position': {'lon': v['lon'], 'lat': v['lat'], 'headingDeg': v['bearing']},
             'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(v['recorded'])}
         if v.get('speed') and v['bearing'] is not None:
-            # 0.3.1: reports reach us 20-40 s late, so a 30 s limit was used up before most buses
-            # were even drawn. Now carried forward up to 90 s, easing to a stop (roads bend), and
-            # corrected by a short slide when the next real report arrives.
-            entity['motion'] = {'mode': 'heading', 'speedMps': v['speed'], 'maxSeconds': 90, 'slowToStop': True}
+            # 0.3.1: reports reach us 20-40 s late, so buses are carried forward up to 90 s, easing
+            # to a stop, and corrected by a short slide when the next real report arrives.
+            # 0.4.0: along the real road ahead when the road map knows it.
+            entity['motion'] = motion_for(v, deadline)
         frame['entities'].append(entity)
     if not frame['entities'] and MODE == 'area' and not covers(coverage, view):
         frame['notice'] = 'Loading buses for this area…'
     elif len(inside) > MAX_PER_VIEW and not notice:
         frame['notice'] = f'Showing nearest {MAX_PER_VIEW} · zoom in for all'
     return frame
+
+
+def open_road_map() -> bool:
+    path = DATA_DIR / 'roads.sqlite'
+    if not path.exists():
+        return False
+    try:
+        new = road_map.RoadMap(str(path))
+    except Exception as exc:   # damaged or old format: the next check rebuilds it
+        with LOCK:
+            STATE['roadMapError'] = ('open: ' + type(exc).__name__ + ' ' + str(exc))[:100]
+        return False
+    old = ROADS['map']
+    with LOCK:
+        ROADS['map'] = new
+        ROADS['licence'] = str(new.meta.get('licence', ''))
+        STATE['roadMap'] = 'ready'
+        STATE['roadMapDetail'] = f"{new.meta.get('links', 0)} road pieces"
+        PATHS.clear()
+    if old:
+        old.close()
+    print('Road map ready:', STATE['roadMapDetail'], flush=True)
+    return True
+
+
+def refresh_road_map() -> bool:
+    """Run road_map.py fetch as a low-priority child; True if it finished without error."""
+    cmd = [sys.executable, str(Path(__file__).resolve().parent / 'road_map.py'), 'fetch', str(DATA_DIR)]
+    env = dict(os.environ)
+    if _test_roads:
+        env['TPA_BUS_ROADS_TEST_API'] = _test_roads
+    ok = True
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env) as proc:
+        for line in proc.stdout:
+            if not line.startswith('ROADMAP '):
+                continue
+            try:
+                info = json.loads(line[8:])
+            except ValueError:
+                continue
+            st = info.get('state', '')
+            with LOCK:
+                if st == 'error':
+                    STATE['roadMapError'] = str(info.get('error', ''))[:120]
+                    ok = False
+                elif st in ('downloading', 'building', 'checking'):
+                    detail = f"{info['percent']}%" if 'percent' in info else (f"{info['linksRead']} roads read" if 'linksRead' in info else '')
+                    if ROADS['map'] is None:
+                        STATE['roadMap'] = st
+                    STATE['roadMapDetail'] = (st + ' ' + detail).strip() if ROADS['map'] else detail
+            if st in ('downloading', 'building') and info.get('percent', 0) in (0, 25, 50, 75) or st in ('built', 'error'):
+                print('Road map:', line[8:].strip(), flush=True)
+    return ok and proc.returncode == 0
+
+
+def road_keeper() -> None:
+    open_road_map()
+    if ROAD_MODE != 'download':
+        return
+    time.sleep(float(os.environ.get('TPA_BUS_ROAD_START_DELAY', '30')))   # let the server settle after a restart
+    while True:
+        ok = refresh_road_map()
+        if ok:
+            with LOCK:
+                STATE['roadMapError'] = ''
+            stamp = (DATA_DIR / 'roads.sqlite')
+            if ROADS['map'] is None or (stamp.exists() and stamp.stat().st_mtime > ROADS['map'].meta.get('builtAt', 0) + 60):
+                open_road_map()
+            elif ROADS['map'] is not None:
+                with LOCK:
+                    STATE['roadMap'] = 'ready'
+                    STATE['roadMapDetail'] = f"{ROADS['map'].meta.get('links', 0)} road pieces"
+        else:
+            with LOCK:
+                if ROADS['map'] is None:
+                    STATE['roadMap'] = 'unavailable'
+        time.sleep((ROAD_CHECK_DAYS * 86400) if ok else ROAD_RETRY_HOURS * 3600)
+
+
+def road_motion(v: dict):
+    """Path along the road ahead for this report, or None (straight-line movement is used instead)."""
+    rm = ROADS['map']
+    if rm is None or not v.get('speed') or v.get('bearing') is None:
+        return None
+    ease = GLIDE_SECONDS - STEADY_SECONDS
+    metres = v['speed'] * (STEADY_SECONDS + ease / 2)
+    try:
+        pts = rm.ahead(v['lon'], v['lat'], v['bearing'], metres)
+    except Exception as exc:   # one odd bus must never break the layer
+        with LOCK:
+            STATE['roadMapError'] = ('path: ' + type(exc).__name__)[:100]
+        return None
+    if not pts or len(pts) < 2:
+        return None
+    return {'mode': 'path', 'points': [[round(a, 6), round(b, 6)] for a, b in pts],
+            'arriveAt': iso(v['recorded'] + GLIDE_SECONDS), 'maxSeconds': GLIDE_SECONDS,
+            'speedMps': v['speed'], 'slowToStop': True}
+
+
+def path_worker() -> None:
+    while True:
+        PATH_WAKE.wait(timeout=30)
+        PATH_WAKE.clear()
+        while PENDING:
+            with LOCK:
+                if not PENDING:
+                    break
+                v = PENDING.popleft()
+                PENDING_SET.discard((v['key'], v['recorded']))
+            m = road_motion(v)
+            with LOCK:
+                PATHS[v['key']] = (v['recorded'], m)
+
+
+def motion_for(v: dict, deadline: float):
+    """The best movement for this bus: its road ahead if known (or quick to work out), else straight on."""
+    heading = {'mode': 'heading', 'speedMps': v['speed'], 'maxSeconds': GLIDE_SECONDS, 'slowToStop': True}
+    if ROADS['map'] is None:
+        return heading
+    with LOCK:
+        known = PATHS.get(v['key'])
+    if known and known[0] == v['recorded']:
+        return known[1] or heading
+    if time.monotonic() < deadline:
+        m = road_motion(v)
+        with LOCK:
+            PATHS[v['key']] = (v['recorded'], m)
+        return m or heading
+    with LOCK:
+        if (v['key'], v['recorded']) not in PENDING_SET:
+            PENDING_SET.add((v['key'], v['recorded']))
+            PENDING.append(v)
+    PATH_WAKE.set()
+    return heading
 
 
 def parse_bbox(query: str):
@@ -405,7 +573,11 @@ class Handler(BaseHTTPRequestHandler):
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'busesInLastDownload': len(STATE['vehicles']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
                                         'reportAgeMedianSeconds': STATE['reportAgeMedian'], 'busesWithSpeed': STATE['busesWithSpeed'],
-                                        'bodsDownloadsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS})
+                                        'bodsDownloadsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS,
+                                        'roadMap': STATE['roadMap'], 'roadMapDetail': STATE['roadMapDetail'],
+                                        'roadMapError': STATE['roadMapError'],
+                                        'roadPathsKnown': sum(1 for x in PATHS.values() if x[1]),
+                                        'roadTilesLoaded': len(ROADS['map'].tiles) if ROADS['map'] else 0})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
         return self.reply(404, {'error': 'not found'})
@@ -420,11 +592,14 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     port = int(os.environ.get('TPA_BUS_ENGINE_PORT', '8781'))
     threading.Thread(target=poller, daemon=True).start()
+    threading.Thread(target=road_keeper, daemon=True).start()
+    threading.Thread(target=path_worker, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA BUS ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
         print('BODS key: ' + ('set for this session' if KEY else 'NOT SET - no bus data will be fetched'), flush=True)
         print(f'Mode: {MODE}. Asks BODS at most every {POLL_SECONDS}s, only while the map is open.', flush=True)
+        print('Road map: ' + ('downloads OS Open Roads when needed' if ROAD_MODE == 'download' else 'off (buses glide in straight lines)'), flush=True)
         print('Keep this window open. Close it to stop buses only.', flush=True)
         print('=' * 60, flush=True)
         server.serve_forever()
