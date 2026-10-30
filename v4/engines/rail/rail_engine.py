@@ -51,10 +51,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.2.1'
+ENGINE_VERSION = '0.3.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
-ATTRIBUTION = 'Train movements: Network Rail open data · stations: DfT NaPTAN (OGL) · timing points: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
+ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · stations: DfT NaPTAN (OGL) · timing points: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
 
 FEED_HOST, FEED_PORT = 'publicdatafeeds.networkrail.co.uk', 61618
 FEED_TOPIC = '/topic/TRAIN_MVT_ALL_TOC'
@@ -209,7 +209,7 @@ def load_reference() -> None:
         cached = json.loads(REFERENCE_FILE.read_text(encoding='utf-8'))
         if time.time() - cached.get('builtAt', 0) < REFERENCE_MAX_AGE and len(cached.get('stations', {})) >= 50:
             with LOCK:
-                STATE['stations'] = {k: tuple(v) for k, v in cached['stations'].items()}
+                STATE['stations'] = {k.zfill(5): tuple(v) for k, v in cached['stations'].items()}
                 STATE['referenceError'] = ''
             return
     except (OSError, ValueError, AttributeError):
@@ -231,7 +231,7 @@ def load_reference() -> None:
     if len(stations) < 50:
         return _ref_fail('too-few-stations')
     with LOCK:
-        STATE['stations'], STATE['referenceError'] = stations, ''
+        STATE['stations'], STATE['referenceError'] = {k.zfill(5): v for k, v in stations.items()}, ''
     try:
         DATA.mkdir(parents=True, exist_ok=True)
         tmp = REFERENCE_FILE.with_suffix('.tmp')
@@ -259,7 +259,8 @@ def load_timing_points(path: Path = TIMING_POINTS_FILE) -> dict:
                     lat, lon = float(row['lat']), float(row['lon'])
                 except (ValueError, TypeError, KeyError):
                     continue
-                if re.fullmatch(r'\d{3,6}', stanox) and math.isfinite(lat) and math.isfinite(lon) and 49 < lat < 61 and -9 < lon < 3:
+                stanox = stanox.zfill(5)   # the feed always sends 5 digits (e.g. Scotland 0xxxx)
+                if re.fullmatch(r'\d{5,6}', stanox) and math.isfinite(lat) and math.isfinite(lon) and 49 < lat < 61 and -9 < lon < 3:
                     points[stanox] = (lat, lon, clean(row.get('name'), 60) or 'a timing point')
     except OSError:
         return {}
@@ -268,7 +269,8 @@ def load_timing_points(path: Path = TIMING_POINTS_FILE) -> dict:
 
 # ---------------------------------------------------------------- memory of the last 30 minutes
 TRAIN_FIELDS = {'lat': float, 'lon': float, 'station': str, 'when': float, 'event': str, 'variation': str,
-                'minutes': int, 'headcode': str, 'terminated': bool, 'point': bool}
+                'minutes': int, 'headcode': str, 'terminated': bool, 'point': bool,
+                'nlat': float, 'nlon': float, 'nname': str, 'run': int}   # 0.3.0: next place + minutes to it
 
 
 def save_memory(force: bool = False) -> None:
@@ -309,6 +311,9 @@ def restore_memory() -> int:
         item['variation'] = clean(item['variation'], 12).upper()
         item['terminated'] = t.get('terminated') is True
         item['point'] = t.get('point') is True
+        item['nname'] = clean(item['nname'], 60)
+        if not (0 < item['run'] <= 120 and 49 < item['nlat'] < 61 and -9 < item['nlon'] < 3):
+            item.update(nlat=0.0, nlon=0.0, nname='', run=0)
         if not (now - DROP_AFTER < item['when'] < now + 180 and 49 < item['lat'] < 61 and -9 < item['lon'] < 3):
             continue
         restored[tid] = item
@@ -331,6 +336,12 @@ def memory_loop() -> None:
 TRUST_ID = re.compile(r'^\d{2}([0-9][A-Z][0-9]{2})[A-Z0-9]{2}(0[1-9]|[12][0-9]|3[01])$')
 
 
+def km(lat1, lon1, lat2, lon2) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 12742 * math.asin(min(1.0, math.sqrt(a)))
+
+
 def handle_message(item: dict, now: float) -> None:
     header, body = item.get('header') or {}, item.get('body') or {}
     if not isinstance(header, dict) or not isinstance(body, dict):
@@ -348,7 +359,7 @@ def handle_message(item: dict, now: float) -> None:
         if kind != '0003':
             return
         STATE['movements'] += 1
-        stanox = clean(body.get('loc_stanox'), 6)
+        stanox = clean(body.get('loc_stanox'), 6).zfill(5)   # one 5-digit form everywhere
         station = (STATE['stations'] or {}).get(stanox)
         at_point = False
         if not station:
@@ -372,10 +383,25 @@ def handle_message(item: dict, now: float) -> None:
         except ValueError:
             minutes = 0
         match = TRUST_ID.fullmatch(train_id)
+        terminated = str(body.get('train_terminated', '')).lower() == 'true'
+        # 0.3.0: after a departure (or pass), TRUST says where the train reports next and
+        # how many minutes that should take. The map glides it there and stops (estimated).
+        nxt, run = None, 0
+        if event == 'DEPARTURE' and not terminated:
+            nstanox = clean(body.get('next_report_stanox'), 6).zfill(5)
+            nxt = (STATE['stations'] or {}).get(nstanox) or STATE['points'].get(nstanox)
+            try:
+                run = int(str(body.get('next_report_run_time', '0')).strip() or 0)
+            except ValueError:
+                run = 0
+            if not nxt or not 0 < run <= 120 or km(station[0], station[1], nxt[0], nxt[1]) < 0.2:
+                nxt, run = None, 0
         trains[train_id] = {'lat': station[0], 'lon': station[1], 'station': station[2], 'when': when,
                             'event': event if event in ('ARRIVAL', 'DEPARTURE') else 'REPORT',
                             'variation': variation, 'minutes': minutes, 'headcode': match.group(1) if match else '',
-                            'terminated': str(body.get('train_terminated', '')).lower() == 'true', 'point': at_point}
+                            'terminated': terminated, 'point': at_point,
+                            'nlat': nxt[0] if nxt else 0.0, 'nlon': nxt[1] if nxt else 0.0,
+                            'nname': nxt[2] if nxt else '', 'run': run}
         STATE['dirty'] = True
         if len(trains) > MAX_TRAINS:
             oldest = sorted(trains, key=lambda k: trains[k]['when'])[:len(trains) - MAX_TRAINS]
@@ -550,6 +576,8 @@ def describe(t: dict) -> str:
         parts.append(f"{t['minutes']} min early")
     elif t['variation'] == 'ON TIME':
         parts.append('on time')
+    if t.get('run') and t.get('nname') and t['event'] == 'DEPARTURE' and not t['terminated']:
+        parts.append(f"next: {t['nname']}")
     return ' · '.join(parts)
 
 
@@ -568,7 +596,7 @@ def snapshot(view) -> dict:
         connected_for = now - STATE['connectedAt'] if STATE['connected'] else 0
     frame_out = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
                  'observedAt': iso(now), 'receivedAt': iso(now), 'expiresAt': iso(now + 90),
-                 'nextPollAfterMs': 30000, 'attribution': ATTRIBUTION, 'entities': []}
+                 'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION, 'entities': []}
     if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame_out['notice'] = 'Zoom in to see trains'
         return frame_out
@@ -585,9 +613,13 @@ def snapshot(view) -> dict:
             inside.append(((t['lat'] - clat) ** 2 + (t['lon'] - clon) ** 2, tid, t, age))
     inside.sort(key=lambda x: x[0])
     for _, tid, t, age in inside[:MAX_PER_VIEW]:
-        frame_out['entities'].append({'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
-                                      'position': {'lon': t['lon'], 'lat': t['lat'], 'headingDeg': None},
-                                      'quality': 'observed' if age <= FRESH_FOR else 'stale', 'observedAt': iso(t['when'])})
+        entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
+                  'position': {'lon': t['lon'], 'lat': t['lat'], 'headingDeg': None},
+                  'quality': 'observed' if age <= FRESH_FOR else 'stale', 'observedAt': iso(t['when'])}
+        if t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated']:
+            entity['motion'] = {'mode': 'toward', 'lon': t['nlon'], 'lat': t['nlat'],
+                                'arriveAt': iso(t['when'] + t['run'] * 60), 'maxSeconds': t['run'] * 60 + 120}
+        frame_out['entities'].append(entity)
     if not frame_out['entities'] and h == 'ready' and not notice and connected_for < 600:
         frame_out['notice'] = 'Listening · trains appear as they report at stations'
     elif len(inside) > MAX_PER_VIEW and not notice:

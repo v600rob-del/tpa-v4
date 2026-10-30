@@ -25,19 +25,19 @@
     },
     {
       "layer": "Buses",
-      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS).",
+      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS). Between reports, positions are estimated for up to 30 seconds.",
       "url": "https://www.bus-data.dft.gov.uk",
       "status": "Live in test"
     },
     {
       "layer": "Trains",
-      "text": "Train movements from Network Rail open data feeds (exact wording to follow Network Rail's reply). Station locations: DfT NaPTAN, Open Government Licence. Junction and timing-point locations: YA TIPLOC list (Network Rail and NaPTAN data under OGL; woodpecker and GB Railway Data under CC BY-SA 4.0). Trains are shown at the last station or junction they reported, not by GPS.",
-      "url": "",
+      "text": "Contains information of Network Rail Infrastructure Limited licensed under the following licence: Network Rail Infrastructure Limited Data Feeds Licence. Station locations: DfT NaPTAN (Open Government Licence). Junction and timing-point locations: YA TIPLOC list (CC BY-SA 4.0 / OGL / CC BY 2.0 UK). Trains are shown at the last place they reported; between reports their position is estimated.",
+      "url": "https://www.networkrail.co.uk/who-we-are/transparency-and-ethics/transparency/open-data-feeds/network-rail-infrastructure-limited-data-feeds-licence",
       "status": "Live in test"
     },
     {
       "layer": "Aircraft",
-      "text": "Aircraft positions from ADSB.lol (Open Database License).",
+      "text": "Aircraft positions from ADSB.lol (Open Database License). Between reports, positions are estimated from speed and direction.",
       "url": "https://www.adsb.lol/",
       "status": "Live in test"
     },

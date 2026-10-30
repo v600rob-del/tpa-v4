@@ -31,7 +31,7 @@ import time
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json'}
-HQ_VERSION = '4.0.13'
+HQ_VERSION = '4.1.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # HQ relays data only (JSON frames, PNG overlay tiles); it contains no supplier
@@ -364,12 +364,16 @@ class HQHandler(SimpleHTTPRequestHandler):
             ('Permissions-Policy','geolocation=(), camera=(), microphone=()'),
             ('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")):
             self.send_header(name,value)
+        # 4.1.0: the page's own files are re-checked on every visit (a quick "not modified"
+        # answer if unchanged), so an update shows straight away instead of up to 30 min later.
+        if urlsplit(self.path).path in PUBLIC and not getattr(self,'_cache_set',False):
+            self.send_header('Cache-Control','no-cache')
         super().end_headers()
     def reply(self,status,raw,mime):
         self.send_response(status)
         self.send_header('Content-Type',mime)
         self.send_header('Content-Length',str(len(raw)))
-        self.send_header('Cache-Control','private, max-age=1800' if status==200 else 'no-store')
+        self.send_header('Cache-Control','private, max-age=1800' if status==200 else 'no-store');self._cache_set=True
         self.end_headers()
         try:self.wfile.write(raw)
         except (BrokenPipeError,ConnectionResetError):pass

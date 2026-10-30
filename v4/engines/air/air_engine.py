@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.1.0'
+ENGINE_VERSION = '0.2.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -120,7 +120,9 @@ def parse(payload: dict, fetched: float) -> list[dict]:
         heading = finite(a.get('track'))
         if heading is None:
             heading = finite(a.get('true_heading'))
-        out.append({'hex': hexid, 'lat': round(lat, 5), 'lon': round(lon, 5),
+        gs = finite(a.get('gs'))   # ground speed, knots
+        speed = round(gs * 0.514444, 1) if gs is not None and 0 < gs < 1000 else None
+        out.append({'hex': hexid, 'lat': round(lat, 5), 'lon': round(lon, 5), 'speed': speed,
                     'heading': round(heading % 360, 1) if heading is not None else None,
                     'flight': clean(a.get('flight'), 10), 'reg': clean(a.get('r'), 12), 'type': clean(a.get('t'), 8),
                     'ground': alt == 'ground', 'alt': int(alt) if finite(alt) is not None else None,
@@ -240,7 +242,7 @@ def snapshot(view) -> dict:
     received = fetched or now
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
-             'nextPollAfterMs': POLL_SECONDS * 1000, 'attribution': ATTRIBUTION, 'entities': []}
+             'nextPollAfterMs': 10000, 'attribution': ATTRIBUTION, 'entities': []}
     if not small:
         frame['notice'] = 'Zoom in to see aircraft'
         return frame
@@ -258,9 +260,14 @@ def snapshot(view) -> dict:
         inside.append(((a['lat'] - clat) ** 2 + (a['lon'] - clon) ** 2, a, age))
     inside.sort(key=lambda t: t[0])
     for _, a, age in inside[:MAX_PER_VIEW]:
-        frame['entities'].append({'id': 'air:' + a['hex'], 'label': label_for(a)[:160],
-                                  'position': {'lon': a['lon'], 'lat': a['lat'], 'headingDeg': a['heading']},
-                                  'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(a['reported'])})
+        entity = {'id': 'air:' + a['hex'], 'label': label_for(a)[:160],
+                  'position': {'lon': a['lon'], 'lat': a['lat'], 'headingDeg': a['heading']},
+                  'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(a['reported'])}
+        # 0.2.0: speed + track let the map carry the aircraft forward smoothly between
+        # reports (shown as "estimated"), for at most a minute after the real report.
+        if not a['ground'] and a['heading'] is not None and a.get('speed') and a['speed'] >= 5:
+            entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': 60}
+        frame['entities'].append(entity)
     if not frame['entities'] and not circle_covers(circle, view) and not notice:
         frame['notice'] = 'Loading aircraft for this area…'
     elif len(inside) > MAX_PER_VIEW and not notice:

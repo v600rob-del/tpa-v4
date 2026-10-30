@@ -39,7 +39,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.2.0'
+ENGINE_VERSION = '0.3.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -179,6 +179,41 @@ def download(url: str) -> bytes:
     return raw
 
 
+def metres(lat1, lon1, lat2, lon2) -> float:
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 12742000 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def add_motion(new: list, old: list) -> None:
+    """0.3.0: BODS gives direction but not speed. Speed comes from the same bus's last two
+    real reports (5 s to 5 min apart, 0.5-35 m/s); otherwise the bus simply has no motion."""
+    before = {v['key']: v for v in old}
+    for v in new:
+        p = before.get(v['key'])
+        if not p:
+            continue
+        if v['recorded'] == p['recorded']:          # same report downloaded again: keep what we knew
+            if p.get('speed'):
+                v['speed'] = p['speed']
+                if v['bearing'] is None:
+                    v['bearing'] = p['bearing']
+            continue
+        dt = v['recorded'] - p['recorded']
+        if not 5 <= dt <= 300:
+            continue
+        dist = metres(p['lat'], p['lon'], v['lat'], v['lon'])
+        speed = dist / dt
+        if dist < 10 or not 0.5 <= speed <= 35:
+            continue
+        v['speed'] = round(speed, 2)
+        if v['bearing'] is None:
+            y = math.sin(math.radians(v['lon'] - p['lon'])) * math.cos(math.radians(v['lat']))
+            x = (math.cos(math.radians(p['lat'])) * math.sin(math.radians(v['lat'])) -
+                 math.sin(math.radians(p['lat'])) * math.cos(math.radians(v['lat'])) * math.cos(math.radians(v['lon'] - p['lon'])))
+            v['bearing'] = round(math.degrees(math.atan2(y, x)) % 360, 1)
+
+
 def fetch_once(area) -> None:
     """One BODS download. Errors keep the previous snapshot (shown with its true age)."""
     started = time.time()
@@ -198,6 +233,7 @@ def fetch_once(area) -> None:
             vehicles = parse_siri(io.BytesIO(raw))
             coverage = area
         with LOCK:
+            add_motion(vehicles, STATE['vehicles'])
             STATE.update(vehicles=vehicles, fetchedAt=started, coverage=coverage, lastError='',
                          downloadBytes=len(raw), consecutiveErrors=0)
             STATE['downloadsThisRun'] += 1
@@ -289,7 +325,7 @@ def snapshot(view) -> dict:
     received = fetched or now
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
-             'nextPollAfterMs': POLL_SECONDS * 1000, 'attribution': ATTRIBUTION, 'entities': []}
+             'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION, 'entities': []}
     if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame['notice'] = 'Zoom in to see buses'
         return frame
@@ -309,11 +345,15 @@ def snapshot(view) -> dict:
     for _, v, age in inside[:MAX_PER_VIEW]:
         route = v['route'] or 'Bus'
         label = (f'Bus {route}' if v['route'] else 'Bus') + (f' to {v["destination"]}' if v['destination'] else '')
-        frame['entities'].append({
+        entity = {
             'id': ('bus:' + v['key'])[:128], 'label': label[:160],
             'badge': re.sub(r'[^A-Za-z0-9]', '', v['route'])[:8] or None,
             'position': {'lon': v['lon'], 'lat': v['lat'], 'headingDeg': v['bearing']},
-            'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(v['recorded'])})
+            'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(v['recorded'])}
+        if v.get('speed') and v['bearing'] is not None:
+            # Roads bend, so a bus is only carried forward for 30 s after its real report.
+            entity['motion'] = {'mode': 'heading', 'speedMps': v['speed'], 'maxSeconds': 30}
+        frame['entities'].append(entity)
     if not frame['entities'] and MODE == 'area' and not covers(coverage, view):
         frame['notice'] = 'Loading buses for this area…'
     elif len(inside) > MAX_PER_VIEW and not notice:

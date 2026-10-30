@@ -94,31 +94,107 @@ function selectEntity(e){
   const h=document.createElement('strong');h.textContent=iconFor(e.component)+' '+e.label;
   const live=!!state.live[e.component];
   const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
-  const info=document.createElement('small');info.textContent=live?(e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · may have moved':''):e.component.toUpperCase()+' · '+e.quality.toUpperCase()+' · STATIC MOCK POSITION';
+  const info=document.createElement('small');info.textContent=infoText(e,!!whereNow(e,Date.now())?.est);void seen;
   const warning=document.createElement('small');warning.className=live?'live-source':'review-no-live';warning.textContent=live?(state.frames[e.component]?.attribution||''):'FICTIONAL DEMONSTRATION — NOT AN ACTUAL VEHICLE';
   const close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','Close target details');
   close.onclick=()=>{selected.classList.add('hidden');state.selected=null;paint();};
   selected.replaceChildren(h,info,warning,close);selected.classList.remove('hidden');
   $('map-place').textContent=e.label.toUpperCase();paint();
 }
+// 4.1.0 smooth movement. Markers are kept and moved, not rebuilt. Between real reports a
+// live vehicle with a motion hint is carried forward (capped by the engine's maxSeconds),
+// and a fresh report is reached by a short slide, never a jump. Any position that is not
+// exactly the last real report is marked and described as ESTIMATED.
+const REDUCED=!!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches);
+const BLEND_MS=1200,pins=new Map(),shown=new Map(),blends=new Map();
+let moving=0;
+function keyOf(e){return e.component+':'+e.id;}
+function estimate(e,now){
+  const p=e.position,m=state.live[e.component]?e.motion:null;
+  if(!p)return null;
+  const t0=Date.parse(e.observedAt);let t=(now-t0)/1000;
+  if(!m||!(t>0))return {lon:p.lon,lat:p.lat,est:false};
+  t=Math.min(t,m.maxSeconds);
+  if(m.mode==='heading'){
+    const d=m.speedMps*t,h=p.headingDeg*Math.PI/180,R=6371000;
+    return {lon:p.lon+d*Math.sin(h)/(R*Math.cos(p.lat*Math.PI/180))*180/Math.PI,lat:p.lat+d*Math.cos(h)/R*180/Math.PI,est:t>=1};
+  }
+  const total=(m.arriveAtMs-t0)/1000,f=total>0?Math.min(1,t/total):1;
+  return {lon:p.lon+(m.lon-p.lon)*f,lat:p.lat+(m.lat-p.lat)*f,est:t>=1};
+}
+function whereNow(e,now){
+  const k=keyOf(e),target=estimate(e,now);if(!target)return null;
+  const b=blends.get(k);
+  if(b){const f=REDUCED?1:(now-b.t0)/BLEND_MS;
+    if(f<1){const q=f*f*(3-2*f);return {lon:b.lon+(target.lon-b.lon)*q,lat:b.lat+(target.lat-b.lat)*q,est:true};}
+    blends.delete(k);}
+  return target;
+}
+function noteNewFrame(f,now){
+  // A vehicle already on screen slides from where it is shown to its new position.
+  for(const e of f.entities){const k=keyOf(e),was=shown.get(k);if(!was||!e.position)continue;
+    const next=estimate(e,now);if(next&&(Math.abs(next.lon-was.lon)>1e-6||Math.abs(next.lat-was.lat)>1e-6))blends.set(k,{lon:was.lon,lat:was.lat,t0:now});}
+}
+function infoText(e,est){
+  const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
+  if(!state.live[e.component])return e.component.toUpperCase()+' · '+e.quality.toUpperCase()+' · STATIC MOCK POSITION';
+  if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
+  return (e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · may have moved':'');
+}
+// Phone-sized screens show at most this many vehicles per layer (engines already send the
+// ones nearest the middle of the view first); hundreds of overlapping icons can't be read.
+const PHONE_CAP=150;
 function markers(){
-  markerLayer.replaceChildren();const d=dims();
+  const d=dims(),now=Date.now(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
   for(const e of listEntities()){
     if(!e.position)continue;
-    const [x,y]=pixel(e.position.lon,e.position.lat);
-    if(x<0||y<0||x>d.w||y>d.h)continue;
-    const b=document.createElement('button');b.type='button';
+    const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;
+    if(pos.est||blends.has(k)||(state.live[e.component]&&e.motion))moving++;
+    shown.set(k,{lon:pos.lon,lat:pos.lat});
+    const [x,y]=pixel(pos.lon,pos.lat);
+    if(x<-M||y<-M||x>d.w+M||y>d.h+M)continue;
+    if((perLayer[e.component]=(perLayer[e.component]||0)+1)>cap)continue;
+    keep.add(k);
     const active=!!state.selected&&state.selected.id===e.id&&state.selected.component===e.component;
-    b.className=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}`;
-    b.style.left=x+'px';b.style.top=y+'px';b.append(buildArtwork(e));
     const prefix=state.live[e.component]?'':'MOCK ';
-    b.title=prefix+e.label+' · '+e.quality;
-    b.setAttribute('aria-label',prefix+e.label+' '+e.quality+(active?' selected':''));
-    b.setAttribute('aria-pressed',String(active));
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' estimated':''}`;
+    const art=e.component+'|'+(e.position.headingDeg??'')+'|'+(e.badge||'')+'|'+e.id;
+    let pin=pins.get(k);
+    if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
+    const b=pin.b;pin.e=e;
+    if(pin.art!==art){b.replaceChildren(buildArtwork(e));pin.art=art;}
+    if(b.className!==cls)b.className=cls;
+    const title=prefix+e.label+' · '+(pos.est?'estimated position':e.quality);
+    if(b.title!==title){b.title=title;b.setAttribute('aria-label',prefix+e.label+' '+(pos.est?'estimated position':e.quality)+(active?' selected':''));}
+    if(b.getAttribute('aria-pressed')!==String(active))b.setAttribute('aria-pressed',String(active));
+    // Moved with a transform (no page re-layout), which phones handle on the graphics chip.
+    const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(-50%,-50%)${active?' scale(1.17)':''}`;
+    if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;}
     b.onclick=()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
-    markerLayer.append(b);
   }
+  for(const [k,pin] of pins)if(!keep.has(k)){pin.b.remove();pins.delete(k);}
+  if(shown.size>keep.size*4+4000)for(const k of shown.keys())if(!keep.has(k))shown.delete(k);
+  updateSelectedInfo(now);
 }
+function currentEntity(sel){const f=state.frames[sel.component];return f?.entities.find(x=>x.id===sel.id)||null;}
+function updateSelectedInfo(now){
+  if(!state.selected||selected.classList.contains('hidden'))return;
+  const e=currentEntity(state.selected);if(!e)return;
+  const info=selected.querySelector('small');if(!info)return;
+  const pos=whereNow(e,now),text=infoText(e,!!pos?.est);if(info.textContent!==text)info.textContent=text;
+}
+// Up to ten updates a second while something on screen is moving and the page is visible.
+// The pace adapts to the device: if an update takes longer (busy map, slow phone), updates
+// come less often (down to about three a second) so the page always stays responsive.
+let lastTick=0,tickCost=0;
+function motionLoop(ts){
+  requestAnimationFrame(motionLoop);
+  if(document.visibilityState!=='visible'||!moving&&!blends.size)return;
+  const gap=REDUCED?2000:clamp(tickCost*12,100,330);
+  if(ts-lastTick<gap)return;
+  lastTick=ts;const t0=performance.now();markers();tickCost=tickCost*0.7+(performance.now()-t0)*0.3;
+}
+requestAnimationFrame(motionLoop);
 function layerName(id){return ($(id+'-toggle').closest('.layer-toggle')?.querySelector('strong')?.textContent||id).toLowerCase();}
 function counts(){const d=dims();const anyLive=IDS.some(id=>state.live[id]&&!state.parked[id]);
 for(const id of IDS){let entries=state.frames[id]?.entities;
@@ -152,14 +228,27 @@ function paint(){if(pending)return;pending=true;requestAnimationFrame(()=>{pendi
 function validNum(n){return typeof n==='number'&&Number.isFinite(n);}
 function checkFrame(id,f){if(!f||typeof f!=='object'||Array.isArray(f)||f.component!==id||f.contractVersion!=='1.0'||!['ready','stale','unavailable','not_installed'].includes(f.health)||typeof f.receivedAt!=='string'||!Number.isFinite(Date.parse(f.receivedAt))||typeof f.expiresAt!=='string'||!Number.isFinite(Date.parse(f.expiresAt))||Date.parse(f.expiresAt)<Date.parse(f.receivedAt)||typeof f.attribution!=='string'||f.attribution.length>256||!Array.isArray(f.entities)||f.entities.length>10000)throw Error('Invalid component v1 envelope');
 const ids=new Set(),entities=[];for(const e of f.entities){if(!e||typeof e.id!=='string'||!e.id||e.id.length>128||ids.has(e.id)||typeof e.label!=='string'||e.label.length>160||!['observed','estimated','stale'].includes(e.quality)||!Number.isFinite(Date.parse(e.observedAt)))throw Error('Invalid entity');ids.add(e.id);
-const p=e.position;if(p!==null&&(!p||!validNum(p.lon)||!validNum(p.lat)||Math.abs(p.lon)>180||Math.abs(p.lat)>90||(p.headingDeg!=null&&(!validNum(p.headingDeg)||p.headingDeg<0||p.headingDeg>360))))throw Error('Invalid point');entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,position:p===null?null:{lon:p.lon,lat:p.lat,headingDeg:p.headingDeg??null}});}
+const p=e.position;if(p!==null&&(!p||!validNum(p.lon)||!validNum(p.lat)||Math.abs(p.lon)>180||Math.abs(p.lat)>90||(p.headingDeg!=null&&(!validNum(p.headingDeg)||p.headingDeg<0||p.headingDeg>360))))throw Error('Invalid point');const position=p===null?null:{lon:p.lon,lat:p.lat,headingDeg:p.headingDeg??null};
+entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,position,motion:checkMotion(e.motion,position)});}
 // 4.0.10 optional extras: a short notice, and a see-through picture layer served
 // only from this socket's own same-origin tile path. Anything else is ignored.
 const notice=typeof f.notice==='string'?f.notice.slice(0,120):'';
 let overlay=null;const o=f.overlay;
 if(o&&typeof o==='object'&&o.type==='raster'&&o.tiles===`/api/v4/components/${id}/tiles/{z}/{x}/{y}.png`&&Number.isInteger(o.minZoom)&&Number.isInteger(o.maxZoom)&&o.minZoom>=0&&o.maxZoom<=22&&o.minZoom<=o.maxZoom&&validNum(o.opacity)&&o.opacity>0&&o.opacity<=1)
   overlay={tiles:o.tiles,minZoom:o.minZoom,maxZoom:o.maxZoom,opacity:o.opacity,refreshSeconds:Number.isInteger(o.refreshSeconds)?clamp(o.refreshSeconds,60,3600):300};
-return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now()?'stale':f.health,entities,attribution:f.attribution,notice,overlay};}
+const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,5000,120000):30000;
+return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs};}
+// 4.1.0 optional motion hint from an engine. HQ only does generic arithmetic with it
+// (straight-line "carry on at this speed" or "head for this point by this time");
+// anything malformed is ignored and the vehicle simply stays at its reported position.
+function checkMotion(m,p){
+  if(!m||typeof m!=='object'||!p)return null;
+  if(m.mode==='heading'&&validNum(m.speedMps)&&m.speedMps>0&&m.speedMps<=350&&validNum(m.maxSeconds)&&m.maxSeconds>0&&m.maxSeconds<=300&&p.headingDeg!=null)
+    return {mode:'heading',speedMps:m.speedMps,maxSeconds:m.maxSeconds};
+  if(m.mode==='toward'&&validNum(m.lon)&&validNum(m.lat)&&Math.abs(m.lon)<=180&&Math.abs(m.lat)<=90&&typeof m.arriveAt==='string'&&Number.isFinite(Date.parse(m.arriveAt))&&validNum(m.maxSeconds)&&m.maxSeconds>0&&m.maxSeconds<=7800&&Math.abs(m.lon-p.lon)<1.5&&Math.abs(m.lat-p.lat)<1)
+    return {mode:'toward',lon:m.lon,lat:m.lat,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds};
+  return null;
+}
 // Only same-origin data. Abort slow snapshots; one spoke must not delay another.
 async function requestBounded(url,maxBytes,timeoutMs){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
@@ -205,11 +294,32 @@ function syncOverlays(){
 }
 let refetchTimer=0;
 function refetchLiveView(){clearTimeout(refetchTimer);refetchTimer=setTimeout(()=>{
-  for(const id of IDS)if(state.live[id]&&!state.parked[id]&&!state.frames[id]?.overlay&&(state.status[id]==='ready'||state.status[id]==='stale'))getComponent(id);
+  const v=currentBox(0);
+  for(const id of IDS)if(state.live[id]&&!state.parked[id]&&!state.frames[id]?.overlay&&(state.status[id]==='ready'||state.status[id]==='stale')){
+    // 4.1.0: nothing to fetch if the last answer already covered this whole view.
+    const b=fetchedBox[id];
+    if(v&&b&&b.complete&&v.w>=b.w&&v.e<=b.e&&v.s>=b.s&&v.n<=b.n)continue;
+    getComponent(id);
+  }
 },800);}
+// 4.1.0: each live layer is asked again at the pace its engine suggests (nextPollAfterMs),
+// only while the page is visible; a reply older than one already shown is ignored.
+const pollTimers=Object.create(null),lastFetch=Object.create(null),seqSent=Object.create(null),seqDone=Object.create(null),fetchedBox=Object.create(null);
+function schedulePoll(id,ms){clearTimeout(pollTimers[id]);pollTimers[id]=setTimeout(()=>{pollTimers[id]=0;
+  if(!state.live[id]||state.parked[id])return;
+  if(document.visibilityState!=='visible'||!state.visible[id]){schedulePoll(id,ms);return;}
+  getComponent(id);},ms);}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')for(const id of IDS)if(state.live[id]&&!state.parked[id]&&state.status[id]!=='not_installed'&&Date.now()-(lastFetch[id]||0)>4000)getComponent(id);});
+function currentBox(pad){if(!map||typeof map.getBounds!=='function')return null;const b=pad?map.getBounds().pad(pad):map.getBounds();return {w:b.getWest(),s:b.getSouth(),e:b.getEast(),n:b.getNorth()};}
 async function getComponent(id){
+  const seq=seqSent[id]=(seqSent[id]||0)+1,box=currentBox(0.2);lastFetch[id]=Date.now();
   try{
     const f=checkFrame(id,await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}`,1200000,6000));
+    if(seq<(seqDone[id]||0))return;
+    seqDone[id]=seq;
+    fetchedBox[id]=box?{...box,complete:!f.notice}:null;
+    if(state.live[id])schedulePoll(id,f.pollMs);
+    noteNewFrame(f,Date.now());
     // Once a new manifest has removed a component, ignore late responses.
     if(state.status[id]==='not_installed'||state.parked[id])return;
     if(f.health==='not_installed'){delete state.frames[id];deselectComponent(id);}
@@ -259,7 +369,7 @@ async function discover(){
       }else if(entry?.status==='ready'){
         // Start all five requests independently rather than awaiting each in series.
         if(state.status[id]==='not_installed')state.status[id]='unavailable';
-        requests.push(getComponent(id));
+        if(!(state.live[id]&&pollTimers[id]&&Date.now()-(lastFetch[id]||0)<25000))requests.push(getComponent(id));
       }else if(entry?.status==='stale'||entry?.status==='unavailable'){
         state.status[id]=entry.status==='stale'?'stale':'unavailable';deselectComponent(id);
       }else{
