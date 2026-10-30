@@ -101,9 +101,10 @@ body.vector-ready .vector-map{z-index:4}
 .sidebar-close{display:none}.sidebar-backdrop{display:none}
 @media(max-width:760px){.sidebar{width:min(337px,86vw)}.sidebar-close{display:block;position:sticky;top:0;flex:0 0 auto;margin:0;width:100%;z-index:3;min-height:46px;border-radius:0;border-width:0 0 1px;text-align:right;padding:12px 16px;background:#0b1726;box-shadow:0 4px 14px #0006}.sidebar.open+.sidebar-backdrop{display:block;position:fixed;inset:0;z-index:990;background:#02060c66}}
 
-/* 4.1.0: a vehicle shown between real reports (carried forward or sliding) has a dashed
-   outline, and its details say "Estimated position · last reported hh:mm:ss". */
-.review-pin.estimated{border-style:dashed}
+/* 4.1.4 (owner, 30 Oct): estimated positions LOOK normal on the map. Honesty stays in the
+   words: the details box says "Estimated position · last reported hh:mm:ss" and the hover
+   text / screen-reader label say "estimated position". Live in-between positions carry the
+   class .est-pos (the older .estimated styling is only for MOCK fixtures' quality). */
 /* 4.1.0: markers are placed with an inline transform set by HQ instead of left/top. */
 .marker-layer .vehicle-pin{left:0;top:0}
 /* 4.1.1: the details box title keeps clear of the close (×) button (owner, 30 Oct). */

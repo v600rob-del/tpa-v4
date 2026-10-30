@@ -192,7 +192,7 @@ function markers(){
     const prefix=state.live[e.component]?'':'MOCK ';
     const glideWanted=!REDUCED&&!mapMoving&&!!pin0(k)&&(pos.est||blends.has(k)||(state.live[e.component]&&!!e.motion));
     const glide=glideWanted&&glideOK.has(k);
-    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' estimated':''}${glide?' glide':''}`;
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}`;
     const art=e.component+'|'+(e.position.headingDeg??'')+'|'+(e.badge||'')+'|'+e.id;
     let pin=pins.get(k);
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
