@@ -120,6 +120,11 @@ function estimate(e,now){
     return {lon:p.lon+d*Math.sin(h)/(R*Math.cos(p.lat*Math.PI/180))*180/Math.PI,lat:p.lat+d*Math.cos(h)/R*180/Math.PI,est:t>=1};
   }
   const total=(m.arriveAtMs-t0)/1000,f=total>0?Math.min(1,t/total):1;
+  if(m.mode==='path'){
+    const want=f*m.cum[m.cum.length-1];let i=1;while(i<m.cum.length-1&&m.cum[i]<want)i++;
+    const seg=m.cum[i]-m.cum[i-1]||1e-12,q=Math.max(0,Math.min(1,(want-m.cum[i-1])/seg)),a=m.pts[i-1],b=m.pts[i];
+    return {lon:a[0]+(b[0]-a[0])*q,lat:a[1]+(b[1]-a[1])*q,est:t>=1};
+  }
   return {lon:p.lon+(m.lon-p.lon)*f,lat:p.lat+(m.lat-p.lat)*f,est:t>=1};
 }
 function whereNow(e,now){
@@ -247,6 +252,15 @@ function checkMotion(m,p){
     return {mode:'heading',speedMps:m.speedMps,maxSeconds:m.maxSeconds};
   if(m.mode==='toward'&&validNum(m.lon)&&validNum(m.lat)&&Math.abs(m.lon)<=180&&Math.abs(m.lat)<=90&&typeof m.arriveAt==='string'&&Number.isFinite(Date.parse(m.arriveAt))&&validNum(m.maxSeconds)&&m.maxSeconds>0&&m.maxSeconds<=7800&&Math.abs(m.lon-p.lon)<1.5&&Math.abs(m.lat-p.lat)<1)
     return {mode:'toward',lon:m.lon,lat:m.lat,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds};
+  // 4.1.1 "path": follow these points (e.g. along the railway) and arrive by arriveAt.
+  if(m.mode==='path'&&Array.isArray(m.points)&&m.points.length>=2&&m.points.length<=200&&typeof m.arriveAt==='string'&&Number.isFinite(Date.parse(m.arriveAt))&&validNum(m.maxSeconds)&&m.maxSeconds>0&&m.maxSeconds<=7800){
+    const pts=[];
+    for(const q of m.points){if(!Array.isArray(q)||q.length!==2||!validNum(q[0])||!validNum(q[1])||Math.abs(q[0]-p.lon)>2||Math.abs(q[1]-p.lat)>2)return null;pts.push([q[0],q[1]]);}
+    if(Math.abs(pts[0][0]-p.lon)>0.05||Math.abs(pts[0][1]-p.lat)>0.05)return null;
+    const k=Math.cos(p.lat*Math.PI/180),cum=[0];
+    for(let i=1;i<pts.length;i++)cum.push(cum[i-1]+Math.hypot((pts[i][0]-pts[i-1][0])*k,pts[i][1]-pts[i-1][1]));
+    return {mode:'path',pts,cum,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds};
+  }
   return null;
 }
 // Only same-origin data. Abort slow snapshots; one spoke must not delay another.

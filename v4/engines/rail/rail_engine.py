@@ -51,10 +51,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.3.0'
+ENGINE_VERSION = '0.4.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
-ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · stations: DfT NaPTAN (OGL) · timing points: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
+ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · railway lines: Network Rail track model (OGL) · stations: DfT NaPTAN (OGL) · junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
 
 FEED_HOST, FEED_PORT = 'publicdatafeeds.networkrail.co.uk', 61618
 FEED_TOPIC = '/topic/TRAIN_MVT_ALL_TOC'
@@ -102,8 +102,19 @@ LOCK = threading.Lock()
 STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': False, 'connectedAt': 0.0,
          'lastMessageAt': 0.0, 'lastError': '' if HAVE_LOGIN else 'no-login', 'authRejectedUntil': 0.0,
          'lastDemandAt': 0.0, 'messages': 0, 'movements': 0, 'unplaced': 0, 'bytes': 0,
-         'points': {}, 'atPoints': 0, 'restored': 0, 'dirty': False, 'savedAt': 0.0}
+         'points': {}, 'atPoints': 0, 'restored': 0, 'dirty': False, 'savedAt': 0.0,
+         'trackLoaded': False, 'trackError': ''}
 WAKE = threading.Event()
+# 0.4.0: trains glide ALONG THE TRACK. Routes between a train's last place and its next
+# reporting point come from Network Rail's own track model (data/rail-network.json.gz,
+# OGL). They are worked out in the background; until one is ready (or if none can be
+# found) the train simply waits at its last reported place: it never cuts across fields.
+TRACK_FILE = Path(os.environ.get('TPA_RAIL_TRACK_FILE') or (Path(__file__).resolve().parent / 'data' / 'rail-network.json.gz'))
+ROUTES = {}            # (lat, lon, nlat, nlon) -> [[lon, lat], ...] or False (no route)
+PENDING = []           # legs waiting to be worked out (newest last)
+PENDING_SET = set()
+ROUTE_WAKE = threading.Event()
+ROUTER = None
 
 
 def iso(ts: float) -> str:
@@ -617,8 +628,14 @@ def snapshot(view) -> dict:
                   'position': {'lon': t['lon'], 'lat': t['lat'], 'headingDeg': None},
                   'quality': 'observed' if age <= FRESH_FOR else 'stale', 'observedAt': iso(t['when'])}
         if t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated']:
-            entity['motion'] = {'mode': 'toward', 'lon': t['nlon'], 'lat': t['nlat'],
-                                'arriveAt': iso(t['when'] + t['run'] * 60), 'maxSeconds': t['run'] * 60 + 120}
+            key = leg_key(t)
+            with LOCK:
+                path = ROUTES.get(key)
+                if path is None and STATE['trackLoaded'] and key not in PENDING_SET and len(PENDING) < 5000:
+                    PENDING.append(key); PENDING_SET.add(key); ROUTE_WAKE.set()
+            if path:
+                entity['motion'] = {'mode': 'path', 'points': path,
+                                    'arriveAt': iso(t['when'] + t['run'] * 60), 'maxSeconds': t['run'] * 60 + 120}
         frame_out['entities'].append(entity)
     if not frame_out['entities'] and h == 'ready' and not notice and connected_for < 600:
         frame_out['notice'] = 'Listening · trains appear as they report at stations'
@@ -667,6 +684,8 @@ class Handler(BaseHTTPRequestHandler):
                                         'lastError': STATE['lastError'], 'trainsTracked': len(STATE['trains']),
                                         'timingPointsKnown': len(STATE['points']), 'movementsAtTimingPoints': STATE['atPoints'],
                                         'trainsRestoredAtStart': STATE['restored'], 'alwaysOn': ALWAYS_ON,
+                                        'trackMapLoaded': STATE['trackLoaded'], 'trackRoutesKnown': sum(1 for v in ROUTES.values() if v),
+                                        'trackRoutesWaiting': len(PENDING), 'trackError': STATE['trackError'],
                                         'movementsReceived': STATE['movements'], 'movementsAtUnmappedLocations': STATE['unplaced'],
                                         'feedKBThisRun': STATE['bytes'] // 1024})
         if split.path == '/snapshot':
@@ -680,6 +699,45 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def leg_key(t: dict):
+    return (round(t['lat'], 5), round(t['lon'], 5), round(t['nlat'], 5), round(t['nlon'], 5))
+
+
+def route_loop() -> None:
+    """Load the track map once, then work out queued legs, newest first."""
+    global ROUTER
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('tpa_track_router', Path(__file__).resolve().parent / 'track_router.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        router = module.TrackRouter(TRACK_FILE)
+    except Exception as exc:  # missing/damaged file: trains just don't glide
+        with LOCK:
+            STATE['trackError'] = (type(exc).__name__ + ' ' + str(exc))[:60]
+        print('Track map not available - trains will not glide:', STATE['trackError'], flush=True)
+        return
+    ROUTER = router
+    with LOCK:
+        STATE['trackLoaded'] = True
+    print(f'Track map ready: {len(router.nodes)} junctions', flush=True)
+    while True:
+        ROUTE_WAKE.wait(timeout=5)
+        ROUTE_WAKE.clear()
+        while True:
+            with LOCK:
+                if not PENDING:
+                    break
+                key = PENDING.pop()
+                PENDING_SET.discard(key)
+            path = router.route((key[1], key[0]), (key[3], key[2]))
+            with LOCK:
+                ROUTES[key] = [[x, y] for x, y in path] if path else False
+                if len(ROUTES) > 30000:
+                    for k in list(ROUTES)[:10000]:
+                        ROUTES.pop(k, None)
+
+
 def main() -> None:
     port = int(os.environ.get('TPA_RAIL_ENGINE_PORT', '8784'))
     points = load_timing_points()
@@ -688,6 +746,7 @@ def main() -> None:
     restored = restore_memory()
     threading.Thread(target=feed_loop, daemon=True).start()
     threading.Thread(target=memory_loop, daemon=True).start()
+    threading.Thread(target=route_loop, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA TRAIN ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)

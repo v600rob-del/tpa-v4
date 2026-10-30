@@ -21,3 +21,13 @@ This derived file is shared under CC BY-SA 4.0 with the attributions above.
 TO CHECK BEFORE TPA GOES PUBLIC: the YA repository's own LICENSE file is
 GPL-3.0 (for its code/workflows); the data rows carry the licences above.
 Confirm attribution wording on the public credits page at launch.
+
+rail-network.json.gz - the railway lines trains glide along (engine 0.4.0)
+=========================================================================
+Built by ../tools/build_rail_network.py from Network Rail's track model
+(NetworkLinks, released under the Environmental Information Regulations,
+Open Government Licence v3.0; copy at github.com/openraildata/network-rail-gis,
+commit of 2024-08-15). Contains public sector information licensed under the
+Open Government Licence v3.0 (Network Rail Infrastructure Limited).
+Changes made: track pieces joined at shared ends (3 m), simplified to within
+8 m of the original line, converted from British National Grid to WGS84.

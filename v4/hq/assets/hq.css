@@ -106,3 +106,7 @@ body.vector-ready .vector-map{z-index:4}
 .review-pin.estimated{border-style:dashed}
 /* 4.1.0: markers are placed with an inline transform set by HQ instead of left/top. */
 .marker-layer .vehicle-pin{left:0;top:0}
+/* 4.1.1: the details box title keeps clear of the close (×) button (owner, 30 Oct). */
+.map-selection strong{padding-right:30px;line-height:1.35}
+.map-selection button{width:34px;height:34px;line-height:30px;padding:0;top:6px;right:6px;border-radius:8px}
+.map-selection button:hover,.map-selection button:focus-visible{background:#ffffff14}

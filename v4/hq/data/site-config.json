@@ -31,7 +31,7 @@
     },
     {
       "layer": "Trains",
-      "text": "Contains information of Network Rail Infrastructure Limited licensed under the following licence: Network Rail Infrastructure Limited Data Feeds Licence. Station locations: DfT NaPTAN (Open Government Licence). Junction and timing-point locations: YA TIPLOC list (CC BY-SA 4.0 / OGL / CC BY 2.0 UK). Trains are shown at the last place they reported; between reports their position is estimated.",
+      "text": "Contains information of Network Rail Infrastructure Limited licensed under the following licence: Network Rail Infrastructure Limited Data Feeds Licence. Railway lines: Network Rail track model (OGL). Stations: DfT NaPTAN (OGL). Junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL). Between reports, train positions along the track are estimated.",
       "url": "https://www.networkrail.co.uk/who-we-are/transparency-and-ethics/transparency/open-data-feeds/network-rail-infrastructure-limited-data-feeds-licence",
       "status": "Live in test"
     },
