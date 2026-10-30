@@ -39,7 +39,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.3.0'
+ENGINE_VERSION = '0.3.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -73,7 +73,7 @@ LOCK = threading.Lock()
 STATE = {
     'vehicles': [], 'fetchedAt': 0.0, 'coverage': None, 'lastAttemptAt': 0.0,
     'lastError': '' if KEY else 'no-key', 'lastDemandAt': 0.0, 'wanted': None,
-    'downloadBytes': 0, 'downloadsThisRun': 0, 'consecutiveErrors': 0,
+    'downloadBytes': 0, 'downloadsThisRun': 0, 'consecutiveErrors': 0, 'reportAgeMedian': None, 'busesWithSpeed': 0,
 }
 WAKE = threading.Event()
 
@@ -232,8 +232,11 @@ def fetch_once(area) -> None:
             raw = download(AREA_URL + '?' + urlencode({'api_key': KEY, 'boundingBox': f'{w:.5f},{s:.5f},{e:.5f},{n:.5f}'}))
             vehicles = parse_siri(io.BytesIO(raw))
             coverage = area
+        ages = sorted(started - v['recorded'] for v in vehicles if v['recorded'] <= started)
         with LOCK:
             add_motion(vehicles, STATE['vehicles'])
+            STATE['reportAgeMedian'] = round(ages[len(ages) // 2]) if ages else None
+            STATE['busesWithSpeed'] = sum(1 for v in vehicles if v.get('speed'))
             STATE.update(vehicles=vehicles, fetchedAt=started, coverage=coverage, lastError='',
                          downloadBytes=len(raw), consecutiveErrors=0)
             STATE['downloadsThisRun'] += 1
@@ -351,8 +354,10 @@ def snapshot(view) -> dict:
             'position': {'lon': v['lon'], 'lat': v['lat'], 'headingDeg': v['bearing']},
             'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(v['recorded'])}
         if v.get('speed') and v['bearing'] is not None:
-            # Roads bend, so a bus is only carried forward for 30 s after its real report.
-            entity['motion'] = {'mode': 'heading', 'speedMps': v['speed'], 'maxSeconds': 30}
+            # 0.3.1: reports reach us 20-40 s late, so a 30 s limit was used up before most buses
+            # were even drawn. Now carried forward up to 90 s, easing to a stop (roads bend), and
+            # corrected by a short slide when the next real report arrives.
+            entity['motion'] = {'mode': 'heading', 'speedMps': v['speed'], 'maxSeconds': 90, 'slowToStop': True}
         frame['entities'].append(entity)
     if not frame['entities'] and MODE == 'area' and not covers(coverage, view):
         frame['notice'] = 'Loading buses for this area…'
@@ -399,6 +404,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'keyConfigured': bool(KEY), 'lastError': STATE['lastError'],
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'busesInLastDownload': len(STATE['vehicles']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
+                                        'reportAgeMedianSeconds': STATE['reportAgeMedian'], 'busesWithSpeed': STATE['busesWithSpeed'],
                                         'bodsDownloadsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))

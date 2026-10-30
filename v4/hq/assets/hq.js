@@ -139,7 +139,7 @@ function estimate(e,now){
   if(!m||!(t>0))return {lon:p.lon,lat:p.lat,est:false};
   t=Math.min(t,m.maxSeconds);
   if(m.mode==='heading'){
-    const d=m.speedMps*t,h=p.headingDeg*Math.PI/180,R=6371000;
+    const d=m.slow?m.speedMps*(t-t*t/(2*m.maxSeconds)):m.speedMps*t,h=p.headingDeg*Math.PI/180,R=6371000;
     return {lon:p.lon+d*Math.sin(h)/(R*Math.cos(p.lat*Math.PI/180))*180/Math.PI,lat:p.lat+d*Math.cos(h)/R*180/Math.PI,est:t>=1};
   }
   const total=(m.arriveAtMs-t0)/1000,f=total>0?Math.min(1,t/total):1;
@@ -280,7 +280,8 @@ return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now
 function checkMotion(m,p){
   if(!m||typeof m!=='object'||!p)return null;
   if(m.mode==='heading'&&validNum(m.speedMps)&&m.speedMps>0&&m.speedMps<=350&&validNum(m.maxSeconds)&&m.maxSeconds>0&&m.maxSeconds<=300&&p.headingDeg!=null)
-    return {mode:'heading',speedMps:m.speedMps,maxSeconds:m.maxSeconds};
+    // 4.1.3 optional slowToStop: ease from the reported speed to a standstill at maxSeconds.
+    return {mode:'heading',speedMps:m.speedMps,maxSeconds:m.maxSeconds,slow:m.slowToStop===true};
   if(m.mode==='toward'&&validNum(m.lon)&&validNum(m.lat)&&Math.abs(m.lon)<=180&&Math.abs(m.lat)<=90&&typeof m.arriveAt==='string'&&Number.isFinite(Date.parse(m.arriveAt))&&validNum(m.maxSeconds)&&m.maxSeconds>0&&m.maxSeconds<=7800&&Math.abs(m.lon-p.lon)<1.5&&Math.abs(m.lat-p.lat)<1)
     return {mode:'toward',lon:m.lon,lat:m.lat,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds};
   // 4.1.1 "path": follow these points (e.g. along the railway) and arrive by arriveAt.
