@@ -35,6 +35,7 @@ import json
 import math
 import os
 import re
+import signal
 import ssl
 import subprocess
 import sys
@@ -50,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.4.0'
+ENGINE_VERSION = '0.4.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -76,6 +77,8 @@ ROAD_MODE = os.environ.get('TPA_BUS_ROAD_MAP', 'off').strip().lower()      # 'do
 DATA_DIR = Path(os.environ.get('TPA_BUS_DATA_DIR', '') or Path(__file__).resolve().parent / 'data')
 ROAD_CHECK_DAYS = 7          # ask OS whether a new edition exists (a tiny request) once a week
 ROAD_RETRY_HOURS = 6
+ROAD_VIEW_SPAN = 0.12        # follow roads only when zoomed in to town/city level (view under ~13 km tall);
+                             # further out a bus is a dot and the straight glide looks the same (0.4.1)
 INLINE_BUDGET = 0.25         # seconds a snapshot may spend working out roads; the rest wait for the helper thread
 
 KEY = (os.environ.get('TPA_BODS_API_KEY') or '').strip()
@@ -105,6 +108,11 @@ PATHS: dict = {}             # bus key -> (report time, motion or None)
 PENDING: deque = deque()
 PENDING_SET: set = set()
 PATH_WAKE = threading.Event()
+# 0.4.1 (server log 30 Oct: downloads took 5 s normally, 17-42 s and timed out while road work ran):
+# the BODS download always comes first. Road work waits while it runs, and a map rebuild is paused.
+FETCHING = threading.Event()
+BUILDER = {'proc': None}
+TIMING = {'fetch': None, 'pathMs': None}
 
 
 def iso(ts: float) -> str:
@@ -244,6 +252,30 @@ def add_motion(new: list, old: list) -> None:
 
 
 def fetch_once(area) -> None:
+    """One BODS download, with everything else in this engine paused so it gets the processor."""
+    FETCHING.set()
+    proc = BUILDER['proc']
+    paused = False
+    if proc is not None and proc.poll() is None:
+        try:
+            os.kill(proc.pid, signal.SIGSTOP); paused = True
+        except OSError:
+            pass
+    started = time.time()
+    try:
+        _fetch_once(area)
+    finally:
+        if paused:
+            try:
+                os.kill(proc.pid, signal.SIGCONT)
+            except OSError:
+                pass
+        FETCHING.clear()
+        PATH_WAKE.set()
+        TIMING['fetch'] = round(time.time() - started, 1)
+
+
+def _fetch_once(area) -> None:
     """One BODS download. Errors keep the previous snapshot (shown with its true age)."""
     started = time.time()
     try:
@@ -379,6 +411,7 @@ def snapshot(view) -> dict:
         inside.append(((v['lat'] - clat) ** 2 + (v['lon'] - clon) ** 2, v, age))
     inside.sort(key=lambda t: t[0])  # nearest the middle of the screen first
     deadline = time.monotonic() + INLINE_BUDGET
+    roads = north - south <= ROAD_VIEW_SPAN
     for _, v, age in inside[:MAX_PER_VIEW]:
         route = v['route'] or 'Bus'
         label = (f'Bus {route}' if v['route'] else 'Bus') + (f' to {v["destination"]}' if v['destination'] else '')
@@ -391,7 +424,7 @@ def snapshot(view) -> dict:
             # 0.3.1: reports reach us 20-40 s late, so buses are carried forward up to 90 s, easing
             # to a stop, and corrected by a short slide when the next real report arrives.
             # 0.4.0: along the real road ahead when the road map knows it.
-            entity['motion'] = motion_for(v, deadline)
+            entity['motion'] = motion_for(v, deadline, roads)
         frame['entities'].append(entity)
     if not frame['entities'] and MODE == 'area' and not covers(coverage, view):
         frame['notice'] = 'Loading buses for this area…'
@@ -431,6 +464,7 @@ def refresh_road_map() -> bool:
         env['TPA_BUS_ROADS_TEST_API'] = _test_roads
     ok = True
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env) as proc:
+        BUILDER['proc'] = proc
         for line in proc.stdout:
             if not line.startswith('ROADMAP '):
                 continue
@@ -450,6 +484,7 @@ def refresh_road_map() -> bool:
                     STATE['roadMapDetail'] = (st + ' ' + detail).strip() if ROADS['map'] else detail
             if st in ('downloading', 'building') and info.get('percent', 0) in (0, 25, 50, 75) or st in ('built', 'error'):
                 print('Road map:', line[8:].strip(), flush=True)
+    BUILDER['proc'] = None
     return ok and proc.returncode == 0
 
 
@@ -484,12 +519,15 @@ def road_motion(v: dict):
         return None
     ease = GLIDE_SECONDS - STEADY_SECONDS
     metres = v['speed'] * (STEADY_SECONDS + ease / 2)
+    t0 = time.perf_counter()
     try:
         pts = rm.ahead(v['lon'], v['lat'], v['bearing'], metres)
     except Exception as exc:   # one odd bus must never break the layer
         with LOCK:
             STATE['roadMapError'] = ('path: ' + type(exc).__name__)[:100]
         return None
+    ms = (time.perf_counter() - t0) * 1000
+    TIMING['pathMs'] = round(ms if TIMING['pathMs'] is None else TIMING['pathMs'] * 0.98 + ms * 0.02, 2)
     if not pts or len(pts) < 2:
         return None
     return {'mode': 'path', 'points': [[round(a, 6), round(b, 6)] for a, b in pts],
@@ -502,6 +540,8 @@ def path_worker() -> None:
         PATH_WAKE.wait(timeout=30)
         PATH_WAKE.clear()
         while PENDING:
+            while FETCHING.is_set():          # the bus download comes first
+                time.sleep(0.2)
             with LOCK:
                 if not PENDING:
                     break
@@ -512,16 +552,16 @@ def path_worker() -> None:
                 PATHS[v['key']] = (v['recorded'], m)
 
 
-def motion_for(v: dict, deadline: float):
+def motion_for(v: dict, deadline: float, roads: bool = True):
     """The best movement for this bus: its road ahead if known (or quick to work out), else straight on."""
     heading = {'mode': 'heading', 'speedMps': v['speed'], 'maxSeconds': GLIDE_SECONDS, 'slowToStop': True}
-    if ROADS['map'] is None:
+    if ROADS['map'] is None or not roads:
         return heading
     with LOCK:
         known = PATHS.get(v['key'])
     if known and known[0] == v['recorded']:
         return known[1] or heading
-    if time.monotonic() < deadline:
+    if time.monotonic() < deadline and not FETCHING.is_set():
         m = road_motion(v)
         with LOCK:
             PATHS[v['key']] = (v['recorded'], m)
@@ -577,7 +617,8 @@ class Handler(BaseHTTPRequestHandler):
                                         'roadMap': STATE['roadMap'], 'roadMapDetail': STATE['roadMapDetail'],
                                         'roadMapError': STATE['roadMapError'],
                                         'roadPathsKnown': sum(1 for x in PATHS.values() if x[1]),
-                                        'roadTilesLoaded': len(ROADS['map'].tiles) if ROADS['map'] else 0})
+                                        'roadTilesLoaded': len(ROADS['map'].tiles) if ROADS['map'] else 0,
+                                        'lastFetchSeconds': TIMING['fetch'], 'roadPathMs': TIMING['pathMs']})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
         return self.reply(404, {'error': 'not found'})

@@ -433,11 +433,21 @@ def _diff(a, b):
     return 360 - d if d > 180 else d
 
 
+CELL_LON, CELL_LAT = TILE_LON / 8, TILE_LAT / 8    # ~170 m street-index cells (8 x 8 per tile)
+
+
+def cells_of(x0, y0, x1, y1):
+    """Street-index cells overlapping a box given in micro-degrees."""
+    cx0, cx1 = math.floor(x0 * 1e-6 / CELL_LON), math.floor(x1 * 1e-6 / CELL_LON)
+    cy0, cy1 = math.floor(y0 * 1e-6 / CELL_LAT), math.floor(y1 * 1e-6 / CELL_LAT)
+    return [(cx, cy) for cx in range(cx0, cx1 + 1) for cy in range(cy0, cy1 + 1)]
+
+
 class Tile:
-    __slots__ = ('links', 'nodes', 'size')
+    __slots__ = ('links', 'nodes', 'size', 'cells')
 
     def __init__(self, blobs):
-        self.links, self.nodes, self.size = {}, {}, 0
+        self.links, self.nodes, self.size, self.cells = {}, {}, 0, {}
         for blob in blobs:
             raw = zlib.decompress(blob)
             self.size += len(raw)
@@ -451,13 +461,16 @@ class Tile:
                     continue
                 xs, ys = pts[0::2], pts[1::2]
                 # compact: one small array per road piece (about 4x smaller than Python tuples)
-                self.links[lid] = (name, cls, pts, array('i', (min(xs), min(ys), max(xs), max(ys))))
+                bb = array('i', (min(xs), min(ys), max(xs), max(ys)))
+                self.links[lid] = (name, cls, pts, bb)
+                for c in cells_of(*bb):     # 0.4.1 street index: only nearby roads are checked
+                    self.cells.setdefault(c, []).append(lid)
                 self.nodes.setdefault((pts[0], pts[1]), []).append((lid, True))
                 self.nodes.setdefault((pts[-2], pts[-1]), []).append((lid, False))
 
 
 class RoadMap:
-    def __init__(self, path, max_tiles=150):
+    def __init__(self, path, max_tiles=250):
         self.path, self.max_tiles = path, max_tiles
         self.db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, check_same_thread=False)
         self.lock = threading.Lock()
@@ -493,12 +506,23 @@ class RoadMap:
         ky = M_PER_DEG * 1e-6
         pad_x, pad_y = SNAP_M / kx, SNAP_M / ky
         seen, best = set(), None
-        for dx in (-1, 0, 1):
-            for dy in (-1, 0, 1):
-                for lid, (name, cls, pts, bb) in self.tile(tx + dx, ty + dy).links.items():
-                    if lid in seen or xu < bb[0] - pad_x or xu > bb[2] + pad_x or yu < bb[1] - pad_y or yu > bb[3] + pad_y:
+        near = cells_of(xu - pad_x, yu - pad_y, xu + pad_x, yu + pad_y)
+        # A road piece within SNAP_M has an end within MAX_PIECE_M + SNAP_M, so only tiles that close
+        # can hold it: usually just this tile, at most four (0.4.1; was always nine).
+        rx, ry = (MAX_PIECE_M + SNAP_M) / kx, (MAX_PIECE_M + SNAP_M) / ky
+        x0, y0 = tx * TILE_LON * 1e6, ty * TILE_LAT * 1e6
+        xs = [0] + ([-1] if xu - x0 < rx else []) + ([1] if x0 + TILE_LON * 1e6 - xu < rx else [])
+        ys = [0] + ([-1] if yu - y0 < ry else []) + ([1] if y0 + TILE_LAT * 1e6 - yu < ry else [])
+        for dx in xs:
+            for dy in ys:
+                t = self.tile(tx + dx, ty + dy)
+                for lid in (lid for c in near for lid in t.cells.get(c, ())):
+                    if lid in seen:
                         continue
                     seen.add(lid)
+                    name, cls, pts, bb = t.links[lid]
+                    if xu < bb[0] - pad_x or xu > bb[2] + pad_x or yu < bb[1] - pad_y or yu > bb[3] + pad_y:
+                        continue
                     for i in range(0, len(pts) - 2, 2):
                         ax, ay = (pts[i] - xu) * kx, (pts[i+1] - yu) * ky
                         bx, by = (pts[i+2] - xu) * kx, (pts[i+3] - yu) * ky

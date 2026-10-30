@@ -4,11 +4,16 @@ set -uo pipefail
 # Needs admin rights to read the site settings; ask for them by itself.
 if [[ $EUID -ne 0 ]]; then exec sudo -n "$0" "$@"; fi
 ok=1
-printf '%-32s %s\n' "Part" "State"
+printf '%-32s %-9s %s\n' "Part" "State" "Memory"
 for s in tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web; do
     st="$(systemctl is-active "$s" 2>/dev/null || true)"
     [[ "$st" == active ]] || ok=0
-    printf '%-32s %s\n' "$s" "$st"
+    mem="$(systemctl show -p MemoryCurrent --value "$s" 2>/dev/null)"
+    max="$(systemctl show -p MemoryMax --value "$s" 2>/dev/null)"
+    if [[ "$mem" =~ ^[0-9]+$ ]]; then
+        if [[ "$max" =~ ^[0-9]+$ ]]; then mem="$((mem / 1048576)) MB of $((max / 1048576)) MB"; else mem="$((mem / 1048576)) MB"; fi
+    else mem=""; fi
+    printf '%-32s %-9s %s\n' "$s" "$st" "$mem"
 done
 echo
 summary() {  # name port
@@ -20,7 +25,7 @@ name = sys.argv[1]
 d = json.load(sys.stdin)
 keep = ("engineVersion", "health", "notice", "loginConfigured", "keyConfigured", "connected", "alwaysOn",
         "trainsTracked", "stationsKnown", "trackMapLoaded", "busesInLastDownload", "busesWithSpeed",
-        "reportAgeMedianSeconds", "roadMap", "roadMapDetail", "roadPathsKnown", "mode", "lastError",
+        "reportAgeMedianSeconds", "lastFetchSeconds", "roadMap", "roadMapDetail", "roadPathsKnown", "roadPathMs", "mode", "lastError",
         "referenceError", "trackError", "roadMapError")
 parts = [f"{k}={d[k]}" for k in keep if k in d and d[k] not in ("", None)]
 print(f"{name:8s} " + ", ".join(parts))
