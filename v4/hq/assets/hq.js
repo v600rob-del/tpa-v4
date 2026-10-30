@@ -106,7 +106,7 @@ function selectEntity(e){
 // and a fresh report is reached by a short slide, never a jump. Any position that is not
 // exactly the last real report is marked and described as ESTIMATED.
 const REDUCED=!!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches);
-const BLEND_MS=1200,pins=new Map(),shown=new Map(),blends=new Map();
+const BLEND_MS=2000,pins=new Map(),shown=new Map(),blends=new Map();
 // 4.1.2 fluid movement: positions are worked out about once a second and the browser
 // animates each marker smoothly between them (a linear CSS transition on its transform,
 // drawn by the graphics side at full frame rate, which costs almost nothing). While the
@@ -123,9 +123,10 @@ let glideBudget=GLIDE_MAX,frameAvg=16,lastFrame=0,glideCount=0;
 function watchFrames(ts){
   requestAnimationFrame(watchFrames);
   if(lastFrame&&glideCount&&document.visibilityState==='visible'&&!mapMoving){
-    const dt=Math.min(250,ts-lastFrame);frameAvg=frameAvg*0.95+dt*0.05;
-    if(frameAvg>30&&glideBudget>GLIDE_MIN){glideBudget=Math.max(GLIDE_MIN,Math.floor(glideBudget*0.7));frameAvg=20;}
-    else if(frameAvg<18&&glideBudget<GLIDE_MAX&&glideCount>=glideBudget){glideBudget=Math.min(GLIDE_MAX,glideBudget+5);}
+    // 4.1.5: only sustained slowness counts (a single busy moment, e.g. fresh data arriving, doesn't).
+    const dt=Math.min(100,ts-lastFrame);frameAvg=frameAvg*0.98+dt*0.02;
+    if(frameAvg>34&&glideBudget>GLIDE_MIN){glideBudget=Math.max(GLIDE_MIN,Math.floor(glideBudget*0.85));frameAvg=22;}
+    else if(frameAvg<20&&glideBudget<GLIDE_MAX&&glideCount>=glideBudget){glideBudget=Math.min(GLIDE_MAX,glideBudget+10);}
   }
   lastFrame=ts;
 }
@@ -139,7 +140,9 @@ function estimate(e,now){
   if(!m||!(t>0))return {lon:p.lon,lat:p.lat,est:false};
   t=Math.min(t,m.maxSeconds);
   if(m.mode==='heading'){
-    const d=m.slow?m.speedMps*(t-t*t/(2*m.maxSeconds)):m.speedMps*t,h=p.headingDeg*Math.PI/180,R=6371000;
+    // slowToStop (4.1.5): steady speed for the first two-thirds, then ease to a stop over the last third.
+    const T0=m.maxSeconds*2/3,E=m.maxSeconds-T0,tau=Math.max(0,t-T0);
+    const d=m.slow?m.speedMps*(Math.min(t,T0)+tau-tau*tau/(2*E)):m.speedMps*t,h=p.headingDeg*Math.PI/180,R=6371000;
     return {lon:p.lon+d*Math.sin(h)/(R*Math.cos(p.lat*Math.PI/180))*180/Math.PI,lat:p.lat+d*Math.cos(h)/R*180/Math.PI,est:t>=1};
   }
   const total=(m.arriveAtMs-t0)/1000,f=total>0?Math.min(1,t/total):1;
@@ -178,7 +181,12 @@ function markers(){
   // Which vehicles may glide this second: the nearest to the middle of the screen, up to the budget.
   {const cx=d.w/2,cy=d.h/2,list=[];
    for(const [k,p] of pins)if(p.tf&&p.e&&state.live[p.e.component]&&(p.e.motion||blends.has(k))){const m=p.tf.match(/translate\(([-0-9.]+)px,([-0-9.]+)px\)/);if(m)list.push([(m[1]-cx)**2+(m[2]-cy)**2,k]);}
-   list.sort((a,b)=>a[0]-b[0]);glideOK=new Set(list.slice(0,glideBudget).map(x=>x[1]));glideCount=glideOK.size;}
+   // 4.1.5: a vehicle that is already gliding keeps gliding (no "taking turns"); free places go
+   // to the vehicles nearest the middle of the screen.
+   list.sort((a,b)=>a[0]-b[0]);
+   const next=new Set();for(const [,k] of list)if(glideOK.has(k)&&next.size<glideBudget)next.add(k);
+   for(const [,k] of list){if(next.size>=glideBudget)break;next.add(k);}
+   glideOK=next;glideCount=glideOK.size;}
   for(const e of listEntities()){
     if(!e.position)continue;
     const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;
@@ -222,12 +230,17 @@ function updateSelectedInfo(now){
 // Up to ten updates a second while something on screen is moving and the page is visible.
 // The pace adapts to the device: if an update takes longer (busy map, slow phone), updates
 // come less often (down to about three a second) so the page always stays responsive.
-let lastTick=0,tickCost=0;
+let lastTick=0,tickCost=0,glideMs=GLIDE_MS;
 function motionLoop(ts){
   requestAnimationFrame(motionLoop);
   if(document.visibilityState!=='visible'||!moving&&!blends.size)return;
-  const gap=REDUCED?2000:Math.max(GLIDE_MS,tickCost*12);
+  // (TPA_HQ_TEST_MIN_GAP: tests only, to imitate a slow device.)
+  const gap=REDUCED?2000:Math.max(GLIDE_MS,tickCost*12,Number(window.TPA_HQ_TEST_MIN_GAP)||0);
   if(ts-lastTick<gap)return;
+  // 4.1.5: each glide lasts exactly as long as the real gap between updates, so a busy
+  // device never shows "move, pause, move" (the animation can't finish early and wait).
+  const real=lastTick?Math.min(4000,ts-lastTick):GLIDE_MS;
+  if(Math.abs(real-glideMs)>glideMs*0.1){glideMs=Math.round(real);markerLayer.style.setProperty('--glide',glideMs+'ms');}
   lastTick=ts;const t0=performance.now();markers();tickCost=tickCost*0.7+(performance.now()-t0)*0.3;
 }
 requestAnimationFrame(motionLoop);

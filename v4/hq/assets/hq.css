@@ -112,5 +112,5 @@ body.vector-ready .vector-map{z-index:4}
 .map-selection button{width:34px;height:34px;line-height:30px;padding:0;top:6px;right:6px;border-radius:8px}
 .map-selection button:hover,.map-selection button:focus-visible{background:#ffffff14}
 /* 4.1.2: fluid movement between the once-a-second position updates. */
-.marker-layer .vehicle-pin.glide{transition:transform 1s linear;will-change:transform}
+.marker-layer .vehicle-pin.glide{transition:transform var(--glide,1000ms) linear;will-change:transform}
 @media(prefers-reduced-motion:reduce){.marker-layer .vehicle-pin.glide{transition:none}}
