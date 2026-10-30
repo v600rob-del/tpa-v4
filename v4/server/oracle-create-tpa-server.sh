@@ -171,8 +171,18 @@ for i in $(seq 1 90); do
     printf '.'; sleep 10
 done
 
+# Where does the site name point now? Never fails: "" means "not yet".
+# Asks Cloudflare's public resolver directly too, so a slow local cache can't hold us up.
+lookup() {
+    local a
+    a="$(getent ahostsv4 "$HOST" 2>/dev/null | awk 'NR==1{print $1}' || true)"
+    if [[ "$a" != "$IP" ]] && command -v dig >/dev/null; then
+        a="$(dig +short +time=3 +tries=1 A "$HOST" @1.1.1.1 2>/dev/null | grep -E '^[0-9.]+$' | head -n1 || true)"
+    fi
+    printf '%s' "$a"
+}
 say "6/7  Point the site name at the server (one-time, in Cloudflare)"
-current="$(getent ahostsv4 "$HOST" 2>/dev/null | awk 'NR==1{print $1}')"
+current="$(lookup)"
 if [[ "$current" != "$IP" ]]; then
     cat <<EOF
   In Cloudflare (dash.cloudflare.com) > tpalive.co.uk > DNS > Records > Add record:
@@ -181,10 +191,10 @@ if [[ "$current" != "$IP" ]]; then
   Then click Save. This window checks every 15 seconds and carries on by itself.
 EOF
     for i in $(seq 1 120); do
-        current="$(getent ahostsv4 "$HOST" 2>/dev/null | awk 'NR==1{print $1}')"
+        current="$(lookup)"
         [[ "$current" == "$IP" ]] && break
         (( i == 120 )) && stop "$HOST still does not point at $IP after 30 minutes. Run this script again once it does."
-        printf '.'; sleep 15
+        printf '.'; sleep "${TPA_DNS_WAIT:-15}"
     done
 fi
 ok "$HOST points at $IP"
