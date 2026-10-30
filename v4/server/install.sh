@@ -55,6 +55,7 @@ ln -sfn "$REL" /opt/tpa/current.new && mv -T /opt/tpa/current.new /opt/tpa/curre
 install -d -m 0755 /usr/local/sbin /usr/local/bin
 install -m 0755 "$REL/v4/server/tpa-setup" /usr/local/sbin/tpa-setup
 install -m 0755 "$REL/v4/server/tpa-status" /usr/local/sbin/tpa-status
+install -m 0755 "$REL/v4/server/tpa-update" /usr/local/sbin/tpa-update
 
 # ---- users, data folders, settings folder ------------------------------------------
 for e in "${ENGINES[@]}"; do
@@ -182,4 +183,4 @@ done
 if [[ -d /etc/iptables ]]; then iptables-save > /etc/iptables/rules.v4; fi
 
 echo "$COMMIT" > /var/lib/tpa/installed
-say "done: code $COMMIT installed. Next: sudo tpa-setup"
+if [[ -f /etc/tpa/web.env ]]; then say "done: code $COMMIT installed (keys and settings kept)"; else say "done: code $COMMIT installed. Next: sudo tpa-setup"; fi

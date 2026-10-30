@@ -1,0 +1,16 @@
+#!/bin/bash
+# sudo tpa-update <commit>  - switch the server to another version of the public TPA code.
+# The previous version stays on disk, so going back is the same command with the old commit.
+# Keys, passwords and saved data are kept. Shows tpa-status at the end.
+set -euo pipefail
+[[ $EUID -eq 0 ]] || exec sudo -n "$0" "$@"
+COMMIT="${1:-}"
+[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "usage: sudo tpa-update <40-character commit>" >&2; exit 2; }
+SRC=/opt/tpa/src
+echo "Current version: $(cat /var/lib/tpa/installed 2>/dev/null || echo unknown)"
+git -C "$SRC" fetch --quiet origin
+git -C "$SRC" checkout --quiet --detach "$COMMIT"
+[[ "$(git -C "$SRC" rev-parse HEAD)" == "$COMMIT" ]] || { echo "Could not switch to $COMMIT" >&2; exit 1; }
+bash "$SRC/v4/server/install.sh" "$COMMIT"
+sleep 5
+/usr/local/sbin/tpa-status || true

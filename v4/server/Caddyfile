@@ -4,6 +4,11 @@
 # HQ itself only listens on 127.0.0.1:8778; this is the only way in from the internet.
 {
 	admin off
+	# HTTP/1.1 and HTTP/2 only. HTTP/3 needs UDP 443, which Oracle's firewall does not
+	# let in; offering it made Chrome hang on a blank page (30 Oct 2026).
+	servers {
+		protocols h1 h2
+	}
 }
 
 {$TPA_HOST} {

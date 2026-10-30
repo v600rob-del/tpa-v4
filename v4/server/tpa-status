@@ -1,6 +1,8 @@
 #!/bin/bash
 # tpa-status - plain-English health check. Shows no keys or passwords.
 set -uo pipefail
+# Needs admin rights to read the site settings; ask for them by itself.
+if [[ $EUID -ne 0 ]]; then exec sudo -n "$0" "$@"; fi
 ok=1
 printf '%-32s %s\n' "Part" "State"
 for s in tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web; do
