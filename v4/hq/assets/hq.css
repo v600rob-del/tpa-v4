@@ -95,3 +95,8 @@ body.vector-ready .vector-map{z-index:4}
 /* 4.0.10: live engine details */
 .map-selection .live-source{color:#5a7d8c;font-size:11px}
 .leaflet-pane.leaflet-tpa-socket-overlays-pane img{image-rendering:auto}
+
+/* 4.0.13: phones. The open layers menu covered the LAYERS button (owner, 30 Oct), so the
+   menu gets its own CLOSE button, and tapping the map beside it also closes it. */
+.sidebar-close{display:none}.sidebar-backdrop{display:none}
+@media(max-width:760px){.sidebar{width:min(337px,86vw)}.sidebar-close{display:block;position:sticky;top:0;flex:0 0 auto;margin:0;width:100%;z-index:3;min-height:46px;border-radius:0;border-width:0 0 1px;text-align:right;padding:12px 16px;background:#0b1726;box-shadow:0 4px 14px #0006}.sidebar.open+.sidebar-backdrop{display:block;position:fixed;inset:0;z-index:990;background:#02060c66}}

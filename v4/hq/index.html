@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#080e1a"/>
   <meta name="description" content="TPA v4 HQ map development preview — five empty transport connections"/>
   <meta name="referrer" content="no-referrer"/>
-  <title>TPA HQ 4.0.12 — test version</title>
+  <title>TPA HQ 4.0.13 — test version</title>
   <link rel="stylesheet" href="/assets/vendor/leaflet.css"/>
   <link id="tpa-maplibre-css" rel="stylesheet" media="print" href="/assets/vendor/maplibre-gl.css"/>
   <link rel="stylesheet" href="/assets/hq.css"/>
@@ -20,6 +20,7 @@
 <body>
 <div class="app">
   <aside class="sidebar" id="sidebar">
+    <button type="button" class="control-button sidebar-close" id="sidebar-close" aria-label="Close the layers menu">✕ CLOSE</button>
     <div class="brand">
       <div class="brand-mark" aria-hidden="true"><span class="rings"></span><span class="brand-plane">✈</span></div>
       <div><p class="eyebrow">TRAINS · PLANES · AUTOMOBILES · (AND BOATS)</p><h1>TPA <em>HQ</em></h1><p class="subheading">Your world, moving.</p><p class="copyright-top">© 2026 Rob Burnett</p></div>
@@ -49,6 +50,7 @@
     </section>
     <footer class="sidebar-footer"><span class="little-dot"></span> BEVERLEY · EAST YORKSHIRE <span class="separator">/</span> ICON ARTWORK REVIEW <span class="separator">/</span> MOCK ONLY</footer>
   </aside>
+  <div class="sidebar-backdrop" id="sidebar-backdrop" aria-hidden="true"></div>
   <main class="map-section" aria-label="TPA HQ map area">
     <div class="map-slot" id="map" role="application" aria-label="Interactive geographic UK basemap">
       <div id="vector-map" class="vector-map" aria-label="OpenFreeMap interactive vector streets"></div>
@@ -58,7 +60,7 @@
     </div>
     <div class="topbar">
       <div class="crumb"><span class="hq-label">HQ</span><span class="dot-green"></span><span>STANDARD PAGE</span><span class="chevron">›</span><strong id="map-place">BEVERLEY, EAST YORKSHIRE</strong></div>
-      <div class="top-actions"><button type="button" class="control-button mobile-menu" id="menu-button">☰ <span>LAYERS</span></button><button type="button" class="control-button home-button" id="home-button">⌂ <span>HOME: BEVERLEY</span></button></div>
+      <div class="top-actions"><button type="button" class="control-button mobile-menu" id="menu-button" aria-controls="sidebar" aria-expanded="false">☰ <span>LAYERS</span></button><button type="button" class="control-button home-button" id="home-button">⌂ <span>HOME: BEVERLEY</span></button></div>
     </div>
     <div class="mock-banner" role="status">MOCK ICON REVIEW · FICTIONAL STATIC POSITIONS · NO LIVE DATA</div>
     <div class="map-chips" aria-label="Component statuses">
@@ -69,7 +71,7 @@
       <div class="glass-chip" id="road-chip"><span class="chip-dot teal"></span>ROAD: <strong>EMPTY</strong></div>
     </div>
     <div class="map-controls" aria-label="Map controls"><button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button></div>
-    <div class="map-bottom"><div class="preview-stamp">HQ 4.0.12 · TEST VERSION</div><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
+    <div class="map-bottom"><div class="preview-stamp">HQ 4.0.13 · TEST VERSION</div><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </main>
 </div>
