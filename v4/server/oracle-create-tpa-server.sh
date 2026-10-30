@@ -31,6 +31,18 @@ say()  { printf '\n\033[1;36m%s\033[0m\n' "$*"; }
 ok()   { printf '  \033[32mOK\033[0m  %s\n' "$*"; }
 stop() { printf '\n\033[1;31mSTOPPED - nothing was changed by this step.\033[0m\n%s\nPlease copy this message to Claude.\n' "$*" >&2; exit 1; }
 js()   { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
+ERR="$(mktemp)"; trap 'rm -f "$ERR"' EXIT
+# Run one oci command and print its JSON. Oracle's tool prints NOTHING when a list is
+# empty, so that becomes an empty list. Any real error stops the script (a money check
+# must never be skipped because a command failed).
+ocij() {
+    local out
+    if ! out="$(oci "$@" 2>"$ERR")"; then
+        stop "An Oracle command failed (oci $1 $2 $3): $(tr -s '\n' ' ' < "$ERR" | cut -c1-400)"
+    fi
+    [[ -n "${out//[[:space:]]/}" ]] || out='{"data":[]}'
+    printf '%s\n' "$out"
+}
 
 [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || stop "Usage: bash oracle-create-tpa-server.sh <40-character code version> [site-name]"
 [[ "$HOST" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] || stop "Not a valid site name: $HOST"
@@ -39,12 +51,12 @@ T="${OCI_TENANCY:-}"
 [[ "$T" == ocid1.tenancy.* ]] || stop "Cannot find your Oracle account id (OCI_TENANCY). Are you in Oracle Cloud Shell?"
 
 say "1/7  Checking your Oracle account (read-only)"
-HOME_REGION="$(oci iam region-subscription list --tenancy-id "$T" | js 'print([r["region-name"] for r in d["data"] if r.get("is-home-region")][0])')"
+HOME_REGION="$(ocij iam region-subscription list --tenancy-id "$T" | js 'print([r["region-name"] for r in d["data"] if r.get("is-home-region")][0])')"
 REGION="${OCI_REGION:-$HOME_REGION}"
 [[ "$REGION" == "$HOME_REGION" ]] || stop "Cloud Shell is set to $REGION but your home region is $HOME_REGION. Always Free servers must be in the home region. Switch region (top right) to $HOME_REGION and run again."
 ok "home region $HOME_REGION"
 
-INSTANCES="$(oci compute instance list -c "$T" --all 2>/dev/null || echo '{"data":[]}')"
+INSTANCES="$(ocij compute instance list -c "$T" --all)"
 echo "$INSTANCES" | js '
 for i in d.get("data", []):
     if i["lifecycle-state"] != "TERMINATED":
@@ -59,21 +71,21 @@ else
     (( MICROS < 2 )) || stop "You already have $MICROS Always Free micro servers (the free limit is 2). Not creating another."
     ok "Always Free micro servers in use: $MICROS of 2"
 
-    ADS="$(oci iam availability-domain list -c "$T" | js 'print(" ".join(a["name"] for a in d["data"]))')"
+    ADS="$(ocij iam availability-domain list -c "$T" | js 'print(" ".join(a["name"] for a in d["data"]))')"
     USED=0
     for ad in $ADS; do
-        b="$(oci bv boot-volume list -c "$T" --availability-domain "$ad" --all 2>/dev/null | js 'print(sum(v["size-in-gbs"] for v in d.get("data", []) if v["lifecycle-state"] not in ("TERMINATED","TERMINATING")))' || echo 0)"
+        b="$(ocij bv boot-volume list -c "$T" --availability-domain "$ad" --all | js 'print(sum(v["size-in-gbs"] for v in d.get("data", []) if v["lifecycle-state"] not in ("TERMINATED","TERMINATING")))')"
         USED=$(( USED + b ))
     done
-    v="$(oci bv volume list -c "$T" --all 2>/dev/null | js 'print(sum(v["size-in-gbs"] for v in d.get("data", []) if v["lifecycle-state"] not in ("TERMINATED","TERMINATING")))' || echo 0)"
+    v="$(ocij bv volume list -c "$T" --all | js 'print(sum(v["size-in-gbs"] for v in d.get("data", []) if v["lifecycle-state"] not in ("TERMINATED","TERMINATING")))')"
     USED=$(( USED + v ))
     (( USED + DISK_GB <= FREE_STORAGE_GB )) || stop "Disks already use ${USED} GB; adding ${DISK_GB} GB would go over the free ${FREE_STORAGE_GB} GB."
     ok "disk space: ${USED} GB used, ${DISK_GB} GB more stays within the free ${FREE_STORAGE_GB} GB"
 
     say "2/7  Finding the free network ($VCN_NAME) and a place with free capacity"
-    VCN="$(oci network vcn list -c "$T" --all | js "print(next((v['id'] for v in d['data'] if v['display-name']=='$VCN_NAME' and v['lifecycle-state']=='AVAILABLE'), ''))")"
+    VCN="$(ocij network vcn list -c "$T" --all | js "print(next((v['id'] for v in d['data'] if v['display-name']=='$VCN_NAME' and v['lifecycle-state']=='AVAILABLE'), ''))")"
     [[ -n "$VCN" ]] || stop "Cannot find the network '$VCN_NAME'."
-    SUBNET="$(oci network subnet list -c "$T" --vcn-id "$VCN" --all | js "print(next((s['id'] for s in d['data'] if s['lifecycle-state']=='AVAILABLE' and not s.get('prohibit-public-ip-on-vnic')), ''))")"
+    SUBNET="$(ocij network subnet list -c "$T" --vcn-id "$VCN" --all | js "print(next((s['id'] for s in d['data'] if s['lifecycle-state']=='AVAILABLE' and not s.get('prohibit-public-ip-on-vnic')), ''))")"
     [[ -n "$SUBNET" ]] || stop "The network '$VCN_NAME' has no public subnet."
     ok "network and public subnet found"
 
@@ -92,7 +104,7 @@ else
     [[ -n "$AD" ]] || stop "Oracle reports no free micro server allowance available in any availability domain."
     ok "free micro server place: $AD"
 
-    IMAGE="$(oci compute image list -c "$T" --operating-system "Canonical Ubuntu" --operating-system-version "24.04" --shape "$SHAPE" --sort-by TIMECREATED --sort-order DESC --all | js 'print(next((i["id"] for i in d["data"] if "Minimal" not in i["display-name"] and "aarch64" not in i["display-name"]), ""))')"
+    IMAGE="$(ocij compute image list -c "$T" --operating-system "Canonical Ubuntu" --operating-system-version "24.04" --shape "$SHAPE" --sort-by TIMECREATED --sort-order DESC --all | js 'print(next((i["id"] for i in d["data"] if "Minimal" not in i["display-name"] and "aarch64" not in i["display-name"]), ""))')"
     [[ -n "$IMAGE" ]] || stop "Cannot find Oracle's Ubuntu 24.04 image for the free micro server."
     ok "Ubuntu 24.04 image found"
 
@@ -106,10 +118,10 @@ else
     read -r -p "  Type YES (capitals) to create it, anything else to stop: " answer
     [[ "$answer" == YES ]] || stop "You chose not to create it."
 
-    NSG="$(oci network nsg list -c "$T" --vcn-id "$VCN" --all | js "print(next((n['id'] for n in d['data'] if n['display-name']=='$NSG_NAME' and n['lifecycle-state']=='AVAILABLE'), ''))")"
+    NSG="$(ocij network nsg list -c "$T" --vcn-id "$VCN" --all | js "print(next((n['id'] for n in d['data'] if n['display-name']=='$NSG_NAME' and n['lifecycle-state']=='AVAILABLE'), ''))")"
     if [[ -z "$NSG" ]]; then
-        NSG="$(oci network nsg create -c "$T" --vcn-id "$VCN" --display-name "$NSG_NAME" --wait-for-state AVAILABLE | js 'print(d["data"]["id"])')"
-        oci network nsg rules add --nsg-id "$NSG" --security-rules '[
+        NSG="$(ocij network nsg create -c "$T" --vcn-id "$VCN" --display-name "$NSG_NAME" --wait-for-state AVAILABLE | js 'print(d["data"]["id"])')"
+        ocij network nsg rules add --nsg-id "$NSG" --security-rules '[
           {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","description":"TPA web (HTTP, for the certificate and redirect)","tcpOptions":{"destinationPortRange":{"min":80,"max":80}}},
           {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","description":"TPA web (HTTPS)","tcpOptions":{"destinationPortRange":{"min":443,"max":443}}},
           {"direction":"INGRESS","protocol":"6","source":"0.0.0.0/0","sourceType":"CIDR_BLOCK","description":"SSH from Cloud Shell (key only)","tcpOptions":{"destinationPortRange":{"min":22,"max":22}}}]' >/dev/null
@@ -134,12 +146,12 @@ EOF
     INSTANCE="$(oci compute instance launch -c "$T" --availability-domain "$AD" --shape "$SHAPE" \
         --display-name "$NAME" --image-id "$IMAGE" --subnet-id "$SUBNET" --assign-public-ip true \
         --nsg-ids "[\"$NSG\"]" --boot-volume-size-in-gbs "$DISK_GB" --metadata "$META" \
-        --wait-for-state RUNNING --max-wait-seconds 900 | js 'print(d["data"]["id"])')" \
-        || stop "Oracle did not create the server (often 'out of capacity' for free servers - try again later)."
+        --wait-for-state RUNNING --max-wait-seconds 900 2>"$ERR" | js 'print(d["data"]["id"])')" \
+        || stop "Oracle did not create the server (often 'out of capacity' for free servers - try again later). Oracle said: $(tr -s '\n' ' ' < "$ERR" | cut -c1-400)"
     ok "server created and running"
 fi
 
-IP="$(oci compute instance list-vnics --instance-id "$INSTANCE" | js 'print(next((v.get("public-ip") or "" for v in d["data"]), ""))')"
+IP="$(ocij compute instance list-vnics --instance-id "$INSTANCE" | js 'print(next((v.get("public-ip") or "" for v in d["data"]), ""))')"
 [[ -n "$IP" ]] || stop "The server has no public address."
 ok "server address: $IP"
 [[ -f "$KEY" ]] || stop "The Cloud Shell key $KEY is missing, so Cloud Shell cannot log in to the server."
