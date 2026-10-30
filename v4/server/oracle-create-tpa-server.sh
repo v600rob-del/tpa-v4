@@ -108,6 +108,14 @@ else
     [[ -n "$IMAGE" ]] || stop "Cannot find Oracle's Ubuntu 24.04 image for the free micro server."
     ok "Ubuntu 24.04 image found"
 
+    # Cloud Shell's login key for the new server. RSA, because Cloud Shell runs in
+    # FIPS mode, which refuses ed25519 keys. Made before anything is created.
+    if [[ ! -f "$KEY" ]]; then
+        ssh-keygen -q -t rsa -b 4096 -N '' -C tpa-cloud-shell -f "$KEY" || stop "Cloud Shell could not make its login key."
+    fi
+    [[ -f "$KEY.pub" ]] || stop "The Cloud Shell login key $KEY.pub is missing."
+    ok "Cloud Shell login key ready"
+
     say "3/7  Ready to create the free server"
     echo "      name:   $NAME"
     echo "      type:   $SHAPE (Always Free)"
@@ -128,7 +136,6 @@ else
         ok "web rule set $NSG_NAME created (ports 80, 443, 22)"
     fi
 
-    [[ -f "$KEY" ]] || ssh-keygen -q -t ed25519 -N '' -C tpa-cloud-shell -f "$KEY"
     USERDATA="$(cat <<EOF | base64 -w0
 #!/bin/bash
 set -euo pipefail
