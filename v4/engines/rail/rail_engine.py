@@ -51,7 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.4.0'
+ENGINE_VERSION = '0.4.1'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · railway lines: Network Rail track model (OGL) · stations: DfT NaPTAN (OGL) · junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
@@ -65,7 +65,8 @@ REFERENCE_MAX_AGE = 7 * 86400
 
 FRESH_FOR = 10 * 60          # normal for 10 min after a report
 DROP_AFTER = 30 * 60         # v3 MAX_AGE
-TERMINATED_KEEP = 5 * 60
+TERMINATED_KEEP = 20 * 60    # 0.4.1: a train that has finished usually still stands in the platform
+CANCELLED_KEEP = 10 * 60
 MAX_TRAINS = 20000
 MAX_PER_VIEW = 400
 MAX_VIEW_SPAN = 4.0          # degrees of latitude
@@ -103,7 +104,7 @@ STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': Fals
          'lastMessageAt': 0.0, 'lastError': '' if HAVE_LOGIN else 'no-login', 'authRejectedUntil': 0.0,
          'lastDemandAt': 0.0, 'messages': 0, 'movements': 0, 'unplaced': 0, 'bytes': 0,
          'points': {}, 'atPoints': 0, 'restored': 0, 'dirty': False, 'savedAt': 0.0,
-         'trackLoaded': False, 'trackError': ''}
+         'trackLoaded': False, 'trackError': '', 'cancelledSeen': 0, 'reinstatedSeen': 0}
 WAKE = threading.Event()
 # 0.4.0: trains glide ALONG THE TRACK. Routes between a train's last place and its next
 # reporting point come from Network Rail's own track model (data/rail-network.json.gz,
@@ -281,7 +282,7 @@ def load_timing_points(path: Path = TIMING_POINTS_FILE) -> dict:
 # ---------------------------------------------------------------- memory of the last 30 minutes
 TRAIN_FIELDS = {'lat': float, 'lon': float, 'station': str, 'when': float, 'event': str, 'variation': str,
                 'minutes': int, 'headcode': str, 'terminated': bool, 'point': bool,
-                'nlat': float, 'nlon': float, 'nname': str, 'run': int}   # 0.3.0: next place + minutes to it
+                'nlat': float, 'nlon': float, 'nname': str, 'run': int, 'cancelled': bool, 'cancelledAt': float}   # 0.3.0: next place + minutes to it
 
 
 def save_memory(force: bool = False) -> None:
@@ -322,6 +323,7 @@ def restore_memory() -> int:
         item['variation'] = clean(item['variation'], 12).upper()
         item['terminated'] = t.get('terminated') is True
         item['point'] = t.get('point') is True
+        item['cancelled'] = t.get('cancelled') is True
         item['nname'] = clean(item['nname'], 60)
         if not (0 < item['run'] <= 120 and 49 < item['nlat'] < 61 and -9 < item['nlon'] < 3):
             item.update(nlat=0.0, nlon=0.0, nname='', run=0)
@@ -363,8 +365,18 @@ def handle_message(item: dict, now: float) -> None:
         return
     with LOCK:
         trains = STATE['trains']
-        if kind == '0002':  # cancellation: remove
-            if trains.pop(train_id, None):
+        if kind == '0002':  # 0.4.1: cancellation: shown as "cancelled" (no movement) for 10 minutes, then removed
+            t = trains.get(train_id)
+            if t:
+                t.update(cancelled=True, cancelledAt=now, run=0)   # the last REPORT time is kept as it was
+                STATE['cancelledSeen'] += 1
+                STATE['dirty'] = True
+            return
+        if kind == '0005':  # reinstatement: carries on as normal
+            t = trains.get(train_id)
+            if t and t.get('cancelled'):
+                t['cancelled'] = False
+                STATE['reinstatedSeen'] += 1
                 STATE['dirty'] = True
             return
         if kind != '0003':
@@ -412,7 +424,7 @@ def handle_message(item: dict, now: float) -> None:
                             'variation': variation, 'minutes': minutes, 'headcode': match.group(1) if match else '',
                             'terminated': terminated, 'point': at_point,
                             'nlat': nxt[0] if nxt else 0.0, 'nlon': nxt[1] if nxt else 0.0,
-                            'nname': nxt[2] if nxt else '', 'run': run}
+                            'nname': nxt[2] if nxt else '', 'run': run, 'cancelled': False, 'cancelledAt': 0.0}
         STATE['dirty'] = True
         if len(trains) > MAX_TRAINS:
             oldest = sorted(trains, key=lambda k: trains[k]['when'])[:len(trains) - MAX_TRAINS]
@@ -579,7 +591,9 @@ def health(now: float) -> tuple[str, str]:
 def describe(t: dict) -> str:
     what = 'passed' if t.get('point') else {'ARRIVAL': 'arrived at', 'DEPARTURE': 'departed'}.get(t['event'], 'passed')
     parts = [f"Train {t['headcode']}" if t['headcode'] else 'Train', f"{what} {t['station']}"]
-    if t['terminated']:
+    if t.get('cancelled'):
+        parts[1] = f"cancelled · last at {t['station']}"
+    elif t['terminated']:
         parts[1] = f"terminated at {t['station']}"
     if t['variation'] == 'LATE' and t['minutes']:
         parts.append(f"{t['minutes']} min late")
@@ -587,7 +601,7 @@ def describe(t: dict) -> str:
         parts.append(f"{t['minutes']} min early")
     elif t['variation'] == 'ON TIME':
         parts.append('on time')
-    if t.get('run') and t.get('nname') and t['event'] == 'DEPARTURE' and not t['terminated']:
+    if t.get('run') and t.get('nname') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
         parts.append(f"next: {t['nname']}")
     return ' · '.join(parts)
 
@@ -618,16 +632,18 @@ def snapshot(view) -> dict:
     inside = []
     for tid, t in trains:
         age = now - t['when']
-        if age > DROP_AFTER or (t['terminated'] and age > TERMINATED_KEEP):
+        if age > DROP_AFTER or (t['terminated'] and age > TERMINATED_KEEP) or (t.get('cancelled') and now - t.get('cancelledAt', 0) > CANCELLED_KEEP):
             continue
-        if s <= t['lat'] <= n and w <= t['lon'] <= e:
+        # 0.4.1: also send a train that is heading INTO this area, so it glides in instead of popping up later.
+        heading_in = bool(t.get('run')) and s <= t['nlat'] <= n and w <= t['nlon'] <= e
+        if (s <= t['lat'] <= n and w <= t['lon'] <= e) or heading_in:
             inside.append(((t['lat'] - clat) ** 2 + (t['lon'] - clon) ** 2, tid, t, age))
     inside.sort(key=lambda x: x[0])
     for _, tid, t, age in inside[:MAX_PER_VIEW]:
         entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
                   'position': {'lon': t['lon'], 'lat': t['lat'], 'headingDeg': None},
-                  'quality': 'observed' if age <= FRESH_FOR else 'stale', 'observedAt': iso(t['when'])}
-        if t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated']:
+                  'quality': 'observed' if age <= FRESH_FOR and not t.get('cancelled') else 'stale', 'observedAt': iso(t['when'])}
+        if t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
             key = leg_key(t)
             with LOCK:
                 path = ROUTES.get(key)
@@ -686,6 +702,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'trainsRestoredAtStart': STATE['restored'], 'alwaysOn': ALWAYS_ON,
                                         'trackMapLoaded': STATE['trackLoaded'], 'trackRoutesKnown': sum(1 for v in ROUTES.values() if v),
                                         'trackRoutesWaiting': len(PENDING), 'trackError': STATE['trackError'],
+                                        'cancellationsSeen': STATE['cancelledSeen'], 'reinstatementsSeen': STATE['reinstatedSeen'],
                                         'movementsReceived': STATE['movements'], 'movementsAtUnmappedLocations': STATE['unplaced'],
                                         'feedKBThisRun': STATE['bytes'] // 1024})
         if split.path == '/snapshot':

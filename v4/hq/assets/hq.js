@@ -107,7 +107,30 @@ function selectEntity(e){
 // exactly the last real report is marked and described as ESTIMATED.
 const REDUCED=!!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches);
 const BLEND_MS=1200,pins=new Map(),shown=new Map(),blends=new Map();
-let moving=0;
+// 4.1.2 fluid movement: positions are worked out about once a second and the browser
+// animates each marker smoothly between them (a linear CSS transition on its transform,
+// drawn by the graphics side at full frame rate, which costs almost nothing). While the
+// map itself is being dragged or zoomed the animation is switched off so markers stay
+// pinned to the map.
+const GLIDE_MS=1000;
+let moving=0,mapMoving=false;
+// The page checks how smoothly it is drawing. While it keeps up, every moving vehicle on
+// screen glides; if frames start taking too long, only the vehicles nearest the middle of
+// the screen glide and the rest step once a second, until it is comfortable again.
+// Phones start (and stay) with fewer gliding vehicles to save battery; the rest step once a second.
+const GLIDE_MAX=(window.innerWidth||1000)<760?60:600,GLIDE_MIN=15;
+let glideBudget=GLIDE_MAX,frameAvg=16,lastFrame=0,glideCount=0;
+function watchFrames(ts){
+  requestAnimationFrame(watchFrames);
+  if(lastFrame&&glideCount&&document.visibilityState==='visible'&&!mapMoving){
+    const dt=Math.min(250,ts-lastFrame);frameAvg=frameAvg*0.95+dt*0.05;
+    if(frameAvg>30&&glideBudget>GLIDE_MIN){glideBudget=Math.max(GLIDE_MIN,Math.floor(glideBudget*0.7));frameAvg=20;}
+    else if(frameAvg<18&&glideBudget<GLIDE_MAX&&glideCount>=glideBudget){glideBudget=Math.min(GLIDE_MAX,glideBudget+5);}
+  }
+  lastFrame=ts;
+}
+requestAnimationFrame(watchFrames);
+window.TPA_HQ_GLIDE_STATUS=()=>({budget:glideBudget,gliding:glideCount,frameMs:Math.round(frameAvg*10)/10});
 function keyOf(e){return e.component+':'+e.id;}
 function estimate(e,now){
   const p=e.position,m=state.live[e.component]?e.motion:null;
@@ -149,8 +172,13 @@ function infoText(e,est){
 // Phone-sized screens show at most this many vehicles per layer (engines already send the
 // ones nearest the middle of the view first); hundreds of overlapping icons can't be read.
 const PHONE_CAP=150;
+let glideOK=new Set();
 function markers(){
   const d=dims(),now=Date.now(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
+  // Which vehicles may glide this second: the nearest to the middle of the screen, up to the budget.
+  {const cx=d.w/2,cy=d.h/2,list=[];
+   for(const [k,p] of pins)if(p.tf&&p.e&&state.live[p.e.component]&&(p.e.motion||blends.has(k))){const m=p.tf.match(/translate\(([-0-9.]+)px,([-0-9.]+)px\)/);if(m)list.push([(m[1]-cx)**2+(m[2]-cy)**2,k]);}
+   list.sort((a,b)=>a[0]-b[0]);glideOK=new Set(list.slice(0,glideBudget).map(x=>x[1]));glideCount=glideOK.size;}
   for(const e of listEntities()){
     if(!e.position)continue;
     const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;
@@ -162,7 +190,9 @@ function markers(){
     keep.add(k);
     const active=!!state.selected&&state.selected.id===e.id&&state.selected.component===e.component;
     const prefix=state.live[e.component]?'':'MOCK ';
-    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' estimated':''}`;
+    const glideWanted=!REDUCED&&!mapMoving&&!!pin0(k)&&(pos.est||blends.has(k)||(state.live[e.component]&&!!e.motion));
+    const glide=glideWanted&&glideOK.has(k);
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' estimated':''}${glide?' glide':''}`;
     const art=e.component+'|'+(e.position.headingDeg??'')+'|'+(e.badge||'')+'|'+e.id;
     let pin=pins.get(k);
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
@@ -181,6 +211,7 @@ function markers(){
   if(shown.size>keep.size*4+4000)for(const k of shown.keys())if(!keep.has(k))shown.delete(k);
   updateSelectedInfo(now);
 }
+function pin0(k){const p=pins.get(k);return p&&p.tf?p:null;}
 function currentEntity(sel){const f=state.frames[sel.component];return f?.entities.find(x=>x.id===sel.id)||null;}
 function updateSelectedInfo(now){
   if(!state.selected||selected.classList.contains('hidden'))return;
@@ -195,7 +226,7 @@ let lastTick=0,tickCost=0;
 function motionLoop(ts){
   requestAnimationFrame(motionLoop);
   if(document.visibilityState!=='visible'||!moving&&!blends.size)return;
-  const gap=REDUCED?2000:clamp(tickCost*12,100,330);
+  const gap=REDUCED?2000:Math.max(GLIDE_MS,tickCost*12);
   if(ts-lastTick<gap)return;
   lastTick=ts;const t0=performance.now();markers();tickCost=tickCost*0.7+(performance.now()-t0)*0.3;
 }
@@ -422,6 +453,29 @@ try{
   state.renderer='leaflet-waiting';
   map.on('move zoom zoomend',()=>syncView());
   map.on('moveend',refetchLiveView);
+  // 4.1.2: while the map moves, markers follow it instantly (no gliding lag).
+  if(typeof map.on==='function')map.on('movestart zoomstart',()=>{mapMoving=true;for(const p of pins.values())p.b.classList.remove('glide');});
+  if(typeof map.on==='function')map.on('moveend zoomend',()=>{mapMoving=false;});
+  // 4.1.2: the mouse wheel and click-and-drag work over vehicle icons too (owner, 30 Oct):
+  // they are handed to the map underneath. A plain click still opens the icon's details.
+  const mapBox=typeof map.getContainer==='function'?map.getContainer():null;
+  if(mapBox){
+  markerLayer.addEventListener('wheel',ev=>{
+    ev.preventDefault();
+    mapBox.dispatchEvent(new WheelEvent('wheel',{bubbles:true,cancelable:true,clientX:ev.clientX,clientY:ev.clientY,screenX:ev.screenX,screenY:ev.screenY,deltaX:ev.deltaX,deltaY:ev.deltaY,deltaZ:ev.deltaZ,deltaMode:ev.deltaMode,ctrlKey:ev.ctrlKey,shiftKey:ev.shiftKey,altKey:ev.altKey,metaKey:ev.metaKey}));
+  },{passive:false});
+  let downAt=null;
+  markerLayer.addEventListener('click',ev=>{
+    // A press that turned into a map drag is not a click on the icon.
+    if(downAt&&Math.hypot(ev.clientX-downAt[0],ev.clientY-downAt[1])>6){ev.stopPropagation();ev.preventDefault();}
+    downAt=null;
+  },true);
+  markerLayer.addEventListener('mousedown',ev=>{
+    if(ev.button!==0)return;
+    downAt=[ev.clientX,ev.clientY];
+    mapBox.dispatchEvent(new MouseEvent('mousedown',{bubbles:true,cancelable:true,clientX:ev.clientX,clientY:ev.clientY,screenX:ev.screenX,screenY:ev.screenY,button:0,buttons:1}));
+  });
+  }
   map.whenReady(()=>syncView());
   if(!window.TPA_BASEMAP?.attach){
     throw Error('TPA baseline loader not ready');
