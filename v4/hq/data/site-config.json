@@ -25,7 +25,7 @@
     },
     {
       "layer": "Buses",
-      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS). Roads: contains OS data © Crown copyright and database right 2026 (OS Open Roads, Open Government Licence v3.0). Between reports, positions along the road are estimated for up to 90 seconds.",
+      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS). Road shapes for bus movement: © OpenStreetMap contributors (ODbL, via Geofabrik); backup: contains OS data © Crown copyright and database right 2026 (OS Open Roads, OGL v3.0). Between reports, positions along the road are estimated for up to 90 seconds.",
       "url": "https://www.bus-data.dft.gov.uk",
       "status": "Live in test"
     },
