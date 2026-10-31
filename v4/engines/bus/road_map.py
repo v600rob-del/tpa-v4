@@ -24,6 +24,7 @@ Usage (by hand):  python3 road_map.py build <OS zip> <out.sqlite>
 from __future__ import annotations
 
 import hashlib
+import http.client
 import json
 import math
 import os
@@ -437,6 +438,29 @@ def geofabrik_downloads(index, regions=OSM_REGIONS):
     return out
 
 
+RETRY_WAITS = (10, 30, 60, 120, 300)       # seconds to wait before trying again (0.5.2)
+PACE_SECONDS = 1.0                         # a short pause before each download request
+
+
+def patiently(job, waits=None):
+    """Run job(); if the server is busy or the connection breaks, wait and try again.
+    0.5.2 (server 31 Oct 21:27: Geofabrik answered 503 part-way and 47% was thrown away)."""
+    from urllib.error import HTTPError, URLError
+    waits = RETRY_WAITS if waits is None else waits
+    for wait in list(waits) + [None]:
+        try:
+            return job()
+        except HTTPError as exc:
+            if exc.code not in (408, 425, 429, 500, 502, 503, 504) or wait is None:
+                raise
+            retry_after = exc.headers.get('Retry-After', '') if exc.headers else ''
+            wait = max(wait, int(retry_after)) if retry_after.isdigit() and int(retry_after) <= 900 else wait
+        except (URLError, TimeoutError, ConnectionError, http.client.HTTPException) as exc:   # incl. a read cut short
+            if wait is None or isinstance(exc, OSError) and 'partial download' in str(exc):
+                raise
+        time.sleep(wait)
+
+
 class RemoteZip:
     """Read just the parts we need of a big zip file on a web server (HTTP range requests).
     Geofabrik's England file holds every OpenStreetMap layer (buildings, land use, ...) and is
@@ -491,11 +515,14 @@ class RemoteZip:
     def _range(self, start, end=None):
         """Bytes [start, end) (start < 0: the last -start bytes). Returns (bytes, total size or None)."""
         rng = f'bytes={start}' if start < 0 else f'bytes={start}-{end - 1}'
-        with urlopen(Request(self.url, headers={'User-Agent': USER_AGENT, 'Range': rng}), timeout=120) as r:
-            if r.status != 206:
-                return b'', None
-            m = re.search(r'/(\d+)$', r.headers.get('Content-Range', ''))
-            return r.read(), int(m.group(1)) if m else None
+
+        def once():
+            with urlopen(Request(self.url, headers={'User-Agent': USER_AGENT, 'Range': rng}), timeout=120) as r:
+                if r.status != 206:
+                    return b'', None
+                m = re.search(r'/(\d+)$', r.headers.get('Content-Range', ''))
+                return r.read(), int(m.group(1)) if m else None
+        return patiently(once)
 
     def save(self, name, path, progress=lambda got, total: None):
         """Download one member's compressed bytes to `path`; returns (method, uncompressed size)."""
@@ -509,19 +536,26 @@ class RemoteZip:
             raise ValueError('zip entry header missing')
         nlen, elen = struct.unpack_from('<HH', head, 26)
         start = off + 30 + nlen + elen
-        with urlopen(Request(self.url, headers={'User-Agent': USER_AGENT, 'Range': f'bytes={start}-{start + csize - 1}'}),
-                     timeout=120) as r, open(path, 'wb') as f:
-            if r.status != 206:
-                raise OSError('server ignored the partial download request')
-            got = 0
-            while True:
-                chunk = r.read(1 << 20)
-                if not chunk:
-                    break
-                f.write(chunk); got += len(chunk)
-                progress(got, csize)
+        got = 0
+        with open(path, 'wb') as f:
+            def more():                           # continues from where it got to after any break
+                nonlocal got
+                time.sleep(PACE_SECONDS)
+                with urlopen(Request(self.url, headers={'User-Agent': USER_AGENT,
+                                                        'Range': f'bytes={start + got}-{start + csize - 1}'}), timeout=120) as r:
+                    if r.status != 206:
+                        raise OSError('server ignored the partial download request')
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk); got += len(chunk)
+                        progress(got, csize)
+                if got < csize:
+                    raise ConnectionError(f'{name}: download cut short ({got} of {csize} bytes)')
+            patiently(more)
         if got != csize:
-            raise OSError(f'{name}: download cut short ({got} of {csize} bytes)')
+            raise OSError(f'{name}: download wrong size ({got} of {csize} bytes)')
         return method, usize
 
 
@@ -589,7 +623,7 @@ def fetch_osm_and_build(data_dir, index_url=GEOFABRIK_INDEX, status=lambda **kw:
         status(state='up-to-date')
         return False
     status(state='checking')
-    files = geofabrik_downloads(_get_json(index_url))
+    files = geofabrik_downloads(patiently(lambda: _get_json(index_url)))
     w, done = TileWriter(out), 0
     tmp = [os.path.join(data_dir, n) for n in ('osm-download.zip', 'osm-roads.shp.z', 'osm-roads.dbf.z')]
     last = [0.0]
