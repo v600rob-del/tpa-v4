@@ -182,7 +182,7 @@ let glideOK=new Set();
 // - dragging: the whole icon layer is shifted with the map in one step (no re-placing every icon);
 // - zooming: when the map starts its zoom animation, every icon is sent to its place in the new
 //   view with the map's own timing, so icons travel with the map instead of freezing then rushing.
-let paintRef=null,zoomAnim=false,lastFull=0,zoomGuard=0;
+let paintRef=null,zoomAnim=false,lastFull=0,zoomGuard=0,viewSig='';
 function shiftLayer(){
   if(!map||!paintRef||zoomAnim||map.getZoom()!==paintRef.z)return false;
   const p=map.latLngToContainerPoint(paintRef.ll),dx=p.x-paintRef.x,dy=p.y-paintRef.y;
@@ -205,7 +205,12 @@ function zoomAnimStart(e){
 function zoomAnimEnd(){if(!zoomAnim)return;zoomAnim=false;markerLayer.classList.remove('zoom-anim');paint();}
 function markers(){
   if(zoomAnim)return;      // icons are travelling with the zoom animation; placed again when it ends
-  if(map){const ll=map.getCenter(),c=map.latLngToContainerPoint(ll);paintRef={ll,z:map.getZoom(),x:c.x,y:c.y};markerLayer.style.transform='';}
+  // 4.1.8 (owner 31 Oct 13:50: after moving the map, moving icons jumped back to their old spot
+  // on the screen and glided across): if the view changed since the icons were last placed,
+  // place every icon instantly this time; gliding is only ever for the vehicle's own movement.
+  let viewMoved=false;
+  if(map){const ll=map.getCenter(),c=map.latLngToContainerPoint(ll);paintRef={ll,z:map.getZoom(),x:c.x,y:c.y};markerLayer.style.transform='';
+    const r=map.latLngToContainerPoint([54,-2]),sig=map.getZoom()+'|'+r.x.toFixed(1)+'|'+r.y.toFixed(1);viewMoved=sig!==viewSig;viewSig=sig;}
   lastFull=performance.now();
   const d=dims(),now=Date.now(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
   // Which vehicles may glide this second: the nearest to the middle of the screen, up to the budget.
@@ -229,7 +234,7 @@ function markers(){
     const active=!!state.selected&&state.selected.id===e.id&&state.selected.component===e.component;
     const prefix=state.live[e.component]?'':'MOCK ';
     const glideWanted=!REDUCED&&!mapMoving&&!!pin0(k)&&(pos.est||blends.has(k)||(state.live[e.component]&&!!e.motion));
-    const glide=glideWanted&&glideOK.has(k);
+    const glide=glideWanted&&glideOK.has(k)&&!viewMoved;
     const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}`;
     const art=e.component+'|'+(e.position.headingDeg??'')+'|'+(e.badge||'')+'|'+e.id;
     let pin=pins.get(k);
@@ -510,7 +515,7 @@ try{
   map.on('moveend',refetchLiveView);
   // 4.1.2: while the map moves, markers follow it instantly (no gliding lag).
   if(typeof map.on==='function')map.on('movestart zoomstart',()=>{mapMoving=true;for(const p of pins.values())p.b.classList.remove('glide');});
-  if(typeof map.on==='function')map.on('moveend zoomend',()=>{mapMoving=false;});
+  if(typeof map.on==='function')map.on('moveend zoomend',()=>{mapMoving=false;paint();});
   // 4.1.2: the mouse wheel and click-and-drag work over vehicle icons too (owner, 30 Oct):
   // they are handed to the map underneath. A plain click still opens the icon's details.
   const mapBox=typeof map.getContainer==='function'?map.getContainer():null;
