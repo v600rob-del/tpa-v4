@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.5.3'
+ENGINE_VERSION = '0.5.4'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -83,7 +83,8 @@ ROAD_SOURCE = 'osm' if os.environ.get('TPA_BUS_ROAD_SOURCE', 'os').strip().lower
 ROAD_RETRY_HOURS = 6
 ROAD_VIEW_SPAN = 0.12        # follow roads only when zoomed in to town/city level (view under ~13 km tall);
                              # further out a bus is a dot and the straight glide looks the same (0.4.1)
-INLINE_BUDGET = 0.25         # seconds a snapshot may spend working out roads; the rest wait for the helper thread
+INLINE_BUDGET = 0.25
+NEW_AREA_BUDGET = 1.0        # 0.5.4: first look at a new area         # seconds a snapshot may spend working out roads; the rest wait for the helper thread
 
 KEY = (os.environ.get('TPA_BODS_API_KEY') or '').strip()
 _test_area = os.environ.get('TPA_BUS_TEST_AREA_URL', '').strip()
@@ -322,7 +323,10 @@ def prepare_paths() -> None:
         for v in STATE['vehicles']:
             if not v.get('speed') or v.get('bearing') is None or now - v['recorded'] > DROP_AFTER:
                 continue
-            if not any(s - 0.01 <= v['lat'] <= n + 0.01 and w - 0.01 <= v['lon'] <= e + 0.01 for s, w, n, e in views):
+            # 0.5.4: a margin of half the view on every side, so panning nearby lands on buses whose road
+            # paths are already prepared (owner 31 Oct 22:46: moving "a couple of tiles" looked wrong)
+            if not any(s - (n - s) / 2 <= v['lat'] <= n + (n - s) / 2 and w - (e - w) / 2 <= v['lon'] <= e + (e - w) / 2
+                       for s, w, n, e in views):
                 continue
             known = PATHS.get(v['key'])
             if known and known[0] == v['recorded']:
@@ -469,7 +473,13 @@ def snapshot(view) -> dict:
             continue
         inside.append(((v['lat'] - clat) ** 2 + (v['lon'] - clon) ** 2, v, age))
     inside.sort(key=lambda t: t[0])  # nearest the middle of the screen first
-    deadline = time.monotonic() + INLINE_BUDGET
+    # 0.5.4: for an area nobody was looking at, take up to a second to work out road paths before
+    # answering, rather than sending straight lines first and road paths a few seconds later
+    with LOCK:
+        known_area = any(s0 <= south and w0 <= west and n0 >= north and e0 >= east
+                         for _, (s0, w0, n0, e0) in ((t, (s - (n - s) / 2, w - (e - w) / 2, n + (n - s) / 2, e + (e - w) / 2))
+                                                     for t, (s, w, n, e) in VIEWS if now - t < VIEW_MEMORY))
+    deadline = time.monotonic() + (INLINE_BUDGET if known_area else NEW_AREA_BUDGET)
     roads = north - south <= ROAD_VIEW_SPAN
     if roads:
         with LOCK:

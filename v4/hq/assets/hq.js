@@ -185,10 +185,11 @@ function whereNow(e,now){
     blends.delete(k);}
   return target;
 }
-function noteNewFrame(f,now){
+function noteNewFrame(f,now,fresh){
   // A vehicle already on screen goes from where it is shown to its new position (4.1.9: naturally).
   for(const e of f.entities){const k=keyOf(e),was=shown.get(k);if(!was||!e.position)continue;
     const next=estimate(e,now);if(!next||(Math.abs(next.lon-was.lon)<=1e-6&&Math.abs(next.lat-was.lat)<=1e-6))continue;
+    if(fresh){const [fx,fy]=metresXY(was,next);if(Math.hypot(fx,fy)>20&&!REDUCED)blends.set(k,{hop:true,t0:now});else blends.delete(k);continue;}
     const ahead=estimate(e,now+1000),[mx,my]=ahead?metresXY(next,ahead):[0,0],speed=Math.hypot(mx,my);
     const [gx,gy]=metresXY(was,next),gap=Math.hypot(gx,gy);
     if(e.motion&&speed>0.3&&gap>3){
@@ -485,7 +486,7 @@ function refetchLiveView(){clearTimeout(refetchTimer);refetchTimer=setTimeout(()
     if(v&&b&&b.complete&&v.w>=b.w&&v.e<=b.e&&v.s>=b.s&&v.n<=b.n)continue;
     getComponent(id);
   }
-},800);}
+},300);}   // 4.1.13: was 0.8 s - a new area's vehicles are asked for sooner
 // 4.1.0: each live layer is asked again at the pace its engine suggests (nextPollAfterMs),
 // only while the page is visible; a reply older than one already shown is ignored.
 const pollTimers=Object.create(null),lastFetch=Object.create(null),seqSent=Object.create(null),seqDone=Object.create(null),fetchedBox=Object.create(null);
@@ -493,7 +494,17 @@ function schedulePoll(id,ms){clearTimeout(pollTimers[id]);pollTimers[id]=setTime
   if(!state.live[id]||state.parked[id])return;
   if(document.visibilityState!=='visible'||!state.visible[id]){schedulePoll(id,ms);return;}
   getComponent(id);},ms);}
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')for(const id of IDS)if(state.live[id]&&!state.parked[id]&&state.status[id]!=='not_installed'&&Date.now()-(lastFetch[id]||0)>4000)getComponent(id);});
+// 4.1.13 (owner 31 Oct 22:46: after tabbing away and back "it always has a catch up, and thats when
+// the buses and trains move about wrong"). Browsers pause animation in hidden tabs, so on return the
+// icons were far behind and every difference was treated as a correction (waiting, racing). Now coming
+// back is a fresh start: icons are placed where they should be now, at once, and the first new reports
+// after returning are applied directly (anything far off fades in at its real place).
+const freshStart=Object.create(null);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible')return;
+  blends.clear();viewSig='';
+  for(const id of IDS){freshStart[id]=true;
+    if(state.live[id]&&!state.parked[id]&&state.status[id]!=='not_installed'&&Date.now()-(lastFetch[id]||0)>4000)getComponent(id);}
+  paint();});
 function currentBox(pad){if(!map||typeof map.getBounds!=='function')return null;const b=pad?map.getBounds().pad(pad):map.getBounds();return {w:b.getWest(),s:b.getSouth(),e:b.getEast(),n:b.getNorth()};}
 async function getComponent(id){
   const seq=seqSent[id]=(seqSent[id]||0)+1,box=currentBox(0.2);lastFetch[id]=Date.now();
@@ -505,7 +516,7 @@ async function getComponent(id){
     seqDone[id]=seq;
     fetchedBox[id]=box?{...box,complete:!f.notice}:null;
     if(state.live[id])schedulePoll(id,f.pollMs);
-    noteNewFrame(f,Date.now());
+    noteNewFrame(f,Date.now(),freshStart[id]);freshStart[id]=false;
     // Once a new manifest has removed a component, ignore late responses.
     if(state.status[id]==='not_installed'||state.parked[id])return;
     if(f.health==='not_installed'){delete state.frames[id];deselectComponent(id);}
