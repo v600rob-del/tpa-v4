@@ -18,7 +18,8 @@ Three jobs, standard library only:
    same road name). Returns map points for the HQ "path" movement, or None if unsure.
 
 Usage (by hand):  python3 road_map.py build <OS zip> <out.sqlite>
-                  python3 road_map.py fetch <data dir>
+                  python3 road_map.py fetch <data dir>        (Ordnance Survey -> roads.sqlite)
+                  python3 road_map.py fetch-osm <data dir>    (OpenStreetMap via Geofabrik -> roads-osm.sqlite)
 """
 from __future__ import annotations
 
@@ -38,9 +39,9 @@ from array import array
 from collections import OrderedDict
 from urllib.request import Request, urlopen
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2                     # 2: one-way flags; pieces stored in every tile they touch
 OS_API = 'https://api.os.uk/downloads/v1/products/OpenRoads'
-USER_AGENT = 'TPA-live-map/0.4 (bus engine road map; tpaprojectuk@gmail.com)'
+USER_AGENT = 'TPA-live-map/0.5 (bus engine road map; tpaprojectuk@gmail.com)'
 TILE_LON, TILE_LAT = 0.02, 0.0125     # about 1.4 km x 1.4 km in Britain
 MAX_PIECE_M = 400.0                    # long roads are cut into pieces so nearby tiles always hold them
 SIMPLIFY_M = 1.5
@@ -49,7 +50,8 @@ MAX_TURN = 110.0                       # never U-turn: stop instead
 MAX_POINTS = 150                       # HQ accepts up to 200
 CLASSES = {'motorway': 1, 'a road': 2, 'b road': 3, 'classified unnumbered': 4,
            'unclassified': 5, 'not classified': 6, 'unknown': 7}
-REC = struct.Struct('<IIBH')
+REC = struct.Struct('<IIBH')           # format 1 (OS, 0.4.x)
+REC2 = struct.Struct('<IIBBH')         # format 2
 M_PER_DEG = 111195.0
 
 
@@ -308,56 +310,187 @@ def tile_key(tx, ty):
     return (tx + 100000) * 1000000 + (ty + 100000)
 
 
+class TileWriter:
+    """Writes road pieces into the SQLite tile store (format 2).
+    Each piece is stored in every tile any of its points falls in, so a tile always knows every
+    road through any point inside it (OpenStreetMap roads can meet part-way along, not only at ends).
+    Record: id, name key, class, flags (1 = one-way along the points, 2 = one-way against,
+    4 = roundabout), points."""
+
+    def __init__(self, out_path):
+        self.out, self.tmp = out_path, out_path + '.building'
+        if os.path.exists(self.tmp):
+            os.remove(self.tmp)
+        self.db = sqlite3.connect(self.tmp)
+        for q in ('PRAGMA journal_mode=OFF', 'PRAGMA synchronous=OFF', 'PRAGMA temp_store=MEMORY',
+                  'CREATE TABLE tiles (k INTEGER, d BLOB)', 'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)'):
+            self.db.execute(q)
+        self.buf, self.held, self.next_id, self.links = {}, 0, 1, 0
+
+    def add(self, lonlat, name, cls, flags=0, simplify_m=SIMPLIFY_M):
+        """One road line in lon/lat degrees (simplified, cut into <= MAX_PIECE_M pieces). OpenStreetMap
+        lines are not simplified (simplify_m=0): any point may be where another road joins."""
+        if len(lonlat) < 2:
+            return
+        k = math.cos(math.radians(lonlat[0][1])) * M_PER_DEG
+        metric = [(lo * k, la * M_PER_DEG) for lo, la in lonlat]
+        keep = simplify(metric, simplify_m) if simplify_m else metric
+        for piece in pieces(keep):
+            us = [(round(x / k * 1e6), round(y / M_PER_DEG * 1e6)) for x, y in piece]
+            us = [p for i, p in enumerate(us) if i == 0 or p != us[i - 1]]
+            if len(us) < 2:
+                continue
+            rec = bytearray(REC2.pack(self.next_id, name, cls, flags, len(us)))
+            for x, y in us:
+                rec += struct.pack('<ii', x, y)
+            self.next_id += 1; self.links += 1
+            for t in {tile_of(x, y) for x, y in us}:
+                self.buf.setdefault(t, bytearray()).extend(rec)
+                self.held += len(rec)
+        if self.held > 40_000_000:
+            self.flush()
+
+    def flush(self):
+        self.db.executemany('INSERT INTO tiles VALUES (?, ?)',
+                            ((tile_key(*t), zlib.compress(bytes(b), 6)) for t, b in self.buf.items()))
+        self.db.commit()
+        self.buf, self.held = {}, 0
+
+    def finish(self, source, licence):
+        self.flush()
+        if self.links == 0:
+            self.db.close(); os.remove(self.tmp)
+            raise ValueError('the download contained no roads')
+        self.db.execute('CREATE INDEX tk ON tiles (k)')
+        meta = {'format': FORMAT_VERSION, 'links': self.links, 'builtAt': int(time.time()), 'source': source, 'licence': licence}
+        self.db.executemany('INSERT INTO meta VALUES (?, ?)', ((k, json.dumps(v)) for k, v in meta.items()))
+        self.db.commit(); self.db.close()
+        os.replace(self.tmp, self.out)
+        return self.links
+
+
 def build(zip_path, out_path, progress=None, source=''):
-    """OS download -> roads.sqlite (written to a temporary name, then swapped in)."""
-    tmp = out_path + '.building'
-    if os.path.exists(tmp):
-        os.remove(tmp)
-    db = sqlite3.connect(tmp)
-    db.execute('PRAGMA journal_mode=OFF'); db.execute('PRAGMA synchronous=OFF'); db.execute('PRAGMA temp_store=MEMORY')
-    db.execute('CREATE TABLE tiles (k INTEGER, d BLOB)')
-    db.execute('CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)')
-    conv = FastGrid()
-    buf, held, next_id, links, done = {}, 0, 1, 0, 0
-
-    def flush():
-        nonlocal buf, held
-        db.executemany('INSERT INTO tiles VALUES (?, ?)',
-                       ((tile_key(*t), zlib.compress(bytes(b), 6)) for t, b in buf.items()))
-        db.commit()
-        buf, held = {}, 0
-
+    """OS Open Roads download -> road map (written to a temporary name, then swapped in)."""
+    w, conv, done = TileWriter(out_path), FastGrid(), 0
     for parts, row in os_links(zip_path, os.path.dirname(os.path.abspath(out_path))):
         done += 1
         if progress and done % 50000 == 0:
             progress(done)
         cls, name = link_info(row)
         for part in parts:
-            if len(part) < 2:
-                continue
-            for piece in pieces(simplify(part, SIMPLIFY_M)):
-                ll = [conv(E, N) for E, N in piece]
-                us = [(round(lo * 1e6), round(la * 1e6)) for lo, la in ll]
-                rec = bytearray(REC.pack(next_id, name, cls, len(us)))
-                for x, y in us:
-                    rec += struct.pack('<ii', x, y)
-                next_id += 1; links += 1
-                for t in {tile_of(*us[0]), tile_of(*us[-1])}:
-                    buf.setdefault(t, bytearray()).extend(rec)
-                    held += len(rec)
-        if held > 40_000_000:
-            flush()
-    flush()
-    if links == 0:
-        db.close(); os.remove(tmp)
-        raise ValueError('the download contained no roads')
-    db.execute('CREATE INDEX tk ON tiles (k)')
-    meta = {'format': FORMAT_VERSION, 'links': links, 'builtAt': int(time.time()), 'source': source,
-            'licence': 'Contains OS data (c) Crown copyright and database right ' + time.strftime('%Y')}
-    db.executemany('INSERT INTO meta VALUES (?, ?)', ((k, json.dumps(v)) for k, v in meta.items()))
-    db.commit(); db.close()
-    os.replace(tmp, out_path)
-    return links
+            if len(part) >= 2:
+                w.add([conv(E, N) for E, N in part], name, cls)
+    return w.finish(source, 'Contains OS data (c) Crown copyright and database right ' + time.strftime('%Y'))
+
+
+# ---------------------------------------------------------------- OpenStreetMap roads (Geofabrik)
+# 0.5.0 (owner 31 Oct 20:27: "the map detail doesnt match where the buses are driving"): the map
+# is drawn from OpenStreetMap, so buses now follow OpenStreetMap's roads too. Geofabrik publishes
+# OpenStreetMap ready-split into layers as free shapefiles (ODbL; "© OpenStreetMap contributors");
+# we read only the roads layer, in lon/lat already, with each road's one-way direction.
+GEOFABRIK_INDEX = 'https://download.geofabrik.de/index-v1-nogeom.json'
+OSM_REGIONS = ('england', 'scotland', 'wales')
+OSM_CLASSES = {'motorway': 1, 'motorway_link': 1, 'trunk': 2, 'trunk_link': 2, 'primary': 3, 'primary_link': 3,
+               'secondary': 4, 'secondary_link': 4, 'tertiary': 5, 'tertiary_link': 5, 'unclassified': 6,
+               'residential': 7, 'living_street': 8, 'busway': 10, 'bus_guideway': 10, 'service': 9, 'road': 6}
+SERVICE = 9
+
+
+def osm_shp_links(zip_path):
+    """Yield (lonlat points, name key, class, flags) for each road in a Geofabrik shapefile zip."""
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+        shp = next((n for n in names if re.search(r'roads_free_1\.shp$', n, re.I)), None)
+        if not shp or shp[:-4] + '.dbf' not in names:
+            raise ValueError('no roads layer in ' + os.path.basename(zip_path))
+        with zf.open(shp) as fs, zf.open(shp[:-4] + '.dbf') as fd:
+            for parts, row in zip(shp_records(fs), dbf_records(fd)):
+                cls = OSM_CLASSES.get(row.get('fclass', ''), 0)
+                if not cls or not parts:
+                    continue
+                one = row.get('oneway', '').upper()
+                flags = 1 if one == 'F' else 2 if one == 'T' else 0
+                key = (row.get('ref') or row.get('name') or '').strip().lower()
+                name = (zlib.crc32(key.encode()) or 1) if key else 0
+                for part in parts:
+                    # a closed one-way loop is a roundabout (flag 4): drive round it, leave by the natural exit
+                    ring = 4 if flags and len(part) > 3 and part[0] == part[-1] else 0
+                    yield part, name, cls, flags | ring
+
+
+def geofabrik_downloads(index, regions=OSM_REGIONS):
+    """Shapefile downloads covering the regions: the region's own file if Geofabrik offers one,
+    otherwise its sub-regions' files (Geofabrik leaves big regions out of the shapefile service)."""
+    feats = [f.get('properties', {}) for f in index.get('features', [])]
+    by_parent = {}
+    for f in feats:
+        by_parent.setdefault(f.get('parent'), []).append(f)
+    by_id = {f.get('id'): f for f in feats}
+    out = []
+
+    def want(rid, depth=0):
+        f = by_id.get(rid)
+        if f is None or depth > 4:
+            return
+        url = (f.get('urls') or {}).get('shp')
+        if url:
+            out.append((rid, url))
+        else:
+            for child in sorted(by_parent.get(rid, []), key=lambda c: c.get('id', '')):
+                want(child.get('id'), depth + 1)
+    for r in regions:
+        want(r)
+    for _, url in out:
+        if not str(url).startswith(('https://download.geofabrik.de/', 'http://127.0.0.1:')):
+            raise ValueError('unexpected download address')
+    if not out:
+        raise ValueError('Geofabrik list has no road files for ' + ', '.join(regions))
+    return out
+
+
+def fetch_osm_and_build(data_dir, index_url=GEOFABRIK_INDEX, status=lambda **kw: None, max_age_days=45):
+    """Download the Geofabrik road files one at a time (each deleted after reading) and build
+    roads-osm.sqlite. Skipped if the current one is younger than max_age_days. True if rebuilt."""
+    os.makedirs(data_dir, exist_ok=True)
+    out = os.path.join(data_dir, 'roads-osm.sqlite')
+    if os.path.exists(out) and time.time() - os.path.getmtime(out) < max_age_days * 86400:
+        status(state='up-to-date')
+        return False
+    status(state='checking')
+    files = geofabrik_downloads(_get_json(index_url))
+    w, done = TileWriter(out), 0
+    part = os.path.join(data_dir, 'osm-download.zip')
+    try:
+        for n, (rid, url) in enumerate(files, 1):
+            status(state='downloading', percent=round((n - 1) * 100 / len(files)), region=rid)
+            with urlopen(Request(url, headers={'User-Agent': USER_AGENT}), timeout=120) as r, open(part, 'wb') as f:
+                got = 0
+                while True:
+                    chunk = r.read(1 << 20)
+                    if not chunk:
+                        break
+                    f.write(chunk); got += len(chunk)
+                    if got > 3_000_000_000:
+                        raise ValueError('download unexpectedly large')
+            for pts, name, cls, flags in osm_shp_links(part):
+                w.add(pts, name, cls, flags, simplify_m=0)
+                done += 1
+                if done % 50000 == 0:
+                    status(state='building', percent=round((n - 1) * 100 / len(files)), linksRead=done, region=rid)
+            os.remove(part)
+    except BaseException:
+        try:
+            w.db.close(); os.remove(w.tmp)
+        except OSError:
+            pass
+        raise
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+    links = w.finish('OpenStreetMap roads via Geofabrik (' + ', '.join(r for r, _ in files[:6]) + ('…' if len(files) > 6 else '') + ')',
+                     '© OpenStreetMap contributors (ODbL)')
+    status(state='built', links=links)
+    return True
 
 
 # ---------------------------------------------------------------- downloading (OS Downloads API)
@@ -444,41 +577,58 @@ def cells_of(x0, y0, x1, y1):
 
 
 class Tile:
-    __slots__ = ('links', 'nodes', 'size', 'cells')
+    """One map area in memory: road pieces (compact arrays), a street index for finding the road
+    nearest a point, and the junction index: every point where two or more pieces meet."""
+    __slots__ = ('links', 'nodes', 'size', 'cells', 'points')
 
-    def __init__(self, blobs):
-        self.links, self.nodes, self.size, self.cells = {}, {}, 0, {}
+    def __init__(self, blobs, fmt=FORMAT_VERSION):
+        self.links, self.nodes, self.size, self.cells, self.points = {}, {}, 0, {}, 0
+        rec = REC2 if fmt >= 2 else REC
+        seen = {}
         for blob in blobs:
             raw = zlib.decompress(blob)
             self.size += len(raw)
             pos = 0
             while pos < len(raw):
-                lid, name, cls, n = REC.unpack_from(raw, pos); pos += REC.size
+                if fmt >= 2:
+                    lid, name, cls, flags, n = rec.unpack_from(raw, pos)
+                else:
+                    (lid, name, cls, n), flags = rec.unpack_from(raw, pos), 0
+                pos += rec.size
                 pts = array('i'); pts.frombytes(raw[pos:pos + 8 * n]); pos += 8 * n
                 if sys.byteorder != 'little':
                     pts.byteswap()
                 if lid in self.links:
                     continue
                 xs, ys = pts[0::2], pts[1::2]
-                # compact: one small array per road piece (about 4x smaller than Python tuples)
                 bb = array('i', (min(xs), min(ys), max(xs), max(ys)))
-                self.links[lid] = (name, cls, pts, bb)
-                for c in cells_of(*bb):     # 0.4.1 street index: only nearby roads are checked
+                self.links[lid] = (name, cls, pts, bb, flags)
+                self.points += n
+                for c in cells_of(*bb):
                     self.cells.setdefault(c, []).append(lid)
-                self.nodes.setdefault((pts[0], pts[1]), []).append((lid, True))
-                self.nodes.setdefault((pts[-2], pts[-1]), []).append((lid, False))
+                for i in range(n):
+                    key = (pts[2 * i] << 32) | (pts[2 * i + 1] & 0xFFFFFFFF)
+                    seen.setdefault(key, []).append((lid, i))
+        # keep only real meeting points (and piece ends) - most points are just bends in a road
+        self.nodes = {k: v for k, v in seen.items()
+                      if len(v) > 1 or v[0][1] == 0 or v[0][1] == len(self.links[v[0][0]][2]) // 2 - 1}
+
+
+def _allowed(flags, step):
+    return not (flags & 1 and step < 0) and not (flags & 2 and step > 0)
 
 
 class RoadMap:
-    def __init__(self, path, max_tiles=250):
-        self.path, self.max_tiles = path, max_tiles
+    def __init__(self, path, max_tiles=150, max_points=2_500_000):
+        self.path, self.max_tiles, self.max_points = path, max_tiles, max_points
         self.db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, check_same_thread=False)
         self.lock = threading.Lock()
         self.tiles = OrderedDict()
         self.meta = {k: json.loads(v) for k, v in self.db.execute('SELECT key, value FROM meta')}
-        if self.meta.get('format') != FORMAT_VERSION:
-            raise ValueError('road map format changed - will rebuild')
-        self.tile_loads = 0
+        self.fmt = self.meta.get('format')
+        if self.fmt not in (1, 2):
+            raise ValueError('road map format unknown - will rebuild')
+        self.tile_loads, self.points = 0, 0
 
     def close(self):
         self.db.close()
@@ -490,29 +640,33 @@ class RoadMap:
                 self.tiles.move_to_end((tx, ty))
                 return t
             rows = [r[0] for r in self.db.execute('SELECT d FROM tiles WHERE k=?', (tile_key(tx, ty),))]
-            t = Tile(rows)
+            t = Tile(rows, self.fmt)
             self.tiles[(tx, ty)] = t
+            self.points += t.points
             self.tile_loads += 1
-            while len(self.tiles) > self.max_tiles:
-                self.tiles.popitem(last=False)
+            while len(self.tiles) > 1 and (len(self.tiles) > self.max_tiles or self.points > self.max_points):
+                self.points -= self.tiles.popitem(last=False)[1].points
             return t
 
+    def _tile_at(self, x, y):
+        return self.tile(*tile_of(x, y))
+
     def snap(self, lon, lat, bearing):
-        """Nearest road piece within SNAP_M whose direction fits the bus's heading.
-        Returns (lid, seg, frac, forward, x_u, y_u, link) or None."""
+        """Nearest road piece within SNAP_M that the bus may drive along in the direction it is going.
+        Returns (lid, link, seg, forward, x_u, y_u) or None."""
         xu, yu = round(lon * 1e6), round(lat * 1e6)
         tx, ty = tile_of(xu, yu)
         kx = math.cos(math.radians(lat)) * M_PER_DEG * 1e-6
         ky = M_PER_DEG * 1e-6
         pad_x, pad_y = SNAP_M / kx, SNAP_M / ky
-        seen, best = set(), None
         near = cells_of(xu - pad_x, yu - pad_y, xu + pad_x, yu + pad_y)
-        # A road piece within SNAP_M has an end within MAX_PIECE_M + SNAP_M, so only tiles that close
-        # can hold it: usually just this tile, at most four (0.4.1; was always nine).
         rx, ry = (MAX_PIECE_M + SNAP_M) / kx, (MAX_PIECE_M + SNAP_M) / ky
         x0, y0 = tx * TILE_LON * 1e6, ty * TILE_LAT * 1e6
         xs = [0] + ([-1] if xu - x0 < rx else []) + ([1] if x0 + TILE_LON * 1e6 - xu < rx else [])
         ys = [0] + ([-1] if yu - y0 < ry else []) + ([1] if y0 + TILE_LAT * 1e6 - yu < ry else [])
+        if self.fmt >= 2:
+            xs, ys = [0], [0]        # format 2 keeps every piece in every tile it touches
+        seen, best = set(), None
         for dx in xs:
             for dy in ys:
                 t = self.tile(tx + dx, ty + dy)
@@ -520,7 +674,8 @@ class RoadMap:
                     if lid in seen:
                         continue
                     seen.add(lid)
-                    name, cls, pts, bb = t.links[lid]
+                    link = t.links[lid]
+                    name, cls, pts, bb, flags = link
                     if xu < bb[0] - pad_x or xu > bb[2] + pad_x or yu < bb[1] - pad_y or yu > bb[3] + pad_y:
                         continue
                     for i in range(0, len(pts) - 2, 2):
@@ -528,83 +683,111 @@ class RoadMap:
                         bx, by = (pts[i+2] - xu) * kx, (pts[i+3] - yu) * ky
                         vx, vy = bx - ax, by - ay
                         L2 = vx * vx + vy * vy
-                        f = 0.0 if L2 == 0 else max(0.0, min(1.0, -(ax * vx + ay * vy) / L2))
+                        if L2 == 0:
+                            continue
+                        f = max(0.0, min(1.0, -(ax * vx + ay * vy) / L2))
                         d = math.hypot(ax + vx * f, ay + vy * f)
-                        if d > SNAP_M or L2 == 0:
+                        if d > SNAP_M:
                             continue
                         seg_b = _bearing(0, 0, vx, vy)
                         for forward in (True, False):
+                            if not _allowed(flags, 1 if forward else -1):
+                                continue
                             turn = _diff(bearing, seg_b if forward else (seg_b + 180) % 360)
                             if turn > 75:
                                 continue
-                            score = d + 0.5 * turn
+                            score = d + 0.5 * turn + (10 if cls == SERVICE else 0)
                             if best is None or score < best[0]:
-                                best = (score, lid, i // 2, f, forward,
-                                        round(pts[i] + (pts[i+2] - pts[i]) * f), round(pts[i+1] + (pts[i+3] - pts[i+1]) * f),
-                                        (name, cls, pts, bb))
-        if best is None:
-            return None
-        return best[1:]
+                                best = (score, lid, link, i // 2, forward,
+                                        round(pts[i] + (pts[i+2] - pts[i]) * f), round(pts[i+1] + (pts[i+3] - pts[i+1]) * f))
+        return best[1:] if best else None
 
     def ahead(self, lon, lat, bearing, metres):
-        """Points [[lon, lat], ...] along the road for `metres`, or None if no road fits."""
+        """Points [[lon, lat], ...] along the road for `metres`, or None if no road fits.
+        At each meeting point the bus takes the most natural way on: the smallest turn, staying on the
+        same road (name or number), keeping roughly the direction it had 100 m back (so it goes round a
+        roundabout and leaves by the natural exit), avoiding service roads, obeying one-way streets,
+        never turning back. It stops at a dead end."""
         if bearing is None or not metres > 0:
             return None
         s = self.snap(lon, lat, bearing)
         if s is None:
             return None
-        lid, seg, frac, forward, xu, yu, link = s
+        lid, link, seg, forward, xu, yu = s
         kx = math.cos(math.radians(lat)) * M_PER_DEG * 1e-6
         ky = M_PER_DEG * 1e-6
-        out = [(xu, yu)]
+        out, run = [(xu, yu)], [0.0]
         left = metres
-        name = link[0]
-        pts = link[2]
-        n = len(pts) // 2
-        # vertices still ahead on this piece
-        order = list(range(seg + 1, n)) if forward else list(range(seg, -1, -1))
+        name, cls, pts, bb, flags = link
+        step = 1 if forward else -1
+        vi = seg + 1 if forward else seg
         visited = {lid}
-        for _ in range(80):
-            for vi in order:
-                px, py = pts[2*vi], pts[2*vi+1]
-                cx, cy = out[-1]
-                L = math.hypot((px - cx) * kx, (py - cy) * ky)
-                if L >= left:
-                    f = left / L if L else 0
-                    out.append((round(cx + (px - cx) * f), round(cy + (py - cy) * f)))
-                    return self._finish(out)
-                if L > 0:
-                    out.append((px, py))
-                left -= L
-            # at the end node of this piece: pick the most natural way on
-            end = (pts[-2], pts[-1]) if forward else (pts[0], pts[1])
-            if len(out) >= 2:
-                (ax, ay), (bx, by) = out[-2], out[-1]
-                came = _bearing(0, 0, (bx - ax) * kx, (by - ay) * ky)
-            else:
-                came = bearing
-            best = None
-            for nlid, at_start in self.tile(*tile_of(*end)).nodes.get(end, ()):
-                if nlid == lid:
+
+        def heading_back(back_m):
+            target = run[-1] - back_m
+            j = len(run) - 1
+            while j > 0 and run[j] > target:
+                j -= 1
+            (ax, ay), (bx, by) = out[j], out[-1]
+            if ax == bx and ay == by:
+                return None
+            return _bearing(0, 0, (bx - ax) * kx, (by - ay) * ky)
+
+        for _ in range(4000):
+            px, py = pts[2 * vi], pts[2 * vi + 1]
+            cx, cy = out[-1]
+            L = math.hypot((px - cx) * kx, (py - cy) * ky)
+            if L >= left:
+                f = left / L if L else 0
+                out.append((round(cx + (px - cx) * f), round(cy + (py - cy) * f)))
+                return self._finish(out)
+            if L > 0:
+                out.append((px, py)); run.append(run[-1] + L)
+            left -= L
+            n = len(pts) // 2
+            nxt = vi + step
+            others = self._tile_at(px, py).nodes.get((px << 32) | (py & 0xFFFFFFFF), ())
+            if 0 <= nxt < n and all(o[0] == lid for o in others):
+                vi = nxt                        # just a bend in this road
+                continue
+            came = heading_back(15) or bearing
+            ref = heading_back(100) or came
+            options = []
+            if 0 <= nxt < n:
+                options.append((lid, (name, cls, pts, bb, flags), step, nxt))
+            for lid2, j in others:
+                if lid2 == lid:
                     continue
-                cand = self.tile(*tile_of(*end)).links[nlid]
-                cp = cand[2]
-                if at_start:
-                    nb = _bearing(0, 0, (cp[2] - cp[0]) * kx, (cp[3] - cp[1]) * ky)
-                else:
-                    nb = _bearing(0, 0, (cp[-4] - cp[-2]) * kx, (cp[-3] - cp[-1]) * ky)
-                turn = _diff(came, nb)
-                score = turn - (30 if name and cand[0] == name else 0) + (90 if nlid in visited else 0)
-                if turn <= MAX_TURN and (best is None or score < best[0]):
-                    best = (score, nlid, at_start, cand)
+                link2 = self._tile_at(px, py).links.get(lid2)
+                if link2 is None:
+                    continue
+                n2 = len(link2[2]) // 2
+                for st2 in (1, -1):
+                    if 0 <= j + st2 < n2 and _allowed(link2[4], st2):
+                        options.append((lid2, link2, st2, j + st2))
+            best = None
+            for olid, olink, ostep, onext in options:
+                p2 = olink[2]
+                ob = _bearing(0, 0, (p2[2 * onext] - px) * kx, (p2[2 * onext + 1] - py) * ky)
+                turn = _diff(came, ob)
+                if turn > MAX_TURN:
+                    continue
+                on_ring = flags & 4
+                score = turn + (1.0 if on_ring else 0.5) * _diff(ref, ob)
+                if not (olink[4] & 4) and (olid == lid or (name and olink[0] == name)):
+                    score -= 30                 # stay on the same road (not for going round a roundabout)
+                if olink[1] == SERVICE and cls != SERVICE:
+                    score += 40                 # buses rarely turn into service roads
+                if olid in visited and olid != lid:
+                    score += 60
+                if best is None or score < best[0]:
+                    best = (score, olid, olink, ostep, onext)
             if best is None:
-                break                       # dead end or only a U-turn: the bus stops here
-            _, lid, forward, link = best
+                break                           # dead end, or only a U-turn: the bus stops here
+            _, lid, link, step, vi = best
             visited.add(lid)
             name = link[0] or name
-            pts = link[2]
-            n = len(pts) // 2
-            order = list(range(1, n)) if forward else list(range(n - 2, -1, -1))
+            _, cls, pts, bb, flags = link
         return self._finish(out) if len(out) >= 2 else None
 
     @staticmethod
@@ -620,9 +803,10 @@ if __name__ == '__main__':
         t0 = time.time()
         print('links', build(sys.argv[2], sys.argv[3], progress=lambda n: print('read', n, flush=True)),
               'in', round(time.time() - t0), 's')
-    elif len(sys.argv) == 3 and sys.argv[1] == 'fetch':
-        api = os.environ.get('TPA_BUS_ROADS_TEST_API', '').strip() or OS_API
-        if api != OS_API and not api.startswith('http://127.0.0.1:'):
+    elif len(sys.argv) == 3 and sys.argv[1] in ('fetch', 'fetch-osm'):
+        osm = sys.argv[1] == 'fetch-osm'
+        api = os.environ.get('TPA_BUS_OSM_TEST_INDEX' if osm else 'TPA_BUS_ROADS_TEST_API', '').strip() or (GEOFABRIK_INDEX if osm else OS_API)
+        if api not in (OS_API, GEOFABRIK_INDEX) and not api.startswith('http://127.0.0.1:'):
             raise SystemExit('Test address must be 127.0.0.1')
         try:
             os.nice(19)
@@ -632,7 +816,7 @@ if __name__ == '__main__':
         def report(**kw):
             print('ROADMAP ' + json.dumps(kw), flush=True)
         try:
-            fetch_and_build(sys.argv[2], api, report)
+            (fetch_osm_and_build if osm else fetch_and_build)(sys.argv[2], api, report)
         except Exception as exc:   # one clear line for the engine to show; never a traceback wall
             report(state='error', error=(type(exc).__name__ + ': ' + str(exc))[:120])
             sys.exit(1)

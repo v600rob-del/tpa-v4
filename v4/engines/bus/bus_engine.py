@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.4.2'
+ENGINE_VERSION = '0.5.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -75,7 +75,11 @@ GLIDE_SECONDS = 90           # how long a bus is carried forward after its last 
 STEADY_SECONDS = 60          # ...at steady speed, then easing to a stop (HQ "slowToStop")
 ROAD_MODE = os.environ.get('TPA_BUS_ROAD_MAP', 'off').strip().lower()      # 'download' on the server
 DATA_DIR = Path(os.environ.get('TPA_BUS_DATA_DIR', '') or Path(__file__).resolve().parent / 'data')
-ROAD_CHECK_DAYS = 7          # ask OS whether a new edition exists (a tiny request) once a week
+ROAD_CHECK_DAYS = 1          # daily look: OS asks whether a new edition exists (tiny); OpenStreetMap is rebuilt when 45 days old
+# 0.5.0 (owner 31 Oct 20:27: "the map detail doesnt match where the buses are driving"): with
+# TPA_BUS_ROAD_SOURCE=osm (the server) buses follow OpenStreetMap's roads - the same data the map
+# is drawn from - built from Geofabrik's free road files. The Ordnance Survey map stays as backup.
+ROAD_SOURCE = 'osm' if os.environ.get('TPA_BUS_ROAD_SOURCE', 'os').strip().lower() == 'osm' else 'os'
 ROAD_RETRY_HOURS = 6
 ROAD_VIEW_SPAN = 0.12        # follow roads only when zoomed in to town/city level (view under ~13 km tall);
                              # further out a bus is a dot and the straight glide looks the same (0.4.1)
@@ -85,7 +89,8 @@ KEY = (os.environ.get('TPA_BODS_API_KEY') or '').strip()
 _test_area = os.environ.get('TPA_BUS_TEST_AREA_URL', '').strip()
 _test_bulk = os.environ.get('TPA_BUS_TEST_BULK_URL', '').strip()
 _test_roads = os.environ.get('TPA_BUS_ROADS_TEST_API', '').strip()
-for _u in (_test_area, _test_bulk, _test_roads):
+_test_osm = os.environ.get('TPA_BUS_OSM_TEST_INDEX', '').strip()
+for _u in (_test_area, _test_bulk, _test_roads, _test_osm):
     if _u and not re.match(r'^http://127\.0\.0\.1:\d+/', _u):
         raise SystemExit('Test URLs must point at 127.0.0.1 only')
 AREA_URL = _test_area or BODS_AREA_URL
@@ -103,7 +108,7 @@ WAKE = threading.Event()
 _spec = importlib.util.spec_from_file_location('tpa_bus_road_map', Path(__file__).resolve().parent / 'road_map.py')
 road_map = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(road_map)
-ROADS = {'map': None, 'licence': ''}
+ROADS = {'map': None, 'licence': '', 'source': ''}
 PATHS: dict = {}             # bus key -> (report time, motion or None)
 PENDING: deque = deque()
 PENDING_SET: set = set()
@@ -504,9 +509,17 @@ def snapshot(view) -> dict:
     return frame
 
 
+def best_road_file():
+    """OpenStreetMap roads when chosen and built; otherwise the Ordnance Survey map (backup)."""
+    osm, os_ = DATA_DIR / 'roads-osm.sqlite', DATA_DIR / 'roads.sqlite'
+    if ROAD_SOURCE == 'osm' and osm.exists():
+        return osm, 'OpenStreetMap'
+    return (os_, 'Ordnance Survey') if os_.exists() else (None, '')
+
+
 def open_road_map() -> bool:
-    path = DATA_DIR / 'roads.sqlite'
-    if not path.exists():
+    path, source = best_road_file()
+    if path is None:
         return False
     try:
         new = road_map.RoadMap(str(path))
@@ -518,21 +531,25 @@ def open_road_map() -> bool:
     with LOCK:
         ROADS['map'] = new
         ROADS['licence'] = str(new.meta.get('licence', ''))
+        ROADS['source'], ROADS['path'] = source, str(path)
         STATE['roadMap'] = 'ready'
-        STATE['roadMapDetail'] = f"{new.meta.get('links', 0)} road pieces"
+        STATE['roadMapDetail'] = f"{source}: {new.meta.get('links', 0)} road pieces"
         PATHS.clear()
     if old:
         old.close()
-    print('Road map ready:', STATE['roadMapDetail'], flush=True)
+    print('Road map ready:', source, STATE['roadMapDetail'], flush=True)
     return True
 
 
-def refresh_road_map() -> bool:
-    """Run road_map.py fetch as a low-priority child; True if it finished without error."""
-    cmd = [sys.executable, str(Path(__file__).resolve().parent / 'road_map.py'), 'fetch', str(DATA_DIR)]
+def refresh_road_map(kind: str = 'fetch') -> bool:
+    """Run road_map.py fetch / fetch-osm as a low-priority child; True if it finished without error."""
+    cmd = [sys.executable, str(Path(__file__).resolve().parent / 'road_map.py'), kind, str(DATA_DIR)]
     env = dict(os.environ)
     if _test_roads:
         env['TPA_BUS_ROADS_TEST_API'] = _test_roads
+    if _test_osm:
+        env['TPA_BUS_OSM_TEST_INDEX'] = _test_osm
+    label = 'OpenStreetMap ' if kind == 'fetch-osm' else ''
     ok = True
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env) as proc:
         BUILDER['proc'] = proc
@@ -549,12 +566,13 @@ def refresh_road_map() -> bool:
                     STATE['roadMapError'] = str(info.get('error', ''))[:120]
                     ok = False
                 elif st in ('downloading', 'building', 'checking'):
-                    detail = f"{info['percent']}%" if 'percent' in info else (f"{info['linksRead']} roads read" if 'linksRead' in info else '')
+                    detail = label + (f"{info['percent']}%" if 'percent' in info else '') + \
+                        (f" {info['linksRead']} roads read" if 'linksRead' in info else '') + (f" ({info['region']})" if 'region' in info else '')
                     if ROADS['map'] is None:
                         STATE['roadMap'] = st
                     STATE['roadMapDetail'] = (st + ' ' + detail).strip() if ROADS['map'] else detail
-            if st in ('downloading', 'building') and info.get('percent', 0) in (0, 25, 50, 75) or st in ('built', 'error'):
-                print('Road map:', line[8:].strip(), flush=True)
+            if st in ('built', 'error') or (st == 'downloading' and 'region' in info):
+                print('Road map:', label + line[8:].strip(), flush=True)
     BUILDER['proc'] = None
     return ok and proc.returncode == 0
 
@@ -565,21 +583,22 @@ def road_keeper() -> None:
         return
     time.sleep(float(os.environ.get('TPA_BUS_ROAD_START_DELAY', '30')))   # let the server settle after a restart
     while True:
-        ok = refresh_road_map()
+        ok = refresh_road_map('fetch')                    # Ordnance Survey: kept as the backup
+        if ROAD_SOURCE == 'osm':
+            ok = refresh_road_map('fetch-osm') and ok     # OpenStreetMap: what buses follow
         if ok:
             with LOCK:
                 STATE['roadMapError'] = ''
-            stamp = (DATA_DIR / 'roads.sqlite')
-            if ROADS['map'] is None or (stamp.exists() and stamp.stat().st_mtime > ROADS['map'].meta.get('builtAt', 0) + 60):
-                open_road_map()
-            elif ROADS['map'] is not None:
-                with LOCK:
-                    STATE['roadMap'] = 'ready'
-                    STATE['roadMapDetail'] = f"{ROADS['map'].meta.get('links', 0)} road pieces"
-        else:
-            with LOCK:
-                if ROADS['map'] is None:
-                    STATE['roadMap'] = 'unavailable'
+        path, _ = best_road_file()
+        cur = ROADS['map']
+        if path is not None and (cur is None or ROADS.get('path') != str(path) or path.stat().st_mtime > cur.meta.get('builtAt', 0) + 60):
+            open_road_map()
+        with LOCK:
+            if ROADS['map'] is not None:
+                STATE['roadMap'] = 'ready'
+                STATE['roadMapDetail'] = f"{ROADS['source']}: {ROADS['map'].meta.get('links', 0)} road pieces"
+            elif not ok:
+                STATE['roadMap'] = 'unavailable'
         time.sleep((ROAD_CHECK_DAYS * 86400) if ok else ROAD_RETRY_HOURS * 3600)
 
 
@@ -686,6 +705,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'reportAgeMedianSeconds': STATE['reportAgeMedian'], 'busesWithSpeed': STATE['busesWithSpeed'],
                                         'bodsDownloadsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS,
                                         'roadMap': STATE['roadMap'], 'roadMapDetail': STATE['roadMapDetail'],
+                                        'roadMapSource': ROADS['source'],
                                         'roadMapError': STATE['roadMapError'],
                                         'roadPathsKnown': sum(1 for x in PATHS.values() if x[1]),
                                         'roadTilesLoaded': len(ROADS['map'].tiles) if ROADS['map'] else 0,
