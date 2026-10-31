@@ -154,18 +154,44 @@ function estimate(e,now){
   }
   return {lon:p.lon+(m.lon-p.lon)*f,lat:p.lat+(m.lat-p.lat)*f,est:t>=1};
 }
+// 4.1.9 (owner 31 Oct 14:04: icons "wander off when they get a new updated position"; server check:
+// estimates typically 93 m out, half ahead and half behind, because buses stop at stops and lights).
+// A new report is reached the way a real vehicle would:
+//  - estimate had got AHEAD  -> the icon waits where it is (like a bus at a stop) until the vehicle's
+//    new estimate catches up, then carries on: never backwards (up to 45 s, then a normal slide);
+//  - estimate had fallen BEHIND -> the icon catches up gradually at a believable extra speed;
+//  - sideways or unclear -> the short 2 s slide as before.
+const WAIT_MAX_MS=45000,CATCHUP_MPS=10,CATCHUP_MAX_MS=30000;
+function metresXY(a,b){const k=Math.cos(a.lat*Math.PI/180);return [(b.lon-a.lon)*k*111195,(b.lat-a.lat)*111195];}
 function whereNow(e,now){
   const k=keyOf(e),target=estimate(e,now);if(!target)return null;
   const b=blends.get(k);
-  if(b){const f=REDUCED?1:(now-b.t0)/BLEND_MS;
-    if(f<1){const q=f*f*(3-2*f);return {lon:b.lon+(target.lon-b.lon)*q,lat:b.lat+(target.lat-b.lat)*q,est:true};}
+  if(b){
+    if(b.wait&&!REDUCED){
+      const [dx,dy]=metresXY(b,target);
+      if(dx*b.ux+dy*b.uy<0&&now-b.t0<WAIT_MAX_MS)return {lon:b.lon,lat:b.lat,est:true};
+      if(dx*b.ux+dy*b.uy>=0){blends.delete(k);return target;}
+      blends.set(k,{dlon:b.lon-target.lon,dlat:b.lat-target.lat,t0:now,dur:BLEND_MS});return {lon:b.lon,lat:b.lat,est:true};
+    }
+    // The difference from the estimate shrinks to nothing, so the icon keeps the vehicle's own
+    // speed throughout (no stop-start) and just runs a little faster or slower until it matches.
+    const f=REDUCED?1:(now-b.t0)/(b.dur||BLEND_MS);
+    if(f<1){const r=1-f*f*(3-2*f);return {lon:target.lon+b.dlon*r,lat:target.lat+b.dlat*r,est:true};}
     blends.delete(k);}
   return target;
 }
 function noteNewFrame(f,now){
-  // A vehicle already on screen slides from where it is shown to its new position.
+  // A vehicle already on screen goes from where it is shown to its new position (4.1.9: naturally).
   for(const e of f.entities){const k=keyOf(e),was=shown.get(k);if(!was||!e.position)continue;
-    const next=estimate(e,now);if(next&&(Math.abs(next.lon-was.lon)>1e-6||Math.abs(next.lat-was.lat)>1e-6))blends.set(k,{lon:was.lon,lat:was.lat,t0:now});}
+    const next=estimate(e,now);if(!next||(Math.abs(next.lon-was.lon)<=1e-6&&Math.abs(next.lat-was.lat)<=1e-6))continue;
+    const ahead=estimate(e,now+1000),[mx,my]=ahead?metresXY(next,ahead):[0,0],speed=Math.hypot(mx,my);
+    const [gx,gy]=metresXY(was,next),gap=Math.hypot(gx,gy);
+    if(e.motion&&speed>0.3&&gap>3){
+      const ux=mx/speed,uy=my/speed,along=gx*ux+gy*uy,across=Math.abs(gx*uy-gy*ux);
+      if(along<0&&across<40&&gap<500){blends.set(k,{lon:was.lon,lat:was.lat,t0:now,wait:true,ux,uy});continue;}
+      if(along>0&&across<40){blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:Math.max(BLEND_MS,Math.min(CATCHUP_MAX_MS,gap/CATCHUP_MPS*1000))});continue;}
+    }
+    blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:BLEND_MS});}
 }
 function infoText(e,est){
   const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
