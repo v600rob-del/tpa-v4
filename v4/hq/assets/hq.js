@@ -334,6 +334,31 @@ const statsTitle=document.querySelector('.stats-panel h2');if(statsTitle){if(!st
 const statsMicro=document.querySelector('.stats-panel .micro');if(statsMicro){if(!statsMicro.dataset.original)statsMicro.dataset.original=statsMicro.textContent;statsMicro.textContent=anyLive?'TEST VERSION':statsMicro.dataset.original;}
 const note=document.querySelector('.stats-panel .panel-note');if(note){if(!note.dataset.original)note.dataset.original=note.textContent;note.textContent=anyLive?'Live layers show real reported positions. Layers marked MOCK are pretend.':note.dataset.original;}
 }
+// 4.1.10 speed panel (owner 31 Oct: "Map needs to be almost instant, tomtom layer next ... then the
+// vehicles feeds"). Open the site with #speed on the end of the address to see, live, how long each
+// part took to appear in THIS browser. Measuring only; nothing is sent anywhere.
+const SPEED={first:Object.create(null),ask:Object.create(null),trafficFrom:0,trafficLast:null,mapFrom:0,mapLast:null};
+function speedMark(name){if(!(name in SPEED.first))SPEED.first[name]=performance.now();}
+window.TPA_HQ_SPEED_MARK=speedMark;
+window.TPA_HQ_MAP_IDLE=()=>{speedMark('street map complete');if(SPEED.mapFrom){SPEED.mapLast=performance.now()-SPEED.mapFrom;SPEED.mapFrom=0;}};
+function speedPanel(){
+  if(!/speed/i.test(location.hash))return;
+  let box=$('speed-panel');
+  if(!box){box=document.createElement('pre');box.id='speed-panel';
+    Object.assign(box.style,{position:'fixed',left:'8px',bottom:'8px',zIndex:9999,margin:0,padding:'8px 10px',background:'#071323ee',color:'#bff3ff',
+      font:'12px/1.45 ui-monospace,Consolas,monospace',borderRadius:'8px',pointerEvents:'none',whiteSpace:'pre',maxWidth:'96vw',overflow:'hidden'});
+    document.body.append(box);}
+  const s=v=>v==null?'—':(v/1000).toFixed(1)+' s',ms=v=>v==null?'—':Math.round(v)+' ms';
+  const nav=performance.getEntriesByType?.('navigation')?.[0],res=n=>performance.getEntriesByType?.('resource')?.find(r=>r.name.includes(n));
+  const L1=['TPA SPEED (this browser, since the page started)',
+    'Page arrived          '+s(nav?.responseEnd)+'   map library '+ms(res('maplibre-gl.js')?.duration)+' ('+Math.round((res('maplibre-gl.js')?.transferSize||0)/1024)+' KB)',
+    'Street map drawn      '+s(SPEED.first['street map drawn'])+'   complete '+s(SPEED.first['street map complete'])+'   after last move '+ms(SPEED.mapLast),
+    'Traffic first shown   '+s(SPEED.first['traffic shown'])+'   after last move '+ms(SPEED.trafficLast)];
+  for(const id of ['bus','rail','air']){const a=SPEED.ask[id];
+    L1.push((id==='bus'?'Buses':id==='rail'?'Trains':'Aircraft').padEnd(10)+' first shown '+s(SPEED.first[id+' shown'])+'   server answer last '+ms(a?.last)+' avg '+ms(a?.n?a.sum/a.n:null)+' ('+(a?.n||0)+')');}
+  box.textContent=L1.join('\n');
+}
+setInterval(speedPanel,1000);
 function paint(){if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;drawFallback();markers();counts();syncOverlays();$('zoom-level').textContent='ZOOM '+state.z.toFixed(1);});}
 function validNum(n){return typeof n==='number'&&Number.isFinite(n);}
 function checkFrame(id,f){if(!f||typeof f!=='object'||Array.isArray(f)||f.component!==id||f.contractVersion!=='1.0'||!['ready','stale','unavailable','not_installed'].includes(f.health)||typeof f.receivedAt!=='string'||!Number.isFinite(Date.parse(f.receivedAt))||typeof f.expiresAt!=='string'||!Number.isFinite(Date.parse(f.expiresAt))||Date.parse(f.expiresAt)<Date.parse(f.receivedAt)||typeof f.attribution!=='string'||f.attribution.length>256||!Array.isArray(f.entities)||f.entities.length>10000)throw Error('Invalid component v1 envelope');
@@ -412,6 +437,8 @@ function syncOverlays(){
       updateWhenIdle:true,updateWhenZooming:false,keepBuffer:1,crossOrigin:false,
       // Leaflet shows attribution as HTML, so escape the engine's plain text first.
       attribution:String(state.frames[id]?.attribution||'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';')});
+    layer.on('loading',()=>{SPEED.trafficFrom=performance.now();});
+    layer.on('load',()=>{speedMark('traffic shown');if(SPEED.trafficFrom){SPEED.trafficLast=performance.now()-SPEED.trafficFrom;SPEED.trafficFrom=0;}});
     layer.addTo(map);state.overlays[id]={layer,url};
   }
 }
@@ -437,7 +464,9 @@ function currentBox(pad){if(!map||typeof map.getBounds!=='function')return null;
 async function getComponent(id){
   const seq=seqSent[id]=(seqSent[id]||0)+1,box=currentBox(0.2);lastFetch[id]=Date.now();
   try{
+    const asked=performance.now();
     const f=checkFrame(id,await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}`,1200000,6000));
+    {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length)speedMark(id+' shown');}
     if(seq<(seqDone[id]||0))return;
     seqDone[id]=seq;
     fetchedBox[id]=box?{...box,complete:!f.notice}:null;
@@ -537,6 +566,7 @@ try{
   });
   map.on('zoom zoomend',()=>syncView());
   map.on('zoomanim',zoomAnimStart);
+  map.on('movestart',()=>{SPEED.mapFrom=performance.now();});
   map.on('zoomend',zoomAnimEnd);
   map.on('moveend',refetchLiveView);
   // 4.1.2: while the map moves, markers follow it instantly (no gliding lag).
@@ -574,7 +604,7 @@ try{
   window.TPA_BASEMAP.attach(map,{style:direct?cfg.style:via,fallbackStyle:direct?via:null,
     attribution:'<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> | <a href="https://openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'});});
 }catch(e){state.renderer='fallback';reportBrowser('map-constructor-error','leaflet-init',String(e?.message||e));map?.remove?.();map=null;diagnose();}}
-window.TPA_HQ_VECTOR_READY=()=>{ready=true;state.renderer='leaflet-maplibre';state.mapErrors=0;
+window.TPA_HQ_VECTOR_READY=()=>{speedMark('street map drawn');ready=true;state.renderer='leaflet-maplibre';state.mapErrors=0;
   document.body.classList.add('vector-ready');notice.classList.add('hidden');syncView();};
 window.TPA_HQ_VECTOR_ERROR=(message)=>{state.mapErrors++;const t=String(message||'Unknown source error');
   // A source error does not destroy Leaflet controls or the five sockets.

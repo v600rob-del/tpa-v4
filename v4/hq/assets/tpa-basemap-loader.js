@@ -21,6 +21,7 @@ timings.vectorLayerAttached=performance.now();report('vector-layer-attached','br
 if(gl){
 const finish=()=>{timings.basemapLoaded=performance.now();if(status)status.hidden=true;window.TPA_HQ_VECTOR_READY?.();report('map-loaded','liberty-style','Vector style loaded');};
 if(gl.loaded())finish();else gl.once('load',finish);
+if(typeof gl.on==='function')gl.on('idle',()=>window.TPA_HQ_MAP_IDLE?.());
 let loadedOnce=false,switched=false;gl.once('load',()=>{loadedOnce=true;});
 gl.on('error',e=>{
 const m=String(e?.error?.message||e?.message||'Unknown MapLibre error');
