@@ -404,18 +404,7 @@ def osm_shp_links(zip_path):
         if not shp or shp[:-4] + '.dbf' not in names:
             raise ValueError('no roads layer in ' + os.path.basename(zip_path))
         with zf.open(shp) as fs, zf.open(shp[:-4] + '.dbf') as fd:
-            for parts, row in zip(shp_records(fs), dbf_records(fd)):
-                cls = OSM_CLASSES.get(row.get('fclass', ''), 0)
-                if not cls or not parts:
-                    continue
-                one = row.get('oneway', '').upper()
-                flags = 1 if one == 'F' else 2 if one == 'T' else 0
-                key = (row.get('ref') or row.get('name') or '').strip().lower()
-                name = (zlib.crc32(key.encode()) or 1) if key else 0
-                for part in parts:
-                    # a closed one-way loop is a roundabout (flag 4): drive round it, leave by the natural exit
-                    ring = 4 if flags and len(part) > 3 and part[0] == part[-1] else 0
-                    yield part, name, cls, flags | ring
+            yield from _roads_from_streams(fs, fd)
 
 
 def geofabrik_downloads(index, regions=OSM_REGIONS):
@@ -448,9 +437,152 @@ def geofabrik_downloads(index, regions=OSM_REGIONS):
     return out
 
 
+class RemoteZip:
+    """Read just the parts we need of a big zip file on a web server (HTTP range requests).
+    Geofabrik's England file holds every OpenStreetMap layer (buildings, land use, ...) and is
+    several GB; we need only the roads layer. A zip keeps its table of contents at the end, so we
+    read that, then fetch only the roads files. 0.5.1 (server 31 Oct 20:59: the whole England file
+    was over the 3 GB safety limit)."""
+
+    def __init__(self, url):
+        self.url = url
+        tail, total = self._range(-65557)
+        if total is None:
+            raise OSError('server does not offer partial downloads')
+        self.size = total
+        i = tail.rfind(b'PK\x05\x06')
+        if i < 0:
+            raise ValueError('not a zip file')
+        n_entries, cd_size, cd_off = struct.unpack_from('<HII', tail, i + 10)
+        if cd_off == 0xFFFFFFFF or cd_size == 0xFFFFFFFF or n_entries == 0xFFFF:      # ZIP64 (files over 4 GB)
+            j = tail.rfind(b'PK\x06\x07', 0, i)
+            if j < 0:
+                raise ValueError('zip64 locator missing')
+            (z64_off,) = struct.unpack_from('<Q', tail, j + 8)
+            z64, _ = self._range(z64_off, z64_off + 56)
+            if z64[:4] != b'PK\x06\x06':
+                raise ValueError('zip64 record missing')
+            cd_size, cd_off = struct.unpack_from('<QQ', z64, 40)
+        if cd_size > 50_000_000:
+            raise ValueError('zip table of contents unexpectedly large')
+        cd, _ = self._range(cd_off, cd_off + cd_size)
+        self.members, pos = {}, 0
+        while pos + 46 <= len(cd) and cd[pos:pos + 4] == b'PK\x01\x02':
+            method, = struct.unpack_from('<H', cd, pos + 10)
+            csize, usize, nlen, elen, clen = struct.unpack_from('<IIHHH', cd, pos + 20)
+            (off,) = struct.unpack_from('<I', cd, pos + 42)
+            name = cd[pos + 46:pos + 46 + nlen].decode('utf-8', 'replace')
+            extra = cd[pos + 46 + nlen:pos + 46 + nlen + elen]
+            e = 0
+            while e + 4 <= len(extra):                    # zip64 sizes/offset live in extra field 0x0001
+                tag, ln = struct.unpack_from('<HH', extra, e)
+                if tag == 1:
+                    vals, q = [], e + 4
+                    for v in (usize, csize, off):
+                        if v == 0xFFFFFFFF:
+                            vals.append(struct.unpack_from('<Q', extra, q)[0]); q += 8
+                        else:
+                            vals.append(v)
+                    usize, csize, off = vals
+                e += 4 + ln
+            self.members[name] = (method, csize, usize, off)
+            pos += 46 + nlen + elen + clen
+
+    def _range(self, start, end=None):
+        """Bytes [start, end) (start < 0: the last -start bytes). Returns (bytes, total size or None)."""
+        rng = f'bytes={start}' if start < 0 else f'bytes={start}-{end - 1}'
+        with urlopen(Request(self.url, headers={'User-Agent': USER_AGENT, 'Range': rng}), timeout=120) as r:
+            if r.status != 206:
+                return b'', None
+            m = re.search(r'/(\d+)$', r.headers.get('Content-Range', ''))
+            return r.read(), int(m.group(1)) if m else None
+
+    def save(self, name, path, progress=lambda got, total: None):
+        """Download one member's compressed bytes to `path`; returns (method, uncompressed size)."""
+        method, csize, usize, off = self.members[name]
+        if method not in (0, 8):
+            raise ValueError('unsupported compression in ' + name)
+        if csize > 3_000_000_000:
+            raise ValueError(f'{name} unexpectedly large ({csize // 1_000_000} MB)')
+        head, _ = self._range(off, off + 30)
+        if head[:4] != b'PK\x03\x04':
+            raise ValueError('zip entry header missing')
+        nlen, elen = struct.unpack_from('<HH', head, 26)
+        start = off + 30 + nlen + elen
+        with urlopen(Request(self.url, headers={'User-Agent': USER_AGENT, 'Range': f'bytes={start}-{start + csize - 1}'}),
+                     timeout=120) as r, open(path, 'wb') as f:
+            if r.status != 206:
+                raise OSError('server ignored the partial download request')
+            got = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk); got += len(chunk)
+                progress(got, csize)
+        if got != csize:
+            raise OSError(f'{name}: download cut short ({got} of {csize} bytes)')
+        return method, usize
+
+
+class Inflate:
+    """Read a saved zip member (stored or deflated) as an ordinary file, decompressing as we go.
+    Keeps a read position instead of copying the buffer on every small read."""
+
+    def __init__(self, path, method):
+        self.f = open(path, 'rb')
+        self.z = zlib.decompressobj(-15) if method == 8 else None
+        self.buf, self.pos = b'', 0
+
+    def _more(self):
+        chunk = self.f.read(1 << 20)
+        if not chunk:
+            if self.z is not None:
+                tail = self.z.flush(); self.z = None
+                if tail:
+                    self.buf = self.buf[self.pos:] + tail; self.pos = 0
+                    return True
+            return False
+        data = self.z.decompress(chunk) if self.z is not None else chunk
+        self.buf = self.buf[self.pos:] + data; self.pos = 0
+        return True
+
+    def read(self, n=-1):
+        if n < 0:
+            while self._more():
+                pass
+            out, self.buf, self.pos = self.buf[self.pos:], b'', 0
+            return out
+        while len(self.buf) - self.pos < n and self._more():
+            pass
+        out = self.buf[self.pos:self.pos + n]
+        self.pos += len(out)
+        return out
+
+    def close(self):
+        self.f.close()
+
+
+def _roads_from_streams(fs, fd, rows=None):
+    for parts, row in zip(shp_records(fs), dbf_records(fd)):
+        if rows is not None:
+            rows[0] += 1
+        cls = OSM_CLASSES.get(row.get('fclass', ''), 0)
+        if not cls or not parts:
+            continue
+        one = row.get('oneway', '').upper()
+        flags = 1 if one == 'F' else 2 if one == 'T' else 0
+        key = (row.get('ref') or row.get('name') or '').strip().lower()
+        name = (zlib.crc32(key.encode()) or 1) if key else 0
+        for part in parts:
+            ring = 4 if flags and len(part) > 3 and part[0] == part[-1] else 0
+            yield part, name, cls, flags | ring
+
+
 def fetch_osm_and_build(data_dir, index_url=GEOFABRIK_INDEX, status=lambda **kw: None, max_age_days=45):
-    """Download the Geofabrik road files one at a time (each deleted after reading) and build
-    roads-osm.sqlite. Skipped if the current one is younger than max_age_days. True if rebuilt."""
+    """Fetch the roads layer of each Geofabrik file (only those parts, when the server allows; else
+    the whole file) one region at a time, and build roads-osm.sqlite. Skipped if the current one is
+    younger than max_age_days. Every temporary file is deleted. True if rebuilt."""
     os.makedirs(data_dir, exist_ok=True)
     out = os.path.join(data_dir, 'roads-osm.sqlite')
     if os.path.exists(out) and time.time() - os.path.getmtime(out) < max_age_days * 86400:
@@ -459,25 +591,62 @@ def fetch_osm_and_build(data_dir, index_url=GEOFABRIK_INDEX, status=lambda **kw:
     status(state='checking')
     files = geofabrik_downloads(_get_json(index_url))
     w, done = TileWriter(out), 0
-    part = os.path.join(data_dir, 'osm-download.zip')
+    tmp = [os.path.join(data_dir, n) for n in ('osm-download.zip', 'osm-roads.shp.z', 'osm-roads.dbf.z')]
+    last = [0.0]
+
+    def tell(**kw):                                   # at most one progress line every 5 seconds
+        if time.time() - last[0] >= 5 or kw.get('force'):
+            last[0] = time.time(); kw.pop('force', None); status(**kw)
     try:
         for n, (rid, url) in enumerate(files, 1):
-            status(state='downloading', percent=round((n - 1) * 100 / len(files)), region=rid)
-            with urlopen(Request(url, headers={'User-Agent': USER_AGENT}), timeout=120) as r, open(part, 'wb') as f:
-                got = 0
-                while True:
-                    chunk = r.read(1 << 20)
-                    if not chunk:
-                        break
-                    f.write(chunk); got += len(chunk)
-                    if got > 3_000_000_000:
-                        raise ValueError('download unexpectedly large')
-            for pts, name, cls, flags in osm_shp_links(part):
+            region = f'{rid} ({n} of {len(files)})'
+            try:
+                rz = RemoteZip(url)
+                shp = next((m for m in rz.members if re.search(r'roads_free_1\.shp$', m, re.I)), None)
+                if not shp or shp[:-4] + '.dbf' not in rz.members:
+                    raise ValueError('no roads layer in ' + rid)
+                kinds = []
+                for member, path in ((shp, tmp[1]), (shp[:-4] + '.dbf', tmp[2])):
+                    kinds.append(rz.save(member, path, lambda got, total: tell(
+                        state='downloading', percent=round(got * 100 / max(1, total)), region=region,
+                        mb=f'{got // 1_000_000} of {total // 1_000_000} MB')))
+                fs, fd = Inflate(tmp[1], kinds[0][0]), Inflate(tmp[2], kinds[1][0])
+                head = fd.read(32); total_rows = struct.unpack_from('<I', head, 4)[0]
+                fd.close(); fd = Inflate(tmp[2], kinds[1][0])
+                streams = (fs, fd)
+            except OSError as exc:
+                if 'partial' not in str(exc):
+                    raise
+                # the server does not do partial downloads: fetch the whole file instead
+                with urlopen(Request(url, headers={'User-Agent': USER_AGENT}), timeout=120) as r, open(tmp[0], 'wb') as f:
+                    size = int(r.headers.get('Content-Length') or 0); got = 0
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk); got += len(chunk)
+                        tell(state='downloading', percent=round(got * 100 / size) if size else 0, region=region, mb=f'{got // 1_000_000} MB')
+                        if got > 12_000_000_000:
+                            raise ValueError(f'download unexpectedly large ({got // 1_000_000} MB)')
+                zf = zipfile.ZipFile(tmp[0])
+                shp = next((m for m in zf.namelist() if re.search(r'roads_free_1\.shp$', m, re.I)), None)
+                if not shp:
+                    raise ValueError('no roads layer in ' + rid)
+                with zf.open(shp[:-4] + '.dbf') as fdh:
+                    total_rows = struct.unpack_from('<I', fdh.read(32), 4)[0]
+                streams = (zf.open(shp), zf.open(shp[:-4] + '.dbf'))
+            rows = [0]
+            for pts, name, cls, flags in _roads_from_streams(*streams, rows=rows):
                 w.add(pts, name, cls, flags, simplify_m=0)
                 done += 1
-                if done % 50000 == 0:
-                    status(state='building', percent=round((n - 1) * 100 / len(files)), linksRead=done, region=rid)
-            os.remove(part)
+                if done % 2000 == 0:
+                    tell(state='building', percent=min(99, round(rows[0] * 100 / max(1, total_rows))), region=region, linksRead=done)
+            for st in streams:
+                st.close()
+            tell(state='building', percent=100, region=region, linksRead=done, force=True)
+            for t in tmp:
+                if os.path.exists(t):
+                    os.remove(t)
     except BaseException:
         try:
             w.db.close(); os.remove(w.tmp)
@@ -485,8 +654,9 @@ def fetch_osm_and_build(data_dir, index_url=GEOFABRIK_INDEX, status=lambda **kw:
             pass
         raise
     finally:
-        if os.path.exists(part):
-            os.remove(part)
+        for t in tmp:
+            if os.path.exists(t):
+                os.remove(t)
     links = w.finish('OpenStreetMap roads via Geofabrik (' + ', '.join(r for r, _ in files[:6]) + ('…' if len(files) > 6 else '') + ')',
                      '© OpenStreetMap contributors (ODbL)')
     status(state='built', links=links)

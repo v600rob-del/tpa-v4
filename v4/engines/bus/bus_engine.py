@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.5.0'
+ENGINE_VERSION = '0.5.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -550,6 +550,7 @@ def refresh_road_map(kind: str = 'fetch') -> bool:
     if _test_osm:
         env['TPA_BUS_OSM_TEST_INDEX'] = _test_osm
     label = 'OpenStreetMap ' if kind == 'fetch-osm' else ''
+    last_logged = None
     ok = True
     with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env) as proc:
         BUILDER['proc'] = proc
@@ -567,11 +568,13 @@ def refresh_road_map(kind: str = 'fetch') -> bool:
                     ok = False
                 elif st in ('downloading', 'building', 'checking'):
                     detail = label + (f"{info['percent']}%" if 'percent' in info else '') + \
+                        (f" {info['mb']}" if 'mb' in info else '') + \
                         (f" {info['linksRead']} roads read" if 'linksRead' in info else '') + (f" ({info['region']})" if 'region' in info else '')
                     if ROADS['map'] is None:
                         STATE['roadMap'] = st
                     STATE['roadMapDetail'] = (st + ' ' + detail).strip() if ROADS['map'] else detail
-            if st in ('built', 'error') or (st == 'downloading' and 'region' in info):
+            if st in ('built', 'error') or (st, info.get('region')) != last_logged:
+                last_logged = (st, info.get('region'))        # one log line per step and region
                 print('Road map:', label + line[8:].strip(), flush=True)
     BUILDER['proc'] = None
     return ok and proc.returncode == 0
