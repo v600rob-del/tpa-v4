@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.5.4'
+ENGINE_VERSION = '0.5.5'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -60,6 +60,11 @@ ATTRIBUTION = "Bus data sourced via the Department for Transport's Bus Open Data
 
 MODE = 'bulk' if os.environ.get('TPA_BUS_MODE', 'area').strip().lower() == 'bulk' else 'area'
 POLL_SECONDS = max(10, int(os.environ.get('TPA_BUS_POLL_SECONDS', '30') or 30))
+# 0.5.5 (owner 31 Oct 23:47: "waiting a long time for the bus level to even load, and then longer for
+# movement"): on the server, keep downloading even when nobody is looking (as the train engine does), so
+# positions and speeds are already up to date when someone opens the map. Every 60 s when unwatched.
+ALWAYS_ON = os.environ.get('TPA_BUS_ALWAYS_ON', '0').strip() == '1'
+IDLE_POLL_SECONDS = max(POLL_SECONDS, int(os.environ.get('TPA_BUS_IDLE_POLL_SECONDS', '60') or 60))
 DEMAND_WINDOW = max(5, int(os.environ.get('TPA_BUS_DEMAND_SECONDS', '180') or 180))  # fetch only while viewed recently
 STALE_AFTER = 5 * 60         # report older than this -> marked stale
 DROP_AFTER = 30 * 60         # report older than this -> not shown
@@ -397,25 +402,32 @@ def padded(view):
     return max(GB[0], s), max(GB[1], w), min(GB[2], n), min(GB[3], e)
 
 
+def poll_decision(now: float):
+    """(go, area): whether to download BODS now, and for which area (area mode only)."""
+    with LOCK:
+        wanted = STATE['wanted']
+        watched = now - STATE['lastDemandAt'] < DEMAND_WINDOW
+        viewed = watched or ALWAYS_ON
+        pace = POLL_SECONDS if watched else IDLE_POLL_SECONDS
+        # After repeated failures, back off gently (up to 5 minutes) rather than hammer BODS.
+        wait = pace * min(10, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else pace
+        due = now - STATE['lastAttemptAt'] >= wait
+        uncovered = MODE == 'area' and wanted is not None and not covers(STATE['coverage'], wanted) \
+            and now - STATE['lastAttemptAt'] >= 3  # a newly viewed area need not wait the full 30 s
+        go = viewed and (due or uncovered) and (MODE == 'bulk' or wanted is not None)
+        area = padded(wanted) if (go and MODE == 'area') else None
+        if go:
+            STATE['lastAttemptAt'] = now
+    return go, area
+
+
 def poller() -> None:
     while True:
         WAKE.wait(timeout=5)
         WAKE.clear()
         if not KEY:
             continue
-        now = time.time()
-        with LOCK:
-            wanted = STATE['wanted']
-            viewed = now - STATE['lastDemandAt'] < DEMAND_WINDOW
-            # After repeated failures, back off gently (up to 5 minutes) rather than hammer BODS.
-            wait = POLL_SECONDS * min(10, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else POLL_SECONDS
-            due = now - STATE['lastAttemptAt'] >= wait
-            uncovered = MODE == 'area' and wanted is not None and not covers(STATE['coverage'], wanted) \
-                and now - STATE['lastAttemptAt'] >= 3  # a newly viewed area need not wait the full 30 s
-            go = viewed and (due or uncovered) and (MODE == 'bulk' or wanted is not None)
-            area = padded(wanted) if (go and MODE == 'area') else None
-            if go:
-                STATE['lastAttemptAt'] = now
+        go, area = poll_decision(time.time())
         if go:
             fetch_once(area)
 
@@ -716,7 +728,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'busesInLastDownload': len(STATE['vehicles']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
                                         'reportAgeMedianSeconds': STATE['reportAgeMedian'], 'busesWithSpeed': STATE['busesWithSpeed'],
-                                        'bodsDownloadsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS,
+                                        'bodsDownloadsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
                                         'roadMap': STATE['roadMap'], 'roadMapDetail': STATE['roadMapDetail'],
                                         'roadMapSource': ROADS['source'],
                                         'roadMapError': STATE['roadMapError'],

@@ -391,7 +391,7 @@ function speedPanel(){
   box.textContent=L1.join('\n');
 }
 setInterval(speedPanel,1000);
-function paint(){if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;drawFallback();markers();counts();syncOverlays();$('zoom-level').textContent='ZOOM '+state.z.toFixed(1);});}
+function paint(){if(pending)return;pending=true;requestAnimationFrame(()=>{pending=false;drawFallback();markers();counts();syncOverlays();liveCredit();$('zoom-level').textContent='ZOOM '+state.z.toFixed(1);});}
 function validNum(n){return typeof n==='number'&&Number.isFinite(n);}
 function checkFrame(id,f){if(!f||typeof f!=='object'||Array.isArray(f)||f.component!==id||f.contractVersion!=='1.0'||!['ready','stale','unavailable','not_installed'].includes(f.health)||typeof f.receivedAt!=='string'||!Number.isFinite(Date.parse(f.receivedAt))||typeof f.expiresAt!=='string'||!Number.isFinite(Date.parse(f.expiresAt))||Date.parse(f.expiresAt)<Date.parse(f.receivedAt)||typeof f.attribution!=='string'||f.attribution.length>256||!Array.isArray(f.entities)||f.entities.length>10000)throw Error('Invalid component v1 envelope');
 const ids=new Set(),entities=[];for(const e of f.entities){if(!e||typeof e.id!=='string'||!e.id||e.id.length>128||ids.has(e.id)||typeof e.label!=='string'||e.label.length>160||!['observed','estimated','stale'].includes(e.quality)||!Number.isFinite(Date.parse(e.observedAt)))throw Error('Invalid entity');ids.add(e.id);
@@ -720,10 +720,20 @@ function buildWelcome(w,tip,credits){
   const more=el('button','tpa-link-button','Data sources & credits');more.type='button';more.onclick=()=>{closeDialog(back);openDialog(credits);};
   card.append(enter,tipBox,more);return back;
 }
+// 4.1.15 (owner 31 Oct 23:47: "no mention of bods data"): the map's own credit line names the live data
+// sources of the layers being shown, from site-config.json's short credits (data, not code).
+const shortCredit=Object.create(null);
+function liveCredit(){const box=$('map-credit');if(!box)return;
+  const live=IDS.filter(id=>state.live[id]&&state.visible[id]&&!state.parked[id]&&(state.status[id]==='ready'||state.status[id]==='stale'))
+    .map(id=>shortCredit[layerName(id)]).filter(Boolean);
+  const text='© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'+(live.length?' · Live data: '+live.join(' · '):'');
+  if(box.textContent!==text)box.textContent=text;}
 async function loadSiteConfig(){
   let cfg;
   try{cfg=await requestBounded('/data/site-config.json',65536,5000);}catch(_){return;}
   if(!cfg||typeof cfg!=='object'||cfg.configVersion!==1)return;
+  for(const c of Array.isArray(cfg.credits)?cfg.credits:[]){const l=str(c?.layer,40).toLowerCase(),sh=str(c?.short,40);if(l&&sh)shortCredit[l]=sh;}
+  liveCredit();
   const credits=buildCredits(cfg.credits);
   const welcome=buildWelcome(cfg.welcome,cfg.tip,credits);
   const about=el('section','panel about-panel');about.setAttribute('aria-label','About TPA');

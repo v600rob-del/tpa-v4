@@ -27,25 +27,29 @@
       "layer": "Buses",
       "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS). Road shapes for bus movement: © OpenStreetMap contributors (ODbL, via Geofabrik); backup: contains OS data © Crown copyright and database right 2026 (OS Open Roads, OGL v3.0). Between reports, positions along the road are estimated for up to 90 seconds.",
       "url": "https://www.bus-data.dft.gov.uk",
-      "status": "Live in test"
+      "status": "Live in test",
+      "short": "BODS (DfT)"
     },
     {
       "layer": "Trains",
       "text": "Contains information of Network Rail Infrastructure Limited licensed under the following licence: Network Rail Infrastructure Limited Data Feeds Licence. Railway lines: Network Rail track model (OGL). Stations: DfT NaPTAN (OGL). Junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL). Between reports, train positions along the track are estimated.",
       "url": "https://www.networkrail.co.uk/who-we-are/transparency-and-ethics/transparency/open-data-feeds/network-rail-infrastructure-limited-data-feeds-licence",
-      "status": "Live in test"
+      "status": "Live in test",
+      "short": "Network Rail"
     },
     {
       "layer": "Aircraft",
       "text": "Aircraft positions from ADSB.lol (Open Database License). Between reports, positions are estimated from speed and direction.",
       "url": "https://www.adsb.lol/",
-      "status": "Live in test"
+      "status": "Live in test",
+      "short": "ADSB.lol"
     },
     {
       "layer": "Road traffic",
       "text": "Traffic flow © TomTom.",
       "url": "https://www.tomtom.com/",
-      "status": "Live in test"
+      "status": "Live in test",
+      "short": "TomTom"
     },
     {
       "layer": "Ships",

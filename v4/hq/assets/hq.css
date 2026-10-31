@@ -126,3 +126,7 @@ body.vector-ready .vector-map{z-index:4}
 .marker-layer .vehicle-pin.hop{animation:tpa-hop .45s ease-out}
 @keyframes tpa-hop{from{opacity:0}to{opacity:1}}
 @media(prefers-reduced-motion:reduce){.marker-layer .vehicle-pin.hop{animation:none}}
+
+/* 4.1.15: the credit line also names the live data sources, so it may wrap onto two lines. */
+.map-bottom>.map-credit{white-space:normal;max-width:min(62vw,760px);text-align:right;line-height:1.35}
+@media(max-width:760px){.map-bottom>.map-credit{max-width:92vw}}
