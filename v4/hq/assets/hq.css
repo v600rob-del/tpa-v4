@@ -114,3 +114,6 @@ body.vector-ready .vector-map{z-index:4}
 /* 4.1.2: fluid movement between the once-a-second position updates. */
 .marker-layer .vehicle-pin.glide{transition:transform var(--glide,1000ms) linear;will-change:transform}
 @media(prefers-reduced-motion:reduce){.marker-layer .vehicle-pin.glide{transition:none}}
+
+/* 4.1.7: icons travel with the map's zoom animation (Leaflet's own 0.25 s easing). */
+.marker-layer.zoom-anim .vehicle-pin,.marker-layer.zoom-anim .vehicle-pin.glide{transition:transform .25s cubic-bezier(0,0,.25,1)}

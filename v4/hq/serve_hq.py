@@ -31,7 +31,7 @@ import time
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json'}
-HQ_VERSION = '4.1.6'
+HQ_VERSION = '4.1.7'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # HQ relays data only (JSON frames, PNG overlay tiles); it contains no supplier
@@ -61,6 +61,14 @@ if _po:
 CACHE_DIR = Path(tempfile.gettempdir()) / 'tpa-v4-hq-icons-lan-4.0.8'
 FIXTURE_DIR = os.environ.get('TPA_HQ_FIXTURE_DIR')
 DISABLE_MAP_NETWORK = os.environ.get('TPA_HQ_DISABLE_MAP_NETWORK', '0') == '1'
+# 4.1.7 (owner 31 Oct: map loading slow on the small server): with TPA_HQ_BASEMAP=direct the
+# visitor's browser fetches the OpenFreeMap street map straight from OpenFreeMap's fast network
+# (its normal, intended use: "no limits on map views or requests"). The route through HQ stays
+# as an automatic backup if the direct route fails. Default "via-hq" keeps the PC unchanged.
+BASEMAP = os.environ.get('TPA_HQ_BASEMAP', 'via-hq').strip().lower()
+if BASEMAP not in ('direct', 'via-hq'):
+    raise SystemExit('TPA_HQ_BASEMAP must be "direct" or "via-hq"')
+OFM = 'https://tiles.openfreemap.org'
 # OpenFreeMap's offline-download guidance limits concurrent requests to four;
 # use this bound for ordinary on-demand viewport requests too. No bulk prefetch.
 UPSTREAM_SLOTS = threading.BoundedSemaphore(4)
@@ -362,7 +370,9 @@ class HQHandler(SimpleHTTPRequestHandler):
             ('X-Content-Type-Options','nosniff'),('X-Frame-Options','DENY'),
             ('Referrer-Policy','same-origin'),('Cross-Origin-Resource-Policy','same-origin'),
             ('Permissions-Policy','geolocation=(), camera=(), microphone=()'),
-            ('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")):
+            ('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+             f"img-src 'self' data: blob:{' '+OFM if BASEMAP=='direct' else ''}; font-src 'self'; "
+             f"connect-src 'self'{' '+OFM if BASEMAP=='direct' else ''}; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")):
             self.send_header(name,value)
         # 4.1.0: the page's own files are re-checked on every visit (a quick "not modified"
         # answer if unchanged), so an update shows straight away instead of up to 30 min later.
@@ -444,6 +454,10 @@ class HQHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 record_error('vendor',sanitized_error(exc),path)
                 return self.send_error(502,'Pinned map asset unavailable; check hq-map-status')
+        if path=='/hq-basemap':
+            via='/basemap/openfreemap/styles/liberty'
+            return self.json_reply(200,{'mode':BASEMAP,'style':OFM+'/styles/liberty' if BASEMAP=='direct' else via,
+                                        'fallback':via if BASEMAP=='direct' else None})
         if path.startswith('/basemap/openfreemap/'):
             relative=path[len('/basemap/openfreemap'):]
             if split.query or not allowed_map_path(relative):

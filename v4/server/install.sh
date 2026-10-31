@@ -131,7 +131,7 @@ unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
 unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_PORT 8784 \
     "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 300M rail.env v4/engines/rail/rail_engine.py
 unit hq "HQ map page" TPA_HQ_PORT 8778 \
-    "Environment=TPA_HQ_PARKED=sea TPA_HQ_LAN_TEST=0 TPA_HQ_OPEN_BROWSER=0 TMPDIR=/var/lib/tpa/hq
+    "Environment=TPA_HQ_PARKED=sea TPA_HQ_LAN_TEST=0 TPA_HQ_OPEN_BROWSER=0 TPA_HQ_BASEMAP=direct TMPDIR=/var/lib/tpa/hq
 Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784" \
     200M hq.env v4/hq/serve_hq.py
 

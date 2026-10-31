@@ -177,7 +177,36 @@ function infoText(e,est){
 // ones nearest the middle of the view first); hundreds of overlapping icons can't be read.
 const PHONE_CAP=150;
 let glideOK=new Set();
+// 4.1.7 (owner 31 Oct: "when you zoom in or out the icons stay where they were until you stop and
+// then move to their positions, giving the feeling of a mad scramble"):
+// - dragging: the whole icon layer is shifted with the map in one step (no re-placing every icon);
+// - zooming: when the map starts its zoom animation, every icon is sent to its place in the new
+//   view with the map's own timing, so icons travel with the map instead of freezing then rushing.
+let paintRef=null,zoomAnim=false,lastFull=0,zoomGuard=0;
+function shiftLayer(){
+  if(!map||!paintRef||zoomAnim||map.getZoom()!==paintRef.z)return false;
+  const p=map.latLngToContainerPoint(paintRef.ll),dx=p.x-paintRef.x,dy=p.y-paintRef.y;
+  markerLayer.style.transform=Math.abs(dx)+Math.abs(dy)>0.05?`translate(${dx.toFixed(1)}px,${dy.toFixed(1)}px)`:'';
+  return true;
+}
+function zoomAnimStart(e){
+  if(!map||typeof map.project!=='function')return;
+  zoomAnim=true;markerLayer.style.transform='';clearTimeout(zoomGuard);zoomGuard=setTimeout(zoomAnimEnd,900);
+  if(!REDUCED)markerLayer.classList.add('zoom-anim');
+  const size=map.getSize(),c=map.project(e.center,e.zoom);
+  for(const p of pins.values()){
+    if(p.lat==null)continue;
+    const q=map.project([p.lat,p.lon],e.zoom),x=q.x-c.x+size.x/2,y=q.y-c.y+size.y/2;
+    p.b.classList.remove('glide');
+    const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(-50%,-50%)${p.active?' scale(1.17)':''}`;
+    p.b.style.transform=tf;p.tf=tf;
+  }
+}
+function zoomAnimEnd(){if(!zoomAnim)return;zoomAnim=false;markerLayer.classList.remove('zoom-anim');paint();}
 function markers(){
+  if(zoomAnim)return;      // icons are travelling with the zoom animation; placed again when it ends
+  if(map){const ll=map.getCenter(),c=map.latLngToContainerPoint(ll);paintRef={ll,z:map.getZoom(),x:c.x,y:c.y};markerLayer.style.transform='';}
+  lastFull=performance.now();
   const d=dims(),now=Date.now(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
   // Which vehicles may glide this second: the nearest to the middle of the screen, up to the budget.
   {const cx=d.w/2,cy=d.h/2,list=[];
@@ -205,7 +234,7 @@ function markers(){
     const art=e.component+'|'+(e.position.headingDeg??'')+'|'+(e.badge||'')+'|'+e.id;
     let pin=pins.get(k);
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
-    const b=pin.b;pin.e=e;
+    const b=pin.b;pin.e=e;pin.lat=pos.lat;pin.lon=pos.lon;pin.active=active;
     if(pin.art!==art){b.replaceChildren(buildArtwork(e));pin.art=art;}
     if(b.className!==cls)b.className=cls;
     const title=prefix+e.label+' · '+(pos.est?'estimated position':e.quality);
@@ -469,7 +498,15 @@ try{
     attributionControl:false}).setView([HOME.lat,HOME.lon],HOME.z);
   L.control.attribution({position:'bottomright',prefix:false}).addTo(map);
   state.renderer='leaflet-waiting';
-  map.on('move zoom zoomend',()=>syncView());
+  // 4.1.7: a plain drag only shifts the icon layer (cheap); the icons are fully re-placed at most
+  // four times a second while dragging, so ones coming into view appear promptly.
+  map.on('move',()=>{
+    const c=map.getCenter();state.lon=c.lng;state.lat=c.lat;
+    if(!shiftLayer()||performance.now()-lastFull>250)syncView();
+  });
+  map.on('zoom zoomend',()=>syncView());
+  map.on('zoomanim',zoomAnimStart);
+  map.on('zoomend',zoomAnimEnd);
   map.on('moveend',refetchLiveView);
   // 4.1.2: while the map moves, markers follow it instantly (no gliding lag).
   if(typeof map.on==='function')map.on('movestart zoomstart',()=>{mapMoving=true;for(const p of pins.values())p.b.classList.remove('glide');});
@@ -498,8 +535,13 @@ try{
   if(!window.TPA_BASEMAP?.attach){
     throw Error('TPA baseline loader not ready');
   }
-  window.TPA_BASEMAP.attach(map,{style:'/basemap/openfreemap/styles/liberty',
-    attribution:'<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> | <a href="https://openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'});
+  // 4.1.7: the server says whether the street map comes straight from OpenFreeMap (with the route
+  // through HQ as a backup) or through HQ; anything unexpected means "through HQ" as before.
+  const via='/basemap/openfreemap/styles/liberty';
+  fetch('/hq-basemap',{cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null).then(cfg=>{
+  const direct=cfg&&cfg.mode==='direct'&&cfg.style==='https://tiles.openfreemap.org/styles/liberty';
+  window.TPA_BASEMAP.attach(map,{style:direct?cfg.style:via,fallbackStyle:direct?via:null,
+    attribution:'<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> | <a href="https://openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'});});
 }catch(e){state.renderer='fallback';reportBrowser('map-constructor-error','leaflet-init',String(e?.message||e));map?.remove?.();map=null;diagnose();}}
 window.TPA_HQ_VECTOR_READY=()=>{ready=true;state.renderer='leaflet-maplibre';state.mapErrors=0;
   document.body.classList.add('vector-ready');notice.classList.add('hidden');syncView();};

@@ -12,7 +12,7 @@ const ready=Promise.all([loaded(leaflet,()=>!!window.L),css,lib]).then(()=>scrip
 ready.catch(e=>{report('library-resource-error','vendor-load',e.message);});
 Object.defineProperty(window,'TPA_BASEMAP',{value:Object.freeze({timings:()=>({...timings}),attach(map,opts){
 if(connected.has(map))return connected.get(map);
-if(status){status.hidden=false;status.textContent='Loading OpenFreeMap streets via HQ server…';}
+if(status){status.hidden=false;status.textContent='Loading OpenFreeMap streets…';}
 const promise=ready.then(async()=>{
 if(map._animatingZoom||map.touchZoom?._zooming)await new Promise(r=>map.once('zoomend',r));
 if(!window.TPA_VECTOR_LAYER)throw Error('Buffer adapter not initialized');
@@ -21,8 +21,11 @@ timings.vectorLayerAttached=performance.now();report('vector-layer-attached','br
 if(gl){
 const finish=()=>{timings.basemapLoaded=performance.now();if(status)status.hidden=true;window.TPA_HQ_VECTOR_READY?.();report('map-loaded','liberty-style','Vector style loaded');};
 if(gl.loaded())finish();else gl.once('load',finish);
+let loadedOnce=false,switched=false;gl.once('load',()=>{loadedOnce=true;});
 gl.on('error',e=>{
 const m=String(e?.error?.message||e?.message||'Unknown MapLibre error');
+// 4.1.7: if the direct OpenFreeMap route fails before the map has loaded, use the route through HQ.
+if(!loadedOnce&&!switched&&opts.fallbackStyle){switched=true;report('map-fallback','direct-failed',m);gl.setStyle(new URL(opts.fallbackStyle,location.href).href);return;}
 report(/tile|pbf|protobuf|vector/i.test(m)?'map-vector-error':'map-resource-error','maplibre-event',m);
 window.TPA_HQ_VECTOR_ERROR?.(m);
 });
