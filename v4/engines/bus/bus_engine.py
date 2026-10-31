@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.4.1'
+ENGINE_VERSION = '0.4.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -113,6 +113,8 @@ PATH_WAKE = threading.Event()
 FETCHING = threading.Event()
 BUILDER = {'proc': None}
 TIMING = {'fetch': None, 'pathMs': None}
+VIEWS: list = []             # (time, view) recently looked at closely enough for roads (0.4.2)
+VIEW_MEMORY = 180
 
 
 def iso(ts: float) -> str:
@@ -222,33 +224,57 @@ def metres(lat1, lon1, lat2, lon2) -> float:
     return 12742000 * math.asin(min(1.0, math.sqrt(a)))
 
 
+HISTORY: dict = {}            # bus key -> recent reports [(recorded, lat, lon), ...] (0.4.2)
+SPEED_WINDOW = 180           # seconds of recent reports used for a bus's speed
+HISTORY_KEEP = 8
+
+
+def _bearing(lat1, lon1, lat2, lon2) -> float:
+    y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
+    x = (math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) -
+         math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(math.radians(lon2 - lon1)))
+    return round(math.degrees(math.atan2(y, x)) % 360, 1)
+
+
 def add_motion(new: list, old: list) -> None:
-    """0.3.0: BODS gives direction but not speed. Speed comes from the same bus's last two
-    real reports (5 s to 5 min apart, 0.5-35 m/s); otherwise the bus simply has no motion."""
+    """Speed and direction for each bus from its own recent reports.
+    0.3.0 used only the last two reports, so a bus whose last two reports were at a stop froze,
+    then jumped 100-200 m (server check 31 Oct 00:22: 74 of 184 buses had no movement).
+    0.4.2: speed = distance covered over the last ~3 minutes of reports / time taken (stops
+    included, so a bus keeps its usual pace through a short stop and slows to a halt when it is
+    really parked). Direction = where it really went, unless the bus company's own direction
+    agrees within 60 degrees (that one is more up to date at corners). Limits: 0.5-35 m/s."""
     before = {v['key']: v for v in old}
     for v in new:
-        p = before.get(v['key'])
-        if not p:
+        h = HISTORY.get(v['key'])
+        if h is None:
+            p = before.get(v['key'])
+            h = HISTORY[v['key']] = [(p['recorded'], p['lat'], p['lon'])] if p else []
+        if not h or v['recorded'] > h[-1][0]:
+            h.append((v['recorded'], v['lat'], v['lon']))
+            del h[:-HISTORY_KEEP]
+        recent = [r for r in h if v['recorded'] - r[0] <= SPEED_WINDOW and r[0] <= v['recorded']]
+        if len(recent) < 2 and len(h) >= 2 and v['recorded'] - h[-2][0] <= 300:
+            recent = h[-2:]
+        if len(recent) < 2:
             continue
-        if v['recorded'] == p['recorded']:          # same report downloaded again: keep what we knew
-            if p.get('speed'):
-                v['speed'] = p['speed']
-                if v['bearing'] is None:
-                    v['bearing'] = p['bearing']
+        span = recent[-1][0] - recent[0][0]
+        dist = sum(metres(a[1], a[2], b[1], b[2]) for a, b in zip(recent, recent[1:]))
+        if span < 5 or dist < 10:
             continue
-        dt = v['recorded'] - p['recorded']
-        if not 5 <= dt <= 300:
+        speed = dist / span
+        if not 0.5 <= speed <= 35 or any(metres(a[1], a[2], b[1], b[2]) / max(1, b[0] - a[0]) > 40 for a, b in zip(recent, recent[1:])):
             continue
-        dist = metres(p['lat'], p['lon'], v['lat'], v['lon'])
-        speed = dist / dt
-        if dist < 10 or not 0.5 <= speed <= 35:
-            continue
+        went = None
+        for a, b in zip(reversed(h[:-1]), reversed(h)):   # the latest real movement of 10 m or more
+            if v['recorded'] - b[0] > 300:
+                break
+            if metres(a[1], a[2], b[1], b[2]) >= 10:
+                went = _bearing(a[1], a[2], b[1], b[2])
+                break
         v['speed'] = round(speed, 2)
-        if v['bearing'] is None:
-            y = math.sin(math.radians(v['lon'] - p['lon'])) * math.cos(math.radians(v['lat']))
-            x = (math.cos(math.radians(p['lat'])) * math.sin(math.radians(v['lat'])) -
-                 math.sin(math.radians(p['lat'])) * math.cos(math.radians(v['lat'])) * math.cos(math.radians(v['lon'] - p['lon'])))
-            v['bearing'] = round(math.degrees(math.atan2(y, x)) % 360, 1)
+        if went is not None and (v['bearing'] is None or min(abs(v['bearing'] - went) % 360, 360 - abs(v['bearing'] - went) % 360) > 60):
+            v['bearing'] = went
 
 
 def fetch_once(area) -> None:
@@ -271,8 +297,34 @@ def fetch_once(area) -> None:
             except OSError:
                 pass
         FETCHING.clear()
-        PATH_WAKE.set()
         TIMING['fetch'] = round(time.time() - started, 1)
+        prepare_paths()
+        PATH_WAKE.set()
+
+
+def prepare_paths() -> None:
+    """0.4.2: work out the road ahead for every moving bus in areas people are looking at as soon
+    as the reports arrive, so HQ gets the road path first time (server check 31 Oct: 12 buses
+    switched from straight to road movement on the same report, which looks like a sideways slide)."""
+    if ROADS['map'] is None:
+        return
+    now = time.time()
+    with LOCK:
+        VIEWS[:] = [(t, w) for t, w in VIEWS if now - t < VIEW_MEMORY]
+        views = [w for _, w in VIEWS]
+        if not views:
+            return
+        for v in STATE['vehicles']:
+            if not v.get('speed') or v.get('bearing') is None or now - v['recorded'] > DROP_AFTER:
+                continue
+            if not any(s - 0.01 <= v['lat'] <= n + 0.01 and w - 0.01 <= v['lon'] <= e + 0.01 for s, w, n, e in views):
+                continue
+            known = PATHS.get(v['key'])
+            if known and known[0] == v['recorded']:
+                continue
+            if (v['key'], v['recorded']) not in PENDING_SET and len(PENDING) < 3000:
+                PENDING_SET.add((v['key'], v['recorded']))
+                PENDING.append(v)
 
 
 def _fetch_once(area) -> None:
@@ -299,6 +351,8 @@ def _fetch_once(area) -> None:
             live = {v['key'] for v in vehicles}
             for k in [k for k in PATHS if k not in live]:
                 del PATHS[k]
+            for k in [k for k in HISTORY if k not in live]:
+                del HISTORY[k]
             STATE['reportAgeMedian'] = round(ages[len(ages) // 2]) if ages else None
             STATE['busesWithSpeed'] = sum(1 for v in vehicles if v.get('speed'))
             STATE.update(vehicles=vehicles, fetchedAt=started, coverage=coverage, lastError='',
@@ -412,6 +466,11 @@ def snapshot(view) -> dict:
     inside.sort(key=lambda t: t[0])  # nearest the middle of the screen first
     deadline = time.monotonic() + INLINE_BUDGET
     roads = north - south <= ROAD_VIEW_SPAN
+    if roads:
+        with LOCK:
+            VIEWS.append((now, view))
+            del VIEWS[:-50]
+    why = {'road': 0, 'straight-pending': 0, 'straight-no-road-match': 0, 'straight-zoomed-out': 0, 'still-no-speed': 0}
     for _, v, age in inside[:MAX_PER_VIEW]:
         route = v['route'] or 'Bus'
         label = (f'Bus {route}' if v['route'] else 'Bus') + (f' to {v["destination"]}' if v['destination'] else '')
@@ -420,12 +479,24 @@ def snapshot(view) -> dict:
             'badge': re.sub(r'[^A-Za-z0-9]', '', v['route'])[:8] or None,
             'position': {'lon': v['lon'], 'lat': v['lat'], 'headingDeg': v['bearing']},
             'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(v['recorded'])}
-        if v.get('speed') and v['bearing'] is not None:
+        if v.get('speed') and v['bearing'] is not None and age <= STALE_AFTER:   # 0.4.2: old reports stay put
             # 0.3.1: reports reach us 20-40 s late, so buses are carried forward up to 90 s, easing
             # to a stop, and corrected by a short slide when the next real report arrives.
             # 0.4.0: along the real road ahead when the road map knows it.
             entity['motion'] = motion_for(v, deadline, roads)
+            if entity['motion']['mode'] == 'path':
+                why['road'] += 1
+            elif not roads or ROADS['map'] is None:
+                why['straight-zoomed-out'] += 1
+            else:
+                with LOCK:
+                    known = PATHS.get(v['key'])
+                why['straight-no-road-match' if known and known[0] == v['recorded'] else 'straight-pending'] += 1
+        else:
+            why['still-no-speed'] += 1
         frame['entities'].append(entity)
+    with LOCK:
+        STATE['lastView'] = why
     if not frame['entities'] and MODE == 'area' and not covers(coverage, view):
         frame['notice'] = 'Loading buses for this area…'
     elif len(inside) > MAX_PER_VIEW and not notice:
@@ -618,7 +689,8 @@ class Handler(BaseHTTPRequestHandler):
                                         'roadMapError': STATE['roadMapError'],
                                         'roadPathsKnown': sum(1 for x in PATHS.values() if x[1]),
                                         'roadTilesLoaded': len(ROADS['map'].tiles) if ROADS['map'] else 0,
-                                        'lastFetchSeconds': TIMING['fetch'], 'roadPathMs': TIMING['pathMs']})
+                                        'lastFetchSeconds': TIMING['fetch'], 'roadPathMs': TIMING['pathMs'],
+                                        'lastView': STATE.get('lastView')})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
         return self.reply(404, {'error': 'not found'})
