@@ -165,7 +165,9 @@ function estimate(e,now){
 //    new estimate catches up, then carries on: never backwards (up to 45 s, then a normal slide);
 //  - estimate had fallen BEHIND -> the icon catches up gradually at a believable extra speed;
 //  - sideways or unclear -> the short 2 s slide as before.
-const WAIT_MAX_MS=45000,CATCHUP_MPS=10,CATCHUP_MAX_MS=30000;
+// 4.1.14 (owner 31 Oct 23:18: waited "almost 30 seconds", then "their little speeding thing"): a vehicle
+// waits at most 20 s and catches up at most 40% faster than its own speed; beyond that it fades in.
+const WAIT_MAX_MS=20000,CATCHUP_SHARE=0.4,CATCHUP_MAX_MS=30000;
 function metresXY(a,b){const k=Math.cos(a.lat*Math.PI/180);return [(b.lon-a.lon)*k*111195,(b.lat-a.lat)*111195];}
 function whereNow(e,now){
   const k=keyOf(e),target=estimate(e,now);if(!target)return null;
@@ -189,17 +191,19 @@ function noteNewFrame(f,now,fresh){
   // A vehicle already on screen goes from where it is shown to its new position (4.1.9: naturally).
   for(const e of f.entities){const k=keyOf(e),was=shown.get(k);if(!was||!e.position)continue;
     const next=estimate(e,now);if(!next||(Math.abs(next.lon-was.lon)<=1e-6&&Math.abs(next.lat-was.lat)<=1e-6))continue;
-    if(fresh){const [fx,fy]=metresXY(was,next);if(Math.hypot(fx,fy)>20&&!REDUCED)blends.set(k,{hop:true,t0:now});else blends.delete(k);continue;}
+    // not being drawn (or just back): no corrections against frozen spots - apply directly, fading in if far
+    if(fresh||notDrawing()){const [fx,fy]=metresXY(was,next);if(Math.hypot(fx,fy)>20&&!REDUCED)blends.set(k,{hop:true,t0:now});else blends.delete(k);continue;}
     const ahead=estimate(e,now+1000),[mx,my]=ahead?metresXY(next,ahead):[0,0],speed=Math.hypot(mx,my);
     const [gx,gy]=metresXY(was,next),gap=Math.hypot(gx,gy);
     if(e.motion&&speed>0.3&&gap>3){
       const ux=mx/speed,uy=my/speed,along=gx*ux+gy*uy,across=Math.abs(gx*uy-gy*ux);
-      if(along<0&&across<40&&gap<500){blends.set(k,{lon:was.lon,lat:was.lat,t0:now,wait:true,ux,uy});continue;}
-      if(along>0&&across<40){blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:Math.max(BLEND_MS,Math.min(CATCHUP_MAX_MS,gap/CATCHUP_MPS*1000))});continue;}
+      if(along<0&&across<40&&-along/speed*1000<=WAIT_MAX_MS){blends.set(k,{lon:was.lon,lat:was.lat,t0:now,wait:true,ux,uy});continue;}
+      const catchMs=1.5*gap/(CATCHUP_SHARE*speed)*1000;   // the ease in/out peaks at 1.5x the average: 40% is the most, ever
+      if(along>0&&across<40&&catchMs<=CATCHUP_MAX_MS){blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:Math.max(BLEND_MS,catchMs)});continue;}
       // 4.1.12 (owner 31 Oct 22:11: buses "go off course ... sometimes moving a fair distance quickly"):
       // a moving vehicle that turns out to be somewhere else entirely (not along its way, over 60 m) is
       // not flown across the buildings; it fades out and reappears in its real place.
-      if(gap>60&&!REDUCED){blends.set(k,{hop:true,t0:now});continue;}
+      if((gap>60||across<40)&&!REDUCED){blends.set(k,{hop:true,t0:now});continue;}   // too far to wait for or catch up with
     }
     blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:BLEND_MS});}
 }
@@ -218,7 +222,7 @@ let glideOK=new Set();
 // - dragging: the whole icon layer is shifted with the map in one step (no re-placing every icon);
 // - zooming: when the map starts its zoom animation, every icon is sent to its place in the new
 //   view with the map's own timing, so icons travel with the map instead of freezing then rushing.
-let paintRef=null,zoomAnim=false,lastFull=0,zoomGuard=0,viewSig='';
+let paintRef=null,zoomAnim=false,lastFull=0,zoomGuard=0,viewSig='',lastDrawAt=0;
 function shiftLayer(){
   if(!map||!paintRef||zoomAnim||map.getZoom()!==paintRef.z)return false;
   const p=map.latLngToContainerPoint(paintRef.ll),dx=p.x-paintRef.x,dy=p.y-paintRef.y;
@@ -247,7 +251,7 @@ function markers(){
   let viewMoved=false;
   if(map){const ll=map.getCenter(),c=map.latLngToContainerPoint(ll);paintRef={ll,z:map.getZoom(),x:c.x,y:c.y};markerLayer.style.transform='';
     const r=map.latLngToContainerPoint([54,-2]),sig=map.getZoom()+'|'+r.x.toFixed(1)+'|'+r.y.toFixed(1);viewMoved=sig!==viewSig;viewSig=sig;}
-  lastFull=performance.now();
+  lastFull=performance.now();lastDrawAt=lastFull;
   const d=dims(),now=Date.now(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
   // Which vehicles may glide this second: the nearest to the middle of the screen, up to the budget.
   {const cx=d.w/2,cy=d.h/2,list=[];
@@ -315,8 +319,13 @@ function updateSelectedInfo(now){
 // The pace adapts to the device: if an update takes longer (busy map, slow phone), updates
 // come less often (down to about three a second) so the page always stays responsive.
 let lastTick=0,tickCost=0,glideMs=GLIDE_MS;
+let lastRaf=0;
+// Icons not placed for a while although things are moving = the page wasn't being drawn.
+function notDrawing(){return document.visibilityState!=='visible'||(lastDrawAt>0&&performance.now()-lastDrawAt>Math.max(3000,glideMs*2.5));}
 function motionLoop(ts){
   requestAnimationFrame(motionLoop);
+  {const was=lastRaf;lastRaf=performance.now();if(was&&lastRaf-was>1500)resumeDrawing();}
+  if(document.visibilityState==='visible'&&(moving||blends.size)&&notDrawing())resumeDrawing();
   if(document.visibilityState!=='visible'||!moving&&!blends.size)return;
   // (TPA_HQ_TEST_MIN_GAP: tests only, to imitate a slow device.)
   const gap=REDUCED?2000:Math.max(GLIDE_MS,tickCost*12,Number(window.TPA_HQ_TEST_MIN_GAP)||0);
@@ -492,19 +501,24 @@ function refetchLiveView(){clearTimeout(refetchTimer);refetchTimer=setTimeout(()
 const pollTimers=Object.create(null),lastFetch=Object.create(null),seqSent=Object.create(null),seqDone=Object.create(null),fetchedBox=Object.create(null);
 function schedulePoll(id,ms){clearTimeout(pollTimers[id]);pollTimers[id]=setTimeout(()=>{pollTimers[id]=0;
   if(!state.live[id]||state.parked[id])return;
-  if(document.visibilityState!=='visible'||!state.visible[id]){schedulePoll(id,ms);return;}
+  // 4.1.14 (owner 31 Oct 23:19: "If we can keep a hidden window alive or at least pretending to be"):
+  // keep collecting reports while the page is hidden, so coming back shows up-to-date positions at once.
+  if(!state.visible[id]){schedulePoll(id,ms);return;}
   getComponent(id);},ms);}
 // 4.1.13 (owner 31 Oct 22:46: after tabbing away and back "it always has a catch up, and thats when
 // the buses and trains move about wrong"). Browsers pause animation in hidden tabs, so on return the
 // icons were far behind and every difference was treated as a correction (waiting, racing). Now coming
 // back is a fresh start: icons are placed where they should be now, at once, and the first new reports
 // after returning are applied directly (anything far off fades in at its real place).
+// 4.1.14: the same when the page simply wasn't being drawn (another window in front, minimised, the
+// computer asleep): HQ notices the gap in drawing itself, whatever the browser says about visibility.
 const freshStart=Object.create(null);
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible')return;
+function resumeDrawing(){
   blends.clear();viewSig='';
   for(const id of IDS){freshStart[id]=true;
     if(state.live[id]&&!state.parked[id]&&state.status[id]!=='not_installed'&&Date.now()-(lastFetch[id]||0)>4000)getComponent(id);}
-  paint();});
+  paint();}
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')resumeDrawing();});
 function currentBox(pad){if(!map||typeof map.getBounds!=='function')return null;const b=pad?map.getBounds().pad(pad):map.getBounds();return {w:b.getWest(),s:b.getSouth(),e:b.getEast(),n:b.getNorth()};}
 async function getComponent(id){
   const seq=seqSent[id]=(seqSent[id]||0)+1,box=currentBox(0.2);lastFetch[id]=Date.now();
