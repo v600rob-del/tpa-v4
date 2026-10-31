@@ -117,3 +117,12 @@ body.vector-ready .vector-map{z-index:4}
 
 /* 4.1.7: icons travel with the map's zoom animation (Leaflet's own 0.25 s easing). */
 .marker-layer.zoom-anim .vehicle-pin,.marker-layer.zoom-anim .vehicle-pin.glide{transition:transform .25s cubic-bezier(0,0,.25,1)}
+
+/* 4.1.12: bus and train icons sized by zoom (--pin-s set by HQ: 0.7 far out ... 1.2 at maximum zoom). */
+.marker-layer .review-pin.bus,.marker-layer .review-pin.rail{width:calc(40px*var(--pin-s,1));height:calc(40px*var(--pin-s,1));font-size:calc(20px*var(--pin-s,1))}
+.marker-layer .review-pin.bus svg,.marker-layer .review-pin.rail svg{width:calc(30px*var(--pin-s,1));height:calc(30px*var(--pin-s,1))}
+.marker-layer .review-pin.bus .review-route,.marker-layer .review-pin.rail .review-route{top:calc(30px*var(--pin-s,1));font-size:calc(11px*var(--pin-s,1));line-height:calc(16px*var(--pin-s,1))}
+/* 4.1.12: a vehicle found somewhere else entirely fades in at its real place instead of flying there. */
+.marker-layer .vehicle-pin.hop{animation:tpa-hop .45s ease-out}
+@keyframes tpa-hop{from{opacity:0}to{opacity:1}}
+@media(prefers-reduced-motion:reduce){.marker-layer .vehicle-pin.hop{animation:none}}

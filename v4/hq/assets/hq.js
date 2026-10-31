@@ -46,7 +46,11 @@ function inverse(px,py,z){const size=256*2**z,y=Math.PI*(1-2*py/size);return {lo
 function dims(){return {w:root.clientWidth,h:root.clientHeight};}
 function pixel(lon,lat){if(map){let p=map.latLngToContainerPoint([lat,lon]);return [p.x,p.y];}
 const d=dims(),p=merc(lon,lat,state.z),c=merc(state.lon,state.lat,state.z);return [p[0]-c[0]+d.w/2,p[1]-c[1]+d.h/2];}
-function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}paint();}
+// 4.1.12 (owner 31 Oct 22:11: "Icons could be smaller for buses and trains ... a zoom in to max or nearly
+// max zoom could have larger icons"): bus and train icons are sized by zoom level.
+function pinScale(z){return z<12.5?0.7:z<14.5?0.82:z<16.5?1:1.2;}
+function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}
+  const ps=String(pinScale(state.z));if(markerLayer.style.getPropertyValue('--pin-s')!==ps)markerLayer.style.setProperty('--pin-s',ps);paint();}
 function gotoPlace(lon,lat,z,label){if(map)map.setView([lat,lon],z,{animate:false});state.lon=lon;state.lat=lat;state.z=z;selected.classList.add('hidden');state.selected=null;$('map-place').textContent=(label||'SELECTED LOCATION').toUpperCase();$('sidebar').classList.remove('open');paint();}
 function home(){gotoPlace(HOME.lon,HOME.lat,HOME.z,'BEVERLEY, EAST YORKSHIRE');toast('Home · Beverley, East Yorkshire');}
 function fitUK(){gotoPlace(-3.0,54.55,5.5,'UNITED KINGDOM');}
@@ -167,6 +171,7 @@ function whereNow(e,now){
   const k=keyOf(e),target=estimate(e,now);if(!target)return null;
   const b=blends.get(k);
   if(b){
+    if(b.hop){blends.delete(k);return {...target,est:true,hop:true};}
     if(b.wait&&!REDUCED){
       const [dx,dy]=metresXY(b,target);
       if(dx*b.ux+dy*b.uy<0&&now-b.t0<WAIT_MAX_MS)return {lon:b.lon,lat:b.lat,est:true};
@@ -190,6 +195,10 @@ function noteNewFrame(f,now){
       const ux=mx/speed,uy=my/speed,along=gx*ux+gy*uy,across=Math.abs(gx*uy-gy*ux);
       if(along<0&&across<40&&gap<500){blends.set(k,{lon:was.lon,lat:was.lat,t0:now,wait:true,ux,uy});continue;}
       if(along>0&&across<40){blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:Math.max(BLEND_MS,Math.min(CATCHUP_MAX_MS,gap/CATCHUP_MPS*1000))});continue;}
+      // 4.1.12 (owner 31 Oct 22:11: buses "go off course ... sometimes moving a fair distance quickly"):
+      // a moving vehicle that turns out to be somewhere else entirely (not along its way, over 60 m) is
+      // not flown across the buildings; it fades out and reappears in its real place.
+      if(gap>60&&!REDUCED){blends.set(k,{hop:true,t0:now});continue;}
     }
     blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:BLEND_MS});}
 }
@@ -260,20 +269,33 @@ function markers(){
     const active=!!state.selected&&state.selected.id===e.id&&state.selected.component===e.component;
     const prefix=state.live[e.component]?'':'MOCK ';
     const glideWanted=!REDUCED&&!mapMoving&&!!pin0(k)&&(pos.est||blends.has(k)||(state.live[e.component]&&!!e.motion));
-    const glide=glideWanted&&glideOK.has(k)&&!viewMoved;
+    const canGlide=glideWanted&&glideOK.has(k)&&!viewMoved,glide=canGlide&&!pos.hop;
     const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}`;
-    const art=e.component+'|'+(e.position.headingDeg??'')+'|'+(e.badge||'')+'|'+e.id;
+    // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
+    // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
+    const art=e.component+'|'+(e.badge||'')+'|'+e.id;
     let pin=pins.get(k);
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
     const b=pin.b;pin.e=e;pin.lat=pos.lat;pin.lon=pos.lon;pin.active=active;
     if(pin.art!==art){b.replaceChildren(buildArtwork(e));pin.art=art;}
+    if(e.component==='air'){const svg=b.querySelector('svg'),rot=e.position.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';
+      if(svg&&svg.style.transform!==rot)svg.style.transform=rot;}
     if(b.className!==cls)b.className=cls;
+    if(pos.hop){b.classList.remove('hop');void b.offsetWidth;b.classList.add('hop');}
     const title=prefix+e.label+' · '+(pos.est?'estimated position':e.quality);
     if(b.title!==title){b.title=title;b.setAttribute('aria-label',prefix+e.label+' '+(pos.est?'estimated position':e.quality)+(active?' selected':''));}
     if(b.getAttribute('aria-pressed')!==String(active))b.setAttribute('aria-pressed',String(active));
     // Moved with a transform (no page re-layout), which phones handle on the graphics chip.
     const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(-50%,-50%)${active?' scale(1.17)':''}`;
-    if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;}
+    if(pos.hop&&canGlide){
+      // reappear one update back along its way and glide on at once, in step with everything else
+      // (no standing still until the next update)
+      const back=estimate(e,now-glideMs);
+      if(back){const [bx,by]=pixel(back.lon,back.lat);
+        b.style.transform=`translate(${bx.toFixed(1)}px,${by.toFixed(1)}px) translate(-50%,-50%)${active?' scale(1.17)':''}`;
+        void b.offsetWidth;b.classList.add('glide');}
+      b.style.transform=tf;pin.tf=tf;
+    }else if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;}
     b.onclick=()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
   }
   for(const [k,pin] of pins)if(!keep.has(k)){pin.b.remove();pins.delete(k);}
@@ -370,7 +392,8 @@ entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e
 const notice=typeof f.notice==='string'?f.notice.slice(0,120):'';
 let overlay=null;const o=f.overlay;
 if(o&&typeof o==='object'&&o.type==='raster'&&o.tiles===`/api/v4/components/${id}/tiles/{z}/{x}/{y}.png`&&Number.isInteger(o.minZoom)&&Number.isInteger(o.maxZoom)&&o.minZoom>=0&&o.maxZoom<=22&&o.minZoom<=o.maxZoom&&validNum(o.opacity)&&o.opacity>0&&o.opacity<=1)
-  overlay={tiles:o.tiles,minZoom:o.minZoom,maxZoom:o.maxZoom,opacity:o.opacity,refreshSeconds:Number.isInteger(o.refreshSeconds)?clamp(o.refreshSeconds,60,3600):300};
+  overlay={tiles:o.tiles,minZoom:o.minZoom,maxZoom:o.maxZoom,opacity:o.opacity,refreshSeconds:Number.isInteger(o.refreshSeconds)?clamp(o.refreshSeconds,60,3600):300,
+    tileSize:o.tileSize===512?512:256};
 const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,5000,120000):30000;
 return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs};}
 // 4.1.0 optional motion hint from an engine. HQ only does generic arithmetic with it
@@ -428,18 +451,29 @@ function syncOverlays(){
   for(const id of IDS){
     const o=state.frames[id]?.overlay,have=state.overlays[id];
     const want=!!o&&state.visible[id]&&!state.parked[id]&&(state.status[id]==='ready'||state.status[id]==='stale');
-    if(!want){if(have){map.removeLayer(have.layer);delete state.overlays[id];}continue;}
+    if(!want){if(have){map.removeLayer(have.layer);if(have.next)map.removeLayer(have.next.layer);delete state.overlays[id];}continue;}
     const stamp=Math.floor(Date.now()/1000/o.refreshSeconds);
     const url=o.tiles+'?v='+stamp;
-    if(have&&have.url===url)continue;
-    if(have){have.layer.setUrl(url);have.url=url;continue;}
+    if(have&&(have.url===url||have.next?.url===url))continue;
+    // 4.1.11 (owner 31 Oct 22:08: traffic "loading in chunks whenever it likes"):
+    // - pictures load while the map is still moving, and more are kept just off-screen;
+    // - 512-pixel pictures when the engine offers them (a quarter as many requests);
+    // - a refresh loads the new pictures underneath and only then removes the old ones,
+    //   instead of blanking the whole layer and reloading it.
+    const big=o.tileSize===512;
     const layer=L.tileLayer(url,{pane:'tpa-socket-overlays',minZoom:o.minZoom,maxNativeZoom:o.maxZoom,maxZoom:18,opacity:o.opacity,
-      updateWhenIdle:true,updateWhenZooming:false,keepBuffer:1,crossOrigin:false,
+      tileSize:big?512:256,zoomOffset:big?-1:0,updateWhenIdle:false,updateWhenZooming:false,keepBuffer:3,crossOrigin:false,
       // Leaflet shows attribution as HTML, so escape the engine's plain text first.
       attribution:String(state.frames[id]?.attribution||'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';')});
     layer.on('loading',()=>{SPEED.trafficFrom=performance.now();});
     layer.on('load',()=>{speedMark('traffic shown');if(SPEED.trafficFrom){SPEED.trafficLast=performance.now()-SPEED.trafficFrom;SPEED.trafficFrom=0;}});
-    layer.addTo(map);state.overlays[id]={layer,url};
+    if(!have){layer.addTo(map);state.overlays[id]={layer,url};continue;}
+    if(have.next)map.removeLayer(have.next.layer);
+    have.next={layer,url};
+    layer.setOpacity(0);                           // invisible until every picture has arrived
+    layer.once('load',()=>{const cur=state.overlays[id];if(!cur||cur.next?.layer!==layer)return;
+      layer.setOpacity(o.opacity);map.removeLayer(cur.layer);state.overlays[id]={layer,url};});
+    layer.addTo(map);
   }
 }
 let refetchTimer=0;

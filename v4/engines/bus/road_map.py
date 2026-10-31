@@ -49,6 +49,7 @@ SIMPLIFY_M = 1.5
 SNAP_M = 50.0                          # a bus further than this from any road is left alone
 MAX_TURN = 110.0                       # never U-turn: stop instead
 MAX_POINTS = 150                       # HQ accepts up to 200
+UNSURE = 20                            # two ways on scoring this close: don't guess, wait at the junction
 CLASSES = {'motorway': 1, 'a road': 2, 'b road': 3, 'classified unnumbered': 4,
            'unclassified': 5, 'not classified': 6, 'unknown': 7}
 REC = struct.Struct('<IIBH')           # format 1 (OS, 0.4.x)
@@ -969,9 +970,10 @@ class RoadMap:
                 for st2 in (1, -1):
                     if 0 <= j + st2 < n2 and _allowed(link2[4], st2):
                         options.append((lid2, link2, st2, j + st2))
-            best = None
+            best, second, seen_next = None, None, {}
             for olid, olink, ostep, onext in options:
                 p2 = olink[2]
+                nk = (p2[2 * onext], p2[2 * onext + 1])
                 ob = _bearing(0, 0, (p2[2 * onext] - px) * kx, (p2[2 * onext + 1] - py) * ky)
                 turn = _diff(came, ob)
                 if turn > MAX_TURN:
@@ -984,11 +986,25 @@ class RoadMap:
                     score += 40                 # buses rarely turn into service roads
                 if olid in visited and olid != lid:
                     score += 60
+                # the same road listed twice (overlapping region files, a road cut into pieces) is one way on
+                if nk in seen_next and seen_next[nk] <= score:
+                    continue
+                seen_next[nk] = score
+                cand = (score, olid, olink, ostep, onext, nk)
                 if best is None or score < best[0]:
-                    best = (score, olid, olink, ostep, onext)
+                    if best is not None and best[5] != nk:
+                        second = best
+                    best = cand
+                elif best[5] != nk and (second is None or score < second[0]):
+                    second = cand
             if best is None:
                 break                           # dead end, or only a U-turn: the bus stops here
-            _, lid, link, step, vi = best
+            # 0.5.3 (owner 31 Oct 22:11: buses "go off course ... it looks like theyre lost"): where two
+            # ways on are about equally likely (a T-junction, a fork), don't guess - the bus waits at the
+            # junction until its next real report shows which way it went. Roundabouts still guess.
+            if second is not None and second[0] - best[0] < UNSURE and not (flags & 4) and not (best[2][4] & 4):
+                break
+            _, lid, link, step, vi, _ = best
             visited.add(lid)
             name = link[0] or name
             _, cls, pts, bb, flags = link

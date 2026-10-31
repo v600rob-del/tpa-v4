@@ -36,13 +36,19 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.1.0'
+ENGINE_VERSION = '0.2.0'
 COMPONENT = 'road'
 CONTRACT = '1.0'
 TOMTOM_TILE = 'https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/{z}/{x}/{y}'
 STYLE = re.sub(r'[^a-z-]', '', os.environ.get('TPA_ROAD_STYLE', 'dark').lower()) or 'dark'
 MIN_ZOOM, MAX_ZOOM = 8, 17
-CACHE_MAX_SECONDS = 480
+# 0.2.0 (owner 31 Oct 22:08: traffic "loading in chunks whenever it likes"): 512-pixel pictures by
+# default - a quarter as many requests per screen (and a quarter of the TomTom allowance). TomTom's
+# 512 picture at zoom z covers the same ground as its 256 picture at z, so HQ asks for one zoom level
+# lower (Leaflet zoomOffset -1) to keep the same detail; an older HQ simply shows them at 256.
+TILE_SIZE = 256 if os.environ.get('TPA_ROAD_TILE_SIZE', '512').strip() == '256' else 512
+Z_SHIFT = 1 if TILE_SIZE == 512 else 0
+CACHE_MAX_SECONDS = 600   # 0.2.0: up to 10 minutes, if TomTom's own max-age allows
 MEMORY_TILES = 600
 MONTHLY_CAP = max(0, int(os.environ.get('TPA_ROAD_MONTHLY_CAP', '12000') or 12000))
 UK = (49.8, -8.7, 61.0, 2.0)  # south, west, north, east
@@ -124,7 +130,7 @@ def context():
 
 
 def fetch_tile(z: int, x: int, y: int) -> tuple[bytes, int]:
-    url = TILE_URL.format(z=z, x=x, y=y) + f'?apiVersion=2&style={STYLE}&tileSize=256'
+    url = TILE_URL.format(z=z, x=x, y=y) + f'?apiVersion=2&style={STYLE}&tileSize={TILE_SIZE}'
     req = Request(url, headers={'TomTom-Api-Key': KEY, 'TomTom-Api-Version': '2', 'Accept': 'image/png',
                                 'User-Agent': f'TPA-Road-Engine/{ENGINE_VERSION} (+mailto:tpaprojectuk@gmail.com)'})
     with urlopen(req, timeout=12, context=context()) as res:
@@ -214,7 +220,8 @@ def snapshot() -> dict:
              'observedAt': iso(now), 'receivedAt': iso(now), 'expiresAt': iso(now + 300),
              'nextPollAfterMs': 60000, 'attribution': ATTRIBUTION, 'entities': [],
              'overlay': {'type': 'raster', 'tiles': f'/api/v4/components/{COMPONENT}/tiles/{{z}}/{{x}}/{{y}}.png',
-                         'minZoom': MIN_ZOOM, 'maxZoom': MAX_ZOOM, 'opacity': 0.85, 'refreshSeconds': 300}}
+                         'minZoom': MIN_ZOOM, 'maxZoom': MAX_ZOOM, 'opacity': 0.85, 'refreshSeconds': 600,   # owner 31 Oct 22:29: every 10 minutes is plenty
+                         'tileSize': TILE_SIZE}}
     if notice:
         frame['notice'] = notice
     return frame
@@ -259,7 +266,7 @@ class Handler(BaseHTTPRequestHandler):
         m = TILE_PATH.match(path)
         if m:
             z, x, y = (int(v) for v in m.groups())
-            if not (MIN_ZOOM <= z <= MAX_ZOOM and x < 2 ** z and y < 2 ** z) or not tile_in_uk(z, x, y):
+            if not (MIN_ZOOM - Z_SHIFT <= z <= MAX_ZOOM and x < 2 ** z and y < 2 ** z) or not tile_in_uk(z, x, y):
                 return self.send(204, b'', 'image/png')
             raw = get_tile(z, x, y)
             if raw is None:
