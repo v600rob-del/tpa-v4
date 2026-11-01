@@ -11,7 +11,7 @@ from __future__ import annotations
 from collections import deque
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlencode, urlsplit
 from urllib.error import HTTPError, URLError
 from urllib.request import ProxyHandler, Request, build_opener, urlopen
 import hashlib
@@ -31,7 +31,7 @@ import time
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json'}
-HQ_VERSION = '4.3.0'
+HQ_VERSION = '4.4.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # HQ relays data only (JSON frames, PNG overlay tiles); it contains no supplier
@@ -424,6 +424,23 @@ class HQHandler(SimpleHTTPRequestHandler):
                 try:self.wfile.write(raw)
                 except (BrokenPipeError,ConnectionResetError):pass
                 return
+            # 4.4.0 (owner 1 Nov 13:42: a clicked bus should show "the start and end destination, then which stop
+            # is next"): more details about one vehicle, asked from its own engine only when it is clicked.
+            # Generic: plain rows of label/value text; HQ knows nothing about buses.
+            if len(parts)==6 and parts[:4]==['','api','v4','components'] and parts[4] in ENGINES and parts[4] not in PARKED and parts[5]=='details':
+                want=(parse_qs(split.query).get('id') or [''])[0]
+                if not want or len(want)>140 or any(ord(c)<32 or ord(c)==127 for c in want):
+                    return self.json_reply(400,{'error':'bad id'})
+                try:
+                    raw,_=engine_get(parts[4],'/details?'+urlencode({'id':want}),32768,4)
+                    d=json.loads(raw)
+                    rows=[{'label':str(r.get('label',''))[:30],'value':str(r.get('value',''))[:120]}
+                          for r in (d.get('rows') or [])[:12] if isinstance(r,dict)]
+                    body={'component':parts[4],'id':want,'rows':rows}
+                    if isinstance(d.get('note'),str):body['note']=d['note'][:160]
+                    return self.json_reply(200,body)
+                except Exception:
+                    return self.json_reply(503,{'component':parts[4],'id':want,'rows':[],'note':'Details not available right now.'})
             if len(parts)==6 and parts[:4]==['','api','v4','components'] and parts[4] in COMPONENTS and parts[5] in ('status','snapshot'):
                 comp=parts[4]
                 if comp in PARKED:

@@ -98,6 +98,26 @@ function buildArtwork(e){
   }
   return icon;
 }
+let detailsTimer=0;
+async function loadDetails(e,box){
+  clearTimeout(detailsTimer);
+  if(!state.live[e.component])return;
+  try{
+    const r=await fetch(`/api/v4/components/${e.component}/details?id=${encodeURIComponent(e.id)}`,{cache:'no-store'});
+    const d=await r.json();
+    if(!state.selected||state.selected.id!==e.id||!box.isConnected)return;
+    const rows=[];
+    for(const row of Array.isArray(d.rows)?d.rows.slice(0,12):[]){
+      const line=document.createElement('div');line.className='detail-row';
+      const k=document.createElement('span');k.className='detail-label';k.textContent=String(row.label||'').slice(0,30);
+      const v=document.createElement('span');v.className='detail-value';v.textContent=String(row.value||'').slice(0,120);
+      line.append(k,v);rows.push(line);}
+    if(typeof d.note==='string'&&d.note){const n=document.createElement('small');n.className='detail-note';n.textContent=d.note.slice(0,160);rows.push(n);}
+    box.replaceChildren(...rows);
+  }catch(err){}
+  // the next stop changes as the vehicle moves: ask again while it stays selected
+  detailsTimer=setTimeout(()=>{if(state.selected&&state.selected.id===e.id&&box.isConnected)loadDetails(e,box);},20000);
+}
 function selectEntity(e){
   state.selected=e;
   const h=document.createElement('strong');h.textContent=iconFor(e.component)+' '+e.label;
@@ -107,8 +127,11 @@ function selectEntity(e){
   const warning=document.createElement('small');warning.className=live?'live-source':'review-no-live';warning.textContent=live?(state.frames[e.component]?.attribution||''):'FICTIONAL DEMONSTRATION — NOT AN ACTUAL VEHICLE';
   const close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','Close target details');
   close.onclick=()=>{selected.classList.add('hidden');state.selected=null;paint();};
-  selected.replaceChildren(h,info,warning,close);selected.classList.remove('hidden');
+  // 4.4.0 (owner 1 Nov 13:42): more about this vehicle from its own engine (start, end, next stop for a bus)
+  const more=document.createElement('div');more.className='vehicle-details';
+  selected.replaceChildren(h,info,more,warning,close);selected.classList.remove('hidden');
   $('map-place').textContent=e.label.toUpperCase();paint();
+  loadDetails(e,more);
 }
 // 4.1.0 smooth movement. Markers are kept and moved, not rebuilt. Between real reports a
 // live vehicle with a motion hint is carried forward (capped by the engine's maxSeconds),

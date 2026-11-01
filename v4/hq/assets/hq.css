@@ -136,3 +136,10 @@ body.vector-ready .vector-map{z-index:4}
 /* 4.1.16: buses and trains stand on the bottom-middle of their number board; when selected they grow
    around that point, so it stays on the road/track. */
 .marker-layer .review-pin.bus,.marker-layer .review-pin.rail{transform-origin:50% calc(var(--pin-s,1) * 46px + 8px)}
+
+/* 4.4.0 a clicked vehicle's details (start, end, next stop) */
+.vehicle-details{margin:8px 0 4px;display:grid;gap:3px}
+.vehicle-details .detail-row{display:flex;gap:8px;font-size:12px;line-height:1.35}
+.vehicle-details .detail-label{min-width:66px;color:#8fb1c6;font-weight:700}
+.vehicle-details .detail-value{color:#e9f4ff}
+.vehicle-details .detail-note{display:block;color:#7f97ab;font-size:10px;margin-top:2px}

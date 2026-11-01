@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.7.1'
+ENGINE_VERSION = '0.8.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -256,7 +256,7 @@ def parse_siri(stream) -> list[dict]:
             pass
         out.append({'key': key, 'lat': round(lat, 6), 'lon': round(lon, 6), 'bearing': bearing,
                     'route': clean(vals.get('PublishedLineName') or vals.get('LineRef') or '', 12),
-                    'destination': clean(vals.get('DestinationName', ''), 80), 'recorded': when,
+                    'destination': clean(vals.get('DestinationName', ''), 80).replace('_', ' '), 'recorded': when,
                     'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
                     'origin': clean(vals.get('OriginRef', ''), 20), 'dep': clean(vals.get('OriginAimedDepartureTime', ''), 32),
                     'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)})
@@ -1208,6 +1208,94 @@ def road_replay_for(v: dict, now: float, deadline: float | None):
     return r
 
 
+# 0.8.0 (owner 1 Nov 13:42: "ideally, the end user would get the start and end destination, then which
+# stop is next"): HQ asks for a clicked bus's details (/details?id=bus:<key>). Timetabled times only.
+STOPS_ALONG = OrderedDict()   # trip_id -> [(metres along route, name, indicator, arrive s, depart s)]
+
+
+def _clock(secs: int) -> str:
+    if secs is None or secs < 0:
+        return ''
+    secs %= 86400
+    return f'{secs // 3600:02d}:{secs % 3600 // 60:02d}'
+
+
+def _stop_name(name: str, indicator: str) -> str:
+    name = (name or 'a stop').replace('_', ' ')
+    return f'{name} ({indicator})' if indicator and indicator.lower() not in name.lower() else name
+
+
+def stops_along(trip_id: str, sh):
+    """This journey's stops in order, each placed along its route line (cached)."""
+    with JOURNEY_LOCK:
+        if trip_id in STOPS_ALONG:
+            STOPS_ALONG.move_to_end(trip_id)
+            return STOPS_ALONG[trip_id]
+    tt = TIMETABLE['tt']
+    rows = tt.stops_of(trip_id) if tt else []
+    out, last = [], 0.0
+    for sid, lat, lon, name, ind, arr, dep in rows:
+        m = None
+        if sh is not None and lat is not None:
+            got = sh.project(lon, lat, max(0.0, last - 50), None)
+            if got is not None:
+                m = last = max(last, got[0])
+        out.append((m, name, ind, arr, dep))
+    with JOURNEY_LOCK:
+        STOPS_ALONG[trip_id] = out
+        while len(STOPS_ALONG) > 300:
+            STOPS_ALONG.popitem(last=False)
+    return out
+
+
+def details(entity_id: str) -> dict:
+    out = {'component': COMPONENT, 'id': entity_id, 'rows': []}
+    key = entity_id[4:] if entity_id.startswith('bus:') else ''
+    with LOCK:
+        v = next((x for x in STATE['vehicles'] if x['key'] == key), None)
+    if v is None:
+        out['note'] = 'This bus is no longer reporting.'
+        return out
+    with JOURNEY_LOCK:
+        trip = (TRIPS.get(key) or (None, None))[1]
+        f = FOLLOW.get(key)
+        sh = SHAPES.get(trip) if trip else None
+    if not trip or TIMETABLE['tt'] is None:
+        if v.get('destination'):
+            out['rows'].append({'label': 'To', 'value': v['destination'][:80]})
+        out['note'] = 'Its timetable could not be matched, so stops and times are not shown.'
+        return out
+    try:
+        stops = stops_along(trip, sh)
+    except Exception as exc:   # one odd journey must never break the layer
+        with LOCK:
+            STATE['timetableError'] = ('details: ' + type(exc).__name__)[:100]
+        stops = []
+    if not stops:
+        out['note'] = 'Its timetable has no stops listed.'
+        return out
+    first, last = stops[0], stops[-1]
+    out['rows'].append({'label': 'From', 'value': f'{_stop_name(first[1], first[2])} · left {_clock(first[4])}'[:100]})
+    out['rows'].append({'label': 'To', 'value': f'{_stop_name(last[1], last[2])} · due {_clock(last[3])}'[:100]})
+    # where the bus is shown now (REPLAY_SECONDS behind its reports) along its route
+    shown_m = None
+    if f and f[1] and sh is not None:
+        r = replay.track(sh, f[1], time.time(), REPLAY_SECONDS)
+        if r is not None:
+            lon, lat = r['position']
+            # look near its own reports first (a route can pass the same place twice)
+            got = sh.project(lon, lat, max(0.0, f[1][0][1] - 1), f[1][-1][1] + 1) or sh.project(lon, lat)
+            shown_m = got[0] if got else None
+    if shown_m is not None:
+        nxt = next((st for st in stops if st[0] is not None and st[0] > shown_m + 15), None)
+        if nxt is None:
+            out['rows'].append({'label': 'Next stop', 'value': 'End of the route'})
+        else:
+            out['rows'].append({'label': 'Next stop', 'value': f'{_stop_name(nxt[1], nxt[2])} · timetabled {_clock(nxt[3])}'[:100]})
+    out['note'] = 'Times are from the timetable; the bus may be early or late.'
+    return out
+
+
 def replay_for(v: dict, now: float, deadline: float):
     """The replayed track for this bus, or None (moved the ordinary way)."""
     if not REPLAY_SECONDS:
@@ -1386,6 +1474,9 @@ class Handler(BaseHTTPRequestHandler):
                                         'timetableMatch': STATE.get('timetableMatch'), 'replaySeconds': REPLAY_SECONDS,
                                         'journeyRound': STATE.get('journeyRound'),
                                         'lastView': STATE.get('lastView')})
+        if split.path == '/details':
+            want = (parse_qs(split.query).get('id') or [''])[0][:140]
+            return self.reply(200, details(want))
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
         return self.reply(404, {'error': 'not found'})
