@@ -1,2 +1,0 @@
-python -m unittest discover -s v4/tests/hq -p test_*.py -q
-Ran 34 tests; OK. Includes real Chromium DOM fixture tests (not genuine live feeds/process isolation).

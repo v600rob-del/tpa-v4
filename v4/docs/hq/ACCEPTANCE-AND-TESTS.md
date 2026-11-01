@@ -1,1 +1,0 @@
-See MAPLIBRE-OPENFREEMAP-4.0.4-TEST-REPORT.md. This build is NOT approved/locked/deployed. MapLibre true WebGL street display pending owner Windows test. All historical screenshots removed from this release to prevent confusing older fallback screenshots with current OpenFreeMap acceptance.
