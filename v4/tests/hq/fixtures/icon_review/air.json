@@ -1,0 +1,34 @@
+{
+  "component": "air",
+  "contractVersion": "1.0",
+  "health": "ready",
+  "observedAt": "2026-10-29T21:00:00Z",
+  "receivedAt": "2026-10-29T21:00:00Z",
+  "expiresAt": "2099-01-01T00:00:00Z",
+  "nextPollAfterMs": 600000,
+  "attribution": "MOCK ICON REVIEW \u2014 FICTIONAL POSITIONS, NOT A LIVE SUPPLIER",
+  "entities": [
+    {
+      "id": "MOCKAIR-01",
+      "label": "MOCK Aircraft A",
+      "position": {
+        "lon": -0.502,
+        "lat": 53.861,
+        "headingDeg": 120
+      },
+      "quality": "observed",
+      "observedAt": "2026-10-29T21:00:00Z"
+    },
+    {
+      "id": "MOCKAIR-02",
+      "label": "MOCK Aircraft B",
+      "position": {
+        "lon": -0.381,
+        "lat": 53.885,
+        "headingDeg": 210
+      },
+      "quality": "estimated",
+      "observedAt": "2026-10-29T21:00:00Z"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "component": "sea",
+  "contractVersion": "1.0",
+  "health": "ready",
+  "observedAt": "2026-10-29T21:00:00Z",
+  "receivedAt": "2026-10-29T21:00:00Z",
+  "expiresAt": "2099-01-01T00:00:00Z",
+  "nextPollAfterMs": 600000,
+  "attribution": "MOCK ICON REVIEW \u2014 FICTIONAL POSITIONS, NOT A LIVE SUPPLIER",
+  "entities": [
+    {
+      "id": "MOCKSEA-01",
+      "label": "MOCK Vessel A",
+      "position": {
+        "lon": -0.303,
+        "lat": 53.785,
+        "headingDeg": 80
+      },
+      "quality": "observed",
+      "observedAt": "2026-10-29T21:00:00Z"
+    },
+    {
+      "id": "MOCKSEA-02",
+      "label": "MOCK Vessel B",
+      "position": {
+        "lon": -0.349,
+        "lat": 53.809,
+        "headingDeg": 225
+      },
+      "quality": "stale",
+      "observedAt": "2026-10-29T21:00:00Z"
+    }
+  ]
+}

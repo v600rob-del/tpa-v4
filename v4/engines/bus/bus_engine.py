@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.5.6'
+ENGINE_VERSION = '0.5.7'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -120,6 +120,9 @@ road_map = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(road_map)
 ROADS = {'map': None, 'licence': '', 'source': ''}
 PATHS: dict = {}             # bus key -> (report time, motion or None)
+PLACED: dict = {}            # 0.5.7: bus key -> (report time, [lon, lat] on its road, or None)
+KEEP_LEFT_M = 2.0            # 0.5.7: buses drawn on the left-hand side of two-way roads (UK traffic keeps left)
+PLACE_M = 20.0               # 0.5.7: a bus reported this close to a road is drawn on it (GPS is often 5-20 m out)
 PENDING: deque = deque()
 PENDING_SET: set = set()
 PATH_WAKE = threading.Event()
@@ -335,7 +338,8 @@ def prepare_paths() -> None:
                   ((s + n) / 2, (w + e) / 2), n - s <= ROAD_VIEW_SPAN) for s, w, n, e in views]
         picks = []
         for v in STATE['vehicles']:
-            if not v.get('speed') or v.get('bearing') is None or now - v['recorded'] > STALE_AFTER:
+            moving = v.get('speed') and v.get('bearing') is not None and now - v['recorded'] <= STALE_AFTER
+            if not moving and now - v['recorded'] > DROP_AFTER:
                 continue
             best = None
             for (s, w, n, e), (cy, cx), close in areas:
@@ -344,7 +348,7 @@ def prepare_paths() -> None:
                     best = rank if best is None or rank < best else best
             if best is None:
                 continue
-            known = PATHS.get(v['key'])
+            known = PATHS.get(v['key']) if moving else PLACED.get(v['key'])
             if known and known[0] == v['recorded']:
                 continue
             if (v['key'], v['recorded']) not in PENDING_SET:
@@ -383,6 +387,8 @@ def _fetch_once(area) -> None:
             live = {v['key'] for v in vehicles}
             for k in [k for k in PATHS if k not in live]:
                 del PATHS[k]
+            for k in [k for k in PLACED if k not in live]:
+                del PLACED[k]
             for k in [k for k in HISTORY if k not in live]:
                 del HISTORY[k]
             STATE['reportAgeMedian'] = round(ages[len(ages) // 2]) if ages else None
@@ -515,7 +521,8 @@ def snapshot(view) -> dict:
         with LOCK:
             VIEWS.append((now, view))
             del VIEWS[:-50]
-    why = {'road': 0, 'straight-pending': 0, 'straight-no-road-match': 0, 'straight-zoomed-out': 0, 'still-no-speed': 0}
+    why = {'road': 0, 'straight-pending': 0, 'straight-no-road-match': 0, 'straight-zoomed-out': 0, 'still-no-speed': 0,
+           'placed-on-road': 0}
     for _, v, age in inside[:MAX_PER_VIEW]:
         route = v['route'] or 'Bus'
         label = (f'Bus {route}' if v['route'] else 'Bus') + (f' to {v["destination"]}' if v['destination'] else '')
@@ -539,6 +546,15 @@ def snapshot(view) -> dict:
                 why['straight-no-road-match' if known and known[0] == v['recorded'] else 'straight-pending'] += 1
         else:
             why['still-no-speed'] += 1
+        # 0.5.7: every bus near a road is drawn on it, on the left for its direction - moving or not
+        m = entity.get('motion')
+        if m and m['mode'] == 'path':
+            entity['position']['lon'], entity['position']['lat'] = m['points'][0]
+        elif roads and ROADS['map'] is not None:
+            p = placed_for(v, deadline)
+            if p:
+                entity['position']['lon'], entity['position']['lat'] = p
+                why['placed-on-road'] += 1
         frame['entities'].append(entity)
     with LOCK:
         STATE['lastView'] = why
@@ -575,6 +591,7 @@ def open_road_map() -> bool:
         STATE['roadMap'] = 'ready'
         STATE['roadMapDetail'] = f"{source}: {new.meta.get('links', 0)} road pieces"
         PATHS.clear()
+        PLACED.clear()
     if old:
         old.close()
     print('Road map ready:', source, STATE['roadMapDetail'], flush=True)
@@ -654,7 +671,7 @@ def road_motion(v: dict):
     metres = v['speed'] * (STEADY_SECONDS + ease / 2)
     t0 = time.perf_counter()
     try:
-        pts = rm.ahead(v['lon'], v['lat'], v['bearing'], metres)
+        pts = rm.ahead(v['lon'], v['lat'], v['bearing'], metres, KEEP_LEFT_M)
     except Exception as exc:   # one odd bus must never break the layer
         with LOCK:
             STATE['roadMapError'] = ('path: ' + type(exc).__name__)[:100]
@@ -681,8 +698,43 @@ def path_worker() -> None:
                 v = PENDING.popleft()
                 PENDING_SET.discard((v['key'], v['recorded']))
             m = road_motion(v)
+            p = None if m else place(v)
             with LOCK:
                 PATHS[v['key']] = (v['recorded'], m)
+                if not m:
+                    PLACED[v['key']] = (v['recorded'], p)
+
+
+def place(v: dict):
+    """0.5.7: where on its road to draw a bus that is not following a road path (standing, or no path
+    found): on the road, left-hand side for its direction; None if no road within PLACE_M."""
+    rm = ROADS['map']
+    if rm is None:
+        return None
+    try:
+        return rm.place(v['lon'], v['lat'], v.get('bearing'), PLACE_M, KEEP_LEFT_M)
+    except Exception as exc:   # one odd bus must never break the layer
+        with LOCK:
+            STATE['roadMapError'] = ('place: ' + type(exc).__name__)[:100]
+        return None
+
+
+def placed_for(v: dict, deadline: float):
+    with LOCK:
+        known = PLACED.get(v['key'])
+    if known and known[0] == v['recorded']:
+        return known[1]
+    if time.monotonic() < deadline and not FETCHING.is_set():
+        p = place(v)
+        with LOCK:
+            PLACED[v['key']] = (v['recorded'], p)
+        return p
+    with LOCK:
+        if (v['key'], v['recorded']) not in PENDING_SET:
+            PENDING_SET.add((v['key'], v['recorded']))
+            PENDING.append(v)
+    PATH_WAKE.set()
+    return None
 
 
 def motion_for(v: dict, deadline: float, roads: bool = True):

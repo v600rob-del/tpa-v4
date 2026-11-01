@@ -823,6 +823,29 @@ def _allowed(flags, step):
     return not (flags & 1 and step < 0) and not (flags & 2 and step > 0)
 
 
+def _keep_left(out, two, metres, lat):
+    """0.5.7 (owner 1 Nov 01:03, Birmingham: two buses going the same way were drawn one each side of
+    the road, so they looked to be going opposite ways): move a path `metres` to the left of its travel
+    direction where the road is two-way (two[i] is for the stretch out[i] -> out[i+1]); one-way roads
+    and roundabouts are drawn on their own line."""
+    kx = math.cos(math.radians(lat)) * M_PER_DEG * 1e-6
+    ky = M_PER_DEG * 1e-6
+    shifts = []
+    for i in range(len(out) - 1):
+        dx, dy = (out[i + 1][0] - out[i][0]) * kx, (out[i + 1][1] - out[i][1]) * ky
+        L = math.hypot(dx, dy)
+        shifts.append((-dy / L * metres, dx / L * metres) if L > 0 and i < len(two) and two[i] else
+                      ((0.0, 0.0) if L > 0 else None))
+    res = []
+    for i, (x, y) in enumerate(out):
+        near = [s for s in (shifts[i - 1] if i > 0 else None, shifts[i] if i < len(shifts) else None) if s is not None]
+        if not near:
+            res.append((x, y)); continue
+        ox, oy = sum(s[0] for s in near) / len(near), sum(s[1] for s in near) / len(near)
+        res.append((round(x + ox / kx), round(y + oy / ky)))
+    return res
+
+
 class RoadMap:
     def __init__(self, path, max_tiles=350, max_points=4_000_000):   # 0.5.6: room for a whole city
         self.path, self.max_tiles, self.max_points = path, max_tiles, max_points
@@ -856,9 +879,10 @@ class RoadMap:
     def _tile_at(self, x, y):
         return self.tile(*tile_of(x, y))
 
-    def snap(self, lon, lat, bearing):
-        """Nearest road piece within SNAP_M that the bus may drive along in the direction it is going.
-        Returns (lid, link, seg, forward, x_u, y_u) or None."""
+    def snap(self, lon, lat, bearing, max_m=SNAP_M):
+        """Nearest road piece within max_m that the bus may drive along in the direction it is going
+        (any direction when the bearing is unknown). Returns (lid, link, seg, forward, x_u, y_u) or None."""
+        SNAP_M = max_m
         xu, yu = round(lon * 1e6), round(lat * 1e6)
         tx, ty = tile_of(xu, yu)
         kx = math.cos(math.radians(lat)) * M_PER_DEG * 1e-6
@@ -896,9 +920,14 @@ class RoadMap:
                             continue
                         seg_b = _bearing(0, 0, vx, vy)
                         for forward in (True, False):
-                            if not _allowed(flags, 1 if forward else -1):
+                            if bearing is None:
+                                if not forward:
+                                    continue
+                                turn = 0.0
+                            elif not _allowed(flags, 1 if forward else -1):
                                 continue
-                            turn = _diff(bearing, seg_b if forward else (seg_b + 180) % 360)
+                            else:
+                                turn = _diff(bearing, seg_b if forward else (seg_b + 180) % 360)
                             if turn > 75:
                                 continue
                             score = d + 0.5 * turn + (10 if cls == SERVICE else 0)
@@ -907,7 +936,24 @@ class RoadMap:
                                         round(pts[i] + (pts[i+2] - pts[i]) * f), round(pts[i+1] + (pts[i+3] - pts[i+1]) * f))
         return best[1:] if best else None
 
-    def ahead(self, lon, lat, bearing, metres):
+    def place(self, lon, lat, bearing, max_m, keep_left=0.0):
+        """0.5.7: where to draw a bus reported near a road: on the road, on the left-hand side for its
+        direction (UK traffic keeps left) on two-way roads. [lon, lat], or None if no road is within max_m."""
+        s = self.snap(lon, lat, bearing, max_m) if bearing is not None else None
+        if s is None:
+            s, bearing = self.snap(lon, lat, None, max_m), None
+        if s is None:
+            return None
+        lid, link, seg, forward, xu, yu = s
+        pts, flags = link[2], link[4]
+        if bearing is not None and keep_left and not flags & 7:
+            a, b = (pts[2 * seg], pts[2 * seg + 1]), (pts[2 * seg + 2], pts[2 * seg + 3])
+            if not forward:
+                a, b = b, a
+            [(xu, yu)] = _keep_left([(xu, yu), (xu + b[0] - a[0], yu + b[1] - a[1])], [True], keep_left, lat)[:1]
+        return [round(xu) / 1e6, round(yu) / 1e6]
+
+    def ahead(self, lon, lat, bearing, metres, keep_left=0.0):
         """Points [[lon, lat], ...] along the road for `metres`, or None if no road fits.
         At each meeting point the bus takes the most natural way on: the smallest turn, staying on the
         same road (name or number), keeping roughly the direction it had 100 m back (so it goes round a
@@ -924,6 +970,7 @@ class RoadMap:
         out, run = [(xu, yu)], [0.0]
         left = metres
         name, cls, pts, bb, flags = link
+        two = []                                  # 0.5.7: per stretch, is it a two-way road?
         step = 1 if forward else -1
         vi = seg + 1 if forward else seg
         visited = {lid}
@@ -944,10 +991,10 @@ class RoadMap:
             L = math.hypot((px - cx) * kx, (py - cy) * ky)
             if L >= left:
                 f = left / L if L else 0
-                out.append((round(cx + (px - cx) * f), round(cy + (py - cy) * f)))
-                return self._finish(out)
+                out.append((round(cx + (px - cx) * f), round(cy + (py - cy) * f))); two.append(not flags & 7)
+                return self._finish(out, two, keep_left, lat)
             if L > 0:
-                out.append((px, py)); run.append(run[-1] + L)
+                out.append((px, py)); run.append(run[-1] + L); two.append(not flags & 7)
             left -= L
             n = len(pts) // 2
             nxt = vi + step
@@ -1008,10 +1055,12 @@ class RoadMap:
             visited.add(lid)
             name = link[0] or name
             _, cls, pts, bb, flags = link
-        return self._finish(out) if len(out) >= 2 else None
+        return self._finish(out, two, keep_left, lat) if len(out) >= 2 else None
 
     @staticmethod
-    def _finish(out):
+    def _finish(out, two=(), keep_left=0.0, lat=0.0):
+        if keep_left:
+            out = _keep_left(out, two, keep_left, lat)
         if len(out) > MAX_POINTS:
             step = (len(out) - 1) / (MAX_POINTS - 1)
             out = [out[round(i * step)] for i in range(MAX_POINTS)]
