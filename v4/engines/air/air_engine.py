@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.2.0'
+ENGINE_VERSION = '0.3.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -46,6 +46,13 @@ FRAME_TTL = 60
 MAX_DOWNLOAD = 12_000_000
 MAX_PER_VIEW = 400
 MAX_RADIUS_NM = 250          # ADSB.lol maximum
+# 0.3.0 (owner 1 Nov 14:13, #speed panel: aircraft first shown after 5.4 s, everything else within 2.4 s,
+# because aircraft were only asked for once someone opened the map): with TPA_AIR_ALWAYS_ON=1 the engine
+# keeps one copy of the skies over most of Britain fresh even when nobody is watching, so the first
+# visitor sees aircraft at once. One request every IDLE_POLL_SECONDS (30 s) - same kind of load as one viewer.
+ALWAYS_ON = os.environ.get('TPA_AIR_ALWAYS_ON', '0').strip() == '1'
+IDLE_POLL_SECONDS = max(20, int(os.environ.get('TPA_AIR_IDLE_POLL_SECONDS', '30') or 30))
+HOME_VIEW = (50.0, -5.7, 55.8, 1.8)   # south, west, north, east: England, Wales and southern Scotland
 MAX_VIEW_SPAN = 9.0          # degrees of latitude; wider views ask the user to zoom in
 COOLDOWN_SECONDS = 300       # after 401/403/429/451, as in v3
 
@@ -182,13 +189,18 @@ def poller() -> None:
         WAKE.clear()
         now = time.time()
         with LOCK:
-            wanted = STATE['wanted']
             viewed = now - STATE['lastDemandAt'] < DEMAND_WINDOW
+            wanted = STATE['wanted'] if (viewed and STATE['wanted'] is not None) or not ALWAYS_ON else HOME_VIEW
+            if ALWAYS_ON and wanted is HOME_VIEW:
+                viewed = False             # nobody has asked for an area yet: keep most of Britain fresh
             cooling = now < STATE['cooldownUntil']
             wait = POLL_SECONDS * min(6, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else POLL_SECONDS
             due = now - STATE['lastAttemptAt'] >= wait
             uncovered = wanted is not None and not circle_covers(STATE['circle'], wanted) and now - STATE['lastAttemptAt'] >= 3
-            go = viewed and wanted is not None and not cooling and (due or uncovered)
+            if not viewed and ALWAYS_ON:
+                due = now - STATE['lastAttemptAt'] >= max(wait, IDLE_POLL_SECONDS)
+                uncovered = False
+            go = (viewed or ALWAYS_ON) and wanted is not None and not cooling and (due or uncovered)
             circle = circle_for(wanted) if go else None
             if go:
                 STATE['lastAttemptAt'] = now
@@ -313,7 +325,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'keyConfigured': bool(KEY), 'lastError': STATE['lastError'],
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'aircraftInLastDownload': len(STATE['aircraft']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
-                                        'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS})
+                                        'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
         return self.reply(404, {'error': 'not found'})
@@ -332,7 +344,8 @@ def main() -> None:
         print('=' * 60, flush=True)
         print(f'TPA AIRCRAFT ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
         print('Source: ADSB.lol (free, no key needed today).', flush=True)
-        print(f'Asks ADSB.lol at most every {POLL_SECONDS}s, only while the map is open.', flush=True)
+        print(f'Asks ADSB.lol at most every {POLL_SECONDS}s while the map is open'
+              + (f', and every {IDLE_POLL_SECONDS}s for most of Britain when it is not.' if ALWAYS_ON else ', only then.'), flush=True)
         print('Keep this window open. Close it to stop aircraft only.', flush=True)
         print('=' * 60, flush=True)
         server.serve_forever()

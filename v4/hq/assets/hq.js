@@ -104,6 +104,7 @@ async function loadDetails(e,box){
   if(!state.live[e.component])return;
   try{
     const r=await fetch(`/api/v4/components/${e.component}/details?id=${encodeURIComponent(e.id)}`,{cache:'no-store'});
+    if(!r.ok){box.replaceChildren();return;}      // engines without details (aircraft, trains for now): nothing extra
     const d=await r.json();
     if(!state.selected||state.selected.id!==e.id||!box.isConnected)return;
     const rows=[];
@@ -776,14 +777,25 @@ Object.defineProperty(window,'TPA_HQ_READONLY_STATE',{value:()=>Object.freeze({l
  * Text and links come only from /data/site-config.json (same origin, data only).
  * If the file is missing or invalid, the map works exactly as 4.0.8 did.
  * Built with textContent only: no HTML from the config is ever injected. */
-const WELCOME_KEY='tpa-welcome-seen-v1';
+const WELCOME_KEY='tpa-welcome-seen-v2';   // 4.5.0: new welcome screen, shown once more to everyone
 function el(tag,cls,text){const n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=String(text);return n;}
 function safeLink(u){if(typeof u!=='string'||!u)return '';try{const x=new URL(u);return x.protocol==='https:'?x.href:'';}catch(_){return '';}}
 function str(v,max){return typeof v==='string'&&v.length<=max?v:'';}
 function tipControl(tip){
   const label='☕ '+(str(tip?.label,60)||'Buy me a coffee'),url=safeLink(tip?.url);
   if(url){const a=el('a','tip-button',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
-  const b=el('button','tip-button',label+' · link coming soon');b.type='button';b.disabled=true;return b;
+  return null;     // 4.5.0 (owner 1 Nov 14:15: "we can add the coffee part later"): no link yet = no button
+}
+// 4.5.0 (owner 1 Nov 14:13: the welcome screen should "obviously be fun"): a little parade of the map's
+// own vehicle icons across the top (still for anyone who asks their device for less motion).
+function welcomeParade(){
+  const strip=el('div','welcome-parade');strip.setAttribute('aria-hidden','true');
+  ['air','rail','bus','sea','air','bus'].forEach((c,i)=>{
+    const pin=el('span','parade-pin '+c);pin.style.animationDelay=(-i*2.3)+'s';
+    const art=buildArtwork({component:c,id:'parade',badge:'TPA',position:{headingDeg:c==='air'?90:null}});
+    art.querySelector('.review-route')?.remove();          // no route number on the parade
+    pin.append(art);strip.append(pin);});
+  return strip;
 }
 let lastFocus=null;
 function makeDialog(id,title){
@@ -813,12 +825,24 @@ function buildCredits(list){
 }
 function buildWelcome(w,tip,credits){
   const {back,card}=makeDialog('tpa-welcome',str(w?.title,80)||'Welcome to TPA');
+  card.classList.add('welcome-card');
+  card.prepend(welcomeParade());
   const sub=str(w?.subtitle,120);if(sub)card.append(el('p','tpa-dialog-sub',sub));
   for(const line of (Array.isArray(w?.lines)?w.lines.slice(0,8):[])){const t=str(line,300);if(t)card.append(el('p','tpa-dialog-line',t));}
+  // 4.5.0: "what to expect" and other short sections, then the small print (all text from site-config.json)
+  for(const sec of (Array.isArray(w?.sections)?w.sections.slice(0,4):[])){
+    const head=str(sec?.heading,60),items=(Array.isArray(sec?.items)?sec.items.slice(0,6):[]).map(t=>str(t,240)).filter(Boolean);
+    if(!head||!items.length)continue;
+    const box=el('div','welcome-section');box.append(el('h3','',head));const ul=el('ul','');
+    for(const t of items)ul.append(el('li','',t));box.append(ul);card.append(box);}
   const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
-  const tipBox=el('div','tip-box');tipBox.append(tipControl(tip));const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));
+  card.append(enter);
+  const tipBtn=tipControl(tip);
+  if(tipBtn){const tipBox=el('div','tip-box');tipBox.append(tipBtn);const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));card.append(tipBox);}
+  const small=(Array.isArray(w?.smallPrint)?w.smallPrint.slice(0,6):[]).map(t=>str(t,300)).filter(Boolean);
+  if(small.length){const sp=el('div','welcome-small');for(const t of small)sp.append(el('p','',t));card.append(sp);}
   const more=el('button','tpa-link-button','Data sources & credits');more.type='button';more.onclick=()=>{closeDialog(back);openDialog(credits);};
-  card.append(enter,tipBox,more);return back;
+  card.append(more);return back;
 }
 // 4.1.15 (owner 31 Oct 23:47: "no mention of bods data"): the map's own credit line names the live data
 // sources of the layers being shown, from site-config.json's short credits (data, not code).
@@ -835,15 +859,16 @@ async function loadSiteConfig(){
   for(const c of Array.isArray(cfg.credits)?cfg.credits:[]){const l=str(c?.layer,40).toLowerCase(),sh=str(c?.short,40);if(l&&sh)shortCredit[l]=sh;}
   liveCredit();
   const credits=buildCredits(cfg.credits);
-  const welcome=buildWelcome(cfg.welcome,cfg.tip,credits);
+  let welcome=null;try{welcome=buildWelcome(cfg.welcome,cfg.tip,credits);}catch(_){}   // 4.5.0: a welcome problem never costs the side menu
   const about=el('section','panel about-panel');about.setAttribute('aria-label','About TPA');
   const title=el('div','section-title');title.append(el('h2','','ABOUT TPA'),el('span','micro','FREE, ALWAYS'));
   const creditsBtn=el('button','tpa-link-button','Data sources & credits');creditsBtn.type='button';creditsBtn.id='credits-button';creditsBtn.onclick=()=>openDialog(credits);
-  const welcomeBtn=el('button','tpa-link-button','Show welcome screen');welcomeBtn.type='button';welcomeBtn.id='welcome-button';welcomeBtn.onclick=()=>openDialog(welcome);
-  about.append(title,tipControl(cfg.tip),creditsBtn,welcomeBtn);
+  const welcomeBtn=welcome?el('button','tpa-link-button','Show welcome screen'):null;
+  if(welcomeBtn){welcomeBtn.type='button';welcomeBtn.id='welcome-button';welcomeBtn.onclick=()=>openDialog(welcome);}
+  about.append(...[title,tipControl(cfg.tip),creditsBtn,welcomeBtn].filter(Boolean));
   $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
   let seen=false;try{seen=localStorage.getItem(WELCOME_KEY)==='1';}catch(_){}
-  if(cfg.welcome?.enabled===true&&!seen)openDialog(welcome);
+  if(welcome&&cfg.welcome?.enabled===true&&!seen)openDialog(welcome);
 }
 paint();discover();beginMap();setInterval(discover,30000);
 // 4.0.11: also check every 10 s, but only while a live layer is still connecting.

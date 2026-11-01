@@ -5,11 +5,26 @@
     "title": "Welcome to TPA",
     "subtitle": "Trains, Planes and Automobiles (and Boats)",
     "lines": [
-      "A live map of UK transport: planes, trains, buses and road traffic.",
-      "Free for everyone, always. No adverts and no subscriptions.",
-      "This is a test version. Live layers show real data; anything marked MOCK is a pretend example."
+      "Watch the UK's planes, trains and buses on the move, with the traffic on the roads around them. Free for everyone, always: no adverts, no subscriptions."
     ],
-    "enterLabel": "Enter the map"
+    "sections": [
+      {
+        "heading": "What to expect",
+        "items": [
+          "Buses follow their real routes, shown about 1½ minutes behind real time, so every move you see is one the bus really made.",
+          "Tap any bus to see where it started, where it's heading and its next stop.",
+          "Trains move along the railway from the places they last reported; planes appear where they last reported.",
+          "Zoom in on a street to see where the traffic is held up."
+        ]
+      }
+    ],
+    "smallPrint": [
+      "TPA is for interest only. Positions can be late, missing or wrong, so please don't rely on it for travel plans or anything safety-related; check with your operator.",
+      "No cookies, no adverts and no tracking. Your browser only remembers that you've seen this screen.",
+      "Built from open data: Department for Transport (bus locations, timetables and stops), Network Rail, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
+      "Test version: anything marked MOCK is a pretend example · © 2026 Rob Burnett"
+    ],
+    "enterLabel": "Let's go"
   },
   "tip": {
     "label": "Buy me a coffee",

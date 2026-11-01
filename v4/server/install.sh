@@ -127,7 +127,7 @@ unit road "road traffic engine (TomTom)" TPA_ROAD_ENGINE_PORT 8782 \
 unit bus "bus engine (BODS, whole-country mode)" TPA_BUS_ENGINE_PORT 8781 \
     "Environment=TPA_BUS_MODE=bulk TPA_BUS_ALWAYS_ON=1 TPA_BUS_ROAD_MAP=download TPA_BUS_ROAD_SOURCE=osm TPA_BUS_TIMETABLE=download TPA_BUS_DATA_DIR=/var/lib/tpa/bus" 500M bus.env v4/engines/bus/bus_engine.py
 unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
-    "" 150M "" v4/engines/air/air_engine.py
+    "Environment=TPA_AIR_ALWAYS_ON=1" 150M "" v4/engines/air/air_engine.py
 unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_PORT 8784 \
     "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 300M rail.env v4/engines/rail/rail_engine.py
 unit hq "HQ map page" TPA_HQ_PORT 8778 \
