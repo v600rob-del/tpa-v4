@@ -10,8 +10,15 @@ const $=id=>document.getElementById(id),root=$('map'),canvas=$('geo-canvas'),ctx
 // 4.9.0 (owner 1 Nov 16:55: "a user page ... to see what a standard user would see without all the admin
 // things"): https://…/user (or ?view=user) hides the test and admin bits; the map, layers, search, welcome,
 // bus details and credits are the same. Pretend (MOCK) icons still carry their on-map warning.
-const USER_VIEW=location.pathname==='/user'||new URLSearchParams(location.search).get('view')==='user';
-if(USER_VIEW){document.documentElement.classList.add('user-view');document.title='TPA · live UK transport map';
+// 4.11.0 (owner 1 Nov 18:47-18:49): a Kids mode - "Fun icons that play sounds when you press on them ... Screen
+// much less busy so little people would enjoy just playing with the map" ("5 noises per type"). https://…/kids
+// (or ?view=kids). It is the user page plus: friendly pictures, a sound and a speech bubble (read aloud) when a
+// vehicle is tapped, big picture buttons, "I can see …" counting, "Ride along!", and a grown-ups button that
+// must be held for 3 seconds. No coffee box (we never ask children for money) and nothing is collected.
+const KIDS=location.pathname==='/kids'||new URLSearchParams(location.search).get('view')==='kids';
+const USER_VIEW=KIDS||location.pathname==='/user'||new URLSearchParams(location.search).get('view')==='user';
+if(KIDS){document.documentElement.classList.add('kids-view');}
+if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':'TPA · live UK transport map';
   const h=document.querySelector('.search-panel h2');if(h)h.textContent='FIND A PLACE';
   const m=document.querySelector('.search-panel .micro');if(m)m.textContent='';}
 const HOME={lon:-0.423,lat:53.842,z:11};
@@ -60,7 +67,7 @@ const d=dims(),p=merc(lon,lat,state.z),c=merc(state.lon,state.lat,state.z);retur
 // position is the bottom-middle of the number board, with the icon standing above it like a pin.
 // Other icons stay centred. (Board top 30 px + board 16 px, scaled, + 8 px of fixed borders; measured.)
 function anchorOf(component){return component==='bus'||component==='rail'?'translate(-50%,calc(var(--pin-s,1) * -46px - 8px))':'translate(-50%,-50%)';}
-function pinScale(z){return z<12.5?0.7:z<14.5?0.82:z<16.5?1:1.2;}
+function pinScale(z){return (KIDS?1.6:1)*(z<12.5?0.7:z<14.5?0.82:z<16.5?1:1.2);}
 function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}
   const ps=String(pinScale(state.z));if(markerLayer.style.getPropertyValue('--pin-s')!==ps)markerLayer.style.setProperty('--pin-s',ps);paint();}
 function gotoPlace(lon,lat,z,label){stopFollow();if(map)map.setView([lat,lon],z,{animate:false});state.lon=lon;state.lat=lat;state.z=z;selected.classList.add('hidden');state.selected=null;$('map-place').textContent=(label||'SELECTED LOCATION').toUpperCase();$('sidebar').classList.remove('open');paint();}
@@ -87,9 +94,19 @@ const ICON_PATHS=Object.freeze({
 });
 const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
 function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋'}[id]||'•';}
+// 4.11.0: the kids pictures (our own drawings, with friendly faces). Fixed text, no data inside.
+const KID_ART={
+  bus:'<svg viewBox="0 0 64 48" focusable="false"><rect x="4" y="5" width="56" height="32" rx="9" fill="#ffc531" stroke="#b77f00" stroke-width="2"/><rect x="9" y="10" width="31" height="12" rx="3" fill="#bfe9ff"/><rect x="44" y="10" width="12" height="15" rx="3" fill="#bfe9ff"/><rect x="5" y="26" width="54" height="3" fill="#e5533d"/><circle cx="47.5" cy="16" r="2.6" fill="#fff"/><circle cx="53" cy="16" r="2.6" fill="#fff"/><circle cx="48" cy="16.4" r="1.4" fill="#222"/><circle cx="53.5" cy="16.4" r="1.4" fill="#222"/><path d="M46 32 q4.5 3.5 9 0" stroke="#7a3b00" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="17" cy="38" r="6" fill="#333"/><circle cx="17" cy="38" r="2.4" fill="#ccc"/><circle cx="47" cy="38" r="6" fill="#333"/><circle cx="47" cy="38" r="2.4" fill="#ccc"/></svg>',
+  rail:'<svg viewBox="0 0 64 48" focusable="false"><circle cx="49" cy="4" r="3" fill="#fff" opacity=".9"/><circle cx="54" cy="2.5" r="2" fill="#fff" opacity=".8"/><rect x="43" y="6" width="8" height="12" rx="2" fill="#3a3a3a"/><rect x="4" y="5" width="20" height="30" rx="4" fill="#2e9e5b" stroke="#1d6b3c" stroke-width="2"/><rect x="8" y="9" width="12" height="10" rx="2" fill="#bfe9ff"/><rect x="22" y="15" width="34" height="20" rx="5" fill="#3cb371" stroke="#1d6b3c" stroke-width="2"/><circle cx="53" cy="25" r="9" fill="#f6ead0" stroke="#1d6b3c" stroke-width="2"/><circle cx="50.5" cy="23" r="1.8" fill="#222"/><circle cx="55.5" cy="23" r="1.8" fill="#222"/><path d="M49.5 28 q3.5 3 7 0" stroke="#7a3b00" stroke-width="1.8" fill="none" stroke-linecap="round"/><circle cx="14" cy="39" r="6" fill="#d93a2b"/><circle cx="31" cy="39" r="6" fill="#d93a2b"/><circle cx="46" cy="39" r="6" fill="#d93a2b"/><circle cx="14" cy="39" r="2" fill="#ffd"/><circle cx="31" cy="39" r="2" fill="#ffd"/><circle cx="46" cy="39" r="2" fill="#ffd"/></svg>',
+  air:'<svg viewBox="0 0 64 48" focusable="false"><path d="M7 24 L3 8 L17 21 Z" fill="#ff6b6b" stroke="#c74343" stroke-width="1.5" stroke-linejoin="round"/><ellipse cx="32" cy="26" rx="27" ry="9.5" fill="#fff" stroke="#3d8bd9" stroke-width="2"/><path d="M25 27 L38 43 L45 43 L39 27 Z" fill="#3d8bd9"/><circle cx="20" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="26" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="32" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="50" cy="21.5" r="3.2" fill="#fff" stroke="#3d8bd9" stroke-width="1.2"/><circle cx="50.8" cy="21.8" r="1.6" fill="#222"/><path d="M48 29 q4 3 8 0" stroke="#7a3b00" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>'
+};
+function kidFlip(e){return e.component==='air'&&e.position?.headingDeg!=null&&e.position.headingDeg>180?'scaleX(-1)':'';}
 function buildArtwork(e){
   const icon=document.createElement('span');icon.className='review-art';icon.setAttribute('aria-hidden','true');
-  if(ICON_PATHS[e.component]){
+  if(KIDS&&KID_ART[e.component]){
+    icon.classList.add('kid-art');icon.innerHTML=KID_ART[e.component];
+    const svg=icon.querySelector('svg');if(svg)svg.style.transform=kidFlip(e);   // planes face the way they fly
+  }else if(ICON_PATHS[e.component]){
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
     svg.setAttribute('viewBox','0 0 32 32');svg.setAttribute('focusable','false');
     const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',ICON_PATHS[e.component]);svg.append(path);
@@ -127,6 +144,7 @@ async function loadDetails(e,box){
   detailsTimer=setTimeout(()=>{if(state.selected&&state.selected.id===e.id&&box.isConnected)loadDetails(e,box);},20000);
 }
 function selectEntity(e){
+  if(KIDS)return kidsBubble(e);
   state.selected=e;
   const h=document.createElement('strong');h.textContent=iconFor(e.component)+' '+e.label;
   const live=!!state.live[e.component];
@@ -363,7 +381,7 @@ function markers(){
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
     const b=pin.b;pin.e=e;pin.lat=pos.lat;pin.lon=pos.lon;pin.active=active;
     if(pin.art!==art){b.replaceChildren(buildArtwork(e));pin.art=art;}
-    if(e.component==='air'){const svg=b.querySelector('svg'),rot=e.position.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';
+    if(e.component==='air'){const svg=b.querySelector('svg'),rot=KIDS?kidFlip(e):e.position.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';
       if(svg&&svg.style.transform!==rot)svg.style.transform=rot;}
     if(b.className!==cls)b.className=cls;
     if(pos.hop){b.classList.remove('hop');void b.offsetWidth;b.classList.add('hop');}
@@ -382,7 +400,7 @@ function markers(){
       b.style.transform=tf;pin.tf=tf;
       if(follow?.key===k)followTo(x,y,!!from,from);
     }else if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;if(follow?.key===k)followTo(x,y,glide,null);}
-    b.onclick=()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
+    b.onclick=KIDS?()=>kidsTap(e,b):()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
   }
   for(const [k,pin] of pins)if(!keep.has(k)){pin.b.remove();pins.delete(k);}
   drawStacks(viewMoved);
@@ -490,7 +508,7 @@ function stopFollow(){
 }
 function updateFollowUI(){
   const fb=selected.querySelector('.follow-button');
-  if(fb){const on=!!follow&&!!state.selected&&isFollowing(state.selected);fb.textContent=on?'■ Stop following':'📍 Follow me!';
+  if(fb){const on=!!follow&&!!state.selected&&isFollowing(state.selected);fb.textContent=KIDS?(on?'⏹ Stop riding':'🚀 Ride along!'):on?'■ Stop following':'📍 Follow me!';
     fb.setAttribute('aria-pressed',String(on));fb.hidden=!map;}
   root.classList.toggle('following',!!follow);
 }
@@ -574,9 +592,11 @@ function motionLoop(ts){
 }
 requestAnimationFrame(motionLoop);
 function layerName(id){return ($(id+'-toggle').closest('.layer-toggle')?.querySelector('strong')?.textContent||id).toLowerCase();}
+const kidsSeen=Object.create(null);
 function counts(){const d=dims();const anyLive=IDS.some(id=>state.live[id]&&!state.parked[id]);
 for(const id of IDS){let entries=state.frames[id]?.entities;
 let count=(entries||[]).filter(e=>{if(!e.position)return false;let [x,y]=pixel(e.position.lon,e.position.lat);return x>=0&&x<=d.w&&y>=0&&y<=d.h;}).length;
+kidsSeen[id]=state.live[id]&&state.visible[id]&&!state.parked[id]&&state.status[id]==='ready'&&!(state.frames[id]?.notice||'').startsWith('Zoom in')?count:0;
 const status=$(id+'-source-status'),chip=$(id+'-chip').querySelector('strong'),n=$(id+'-count');
 if(state.parked[id]){status.textContent='Unavailable · coming soon';chip.textContent='SOON';if(n)n.textContent='—';continue;}
 if(state.live[id]){
@@ -1112,6 +1132,104 @@ function liveCredit(){const box=$('map-credit');if(!box)return;
     .map(id=>shortCredit[layerName(id)]).filter(Boolean);
   const text='© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'+(live.length?' · Live data: '+live.join(' · '):'');
   if(box.textContent!==text)box.textContent=text;}
+// ---- 4.11.0 Kids mode ------------------------------------------------------------------------------------
+const KID_WORD={bus:['bus','buses'],rail:['train','trains'],air:['plane','planes']};
+let kidsMuted=false;try{kidsMuted=localStorage.getItem('tpa-kids-muted')==='1';}catch(_){}
+function kidsSentence(e,sound){
+  const lead=(sound||{bus:'Beep beep',rail:'Choo choo',air:'Whoosh'}[e.component]||'Hello')+'!';
+  const label=String(e.label||'');
+  if(!state.live[e.component])return lead+" I'm a pretend one, just for practice.";
+  if(e.component==='bus'){
+    const to=(label.match(/ to (.+)$/)||[])[1];
+    return lead+" I'm the number "+(e.badge||'')+' bus'+(to?'. I\'m going to '+to.replace(/\s*\(.*\)$/,'')+'!':'!');
+  }
+  if(e.component==='rail'){
+    const next=(label.match(/next: ([^·]+)/)||[])[1],at=(label.match(/(?:arrived at|passed|terminated at) ([^·]+)/)||[])[1],left=(label.match(/departed ([^·]+)/)||[])[1];
+    const who=" I'm train "+(e.badge||'')+'.';
+    if(/cancelled/.test(label))return lead+who+" I'm having a rest today.";
+    if(next)return lead+who+' Next stop: '+next.trim()+'!';
+    if(left)return lead+who+" I've just left "+left.trim()+'!';
+    if(at)return lead+who+" I'm at "+at.trim()+'!';
+    return lead+who;
+  }
+  if(e.component==='air'){
+    if(/on the ground/.test(label))return lead+" I'm on the ground at the airport.";
+    const ft=Number(((label.match(/([\d,]+) ft/)||[])[1]||'').replace(/,/g,''));
+    if(!ft)return lead+" I'm flying in the sky!";
+    if(ft<3000)return lead+" I'm flying low. Maybe I'm coming in to land!";
+    if(ft<15000)return lead+" I'm flying high, up in the clouds!";
+    return lead+" I'm flying way up high, above the clouds!";
+  }
+  return lead;
+}
+function kidsSay(text){
+  if(kidsMuted||!window.speechSynthesis||typeof SpeechSynthesisUtterance!=='function')return;
+  try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='en-GB';u.rate=0.95;u.pitch=1.15;speechSynthesis.speak(u);}catch(_){}
+}
+function kidsBubble(e,sound){
+  state.selected=e;
+  const text=el('p','kids-say',kidsSentence(e,sound));
+  const again=el('button','kids-again','🔊 Again!');again.type='button';
+  again.onclick=()=>{const name=window.TPAKidsSounds?.play(e.component,kidsMuted);const t=kidsSentence(e,name);text.textContent=t;kidsSay(t);};
+  const fb=document.createElement('button');fb.type='button';fb.className='follow-button';
+  fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};
+  const close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','Close');
+  close.onclick=()=>{selected.classList.add('hidden');state.selected=null;stopFollow();paint();};
+  const row=el('div','kids-buttons');row.append(again,fb);
+  selected.classList.add('kids-bubble');selected.replaceChildren(text,row,close);selected.classList.remove('hidden');
+  if(!isFollowing(e))stopFollow();updateFollowUI();paint();
+  return text.textContent;
+}
+function kidsTap(e,b){
+  const name=window.TPAKidsSounds?.play(e.component,kidsMuted)||null;
+  b.classList.remove('kid-boing');void b.offsetWidth;b.classList.add('kid-boing');
+  kidsSay(kidsBubble(e,name));
+}
+function kidsCountText(){
+  const parts=[];
+  for(const id of ['bus','rail','air']){const n=kidsSeen[id]||0;if(n>0)parts.push(n+' '+KID_WORD[id][n===1?0:1]);}
+  if(!parts.length)return 'Zoom in to find buses, trains and planes!';
+  return 'I can see '+(parts.length>1?parts.slice(0,-1).join(', ')+' and '+parts[parts.length-1]:parts[0])+'!';
+}
+function buildKidsBar(){
+  const bar=el('div','kids-bar');bar.setAttribute('aria-label','Kids buttons');
+  for(const [id,pic,word] of [['bus','🚌','Buses'],['rail','🚂','Trains'],['air','✈️','Planes']]){
+    const b=el('button','kids-toggle',pic);b.type='button';b.dataset.layer=id;b.setAttribute('aria-label',word);b.title=word;
+    const box=$(id+'-toggle');
+    const sync=()=>{b.setAttribute('aria-pressed',String(!!box?.checked));};
+    b.onclick=()=>{if(box){box.click();sync();window.TPAKidsSounds?.play(id,kidsMuted);}};
+    box?.addEventListener('change',sync);sync();bar.append(b);
+  }
+  const mute=el('button','kids-toggle kids-mute','');mute.type='button';
+  const syncMute=()=>{mute.textContent=kidsMuted?'🔇':'🔊';mute.setAttribute('aria-label',kidsMuted?'Sound off':'Sound on');mute.setAttribute('aria-pressed',String(!kidsMuted));};
+  mute.onclick=()=>{kidsMuted=!kidsMuted;try{localStorage.setItem('tpa-kids-muted',kidsMuted?'1':'0');}catch(_){}if(kidsMuted)try{speechSynthesis.cancel();}catch(_){}syncMute();};
+  syncMute();bar.append(mute);
+  const count=el('div','kids-count');count.setAttribute('role','status');count.id='kids-count';
+  // grown-ups: hold for 3 seconds to leave (little fingers won't do it by accident)
+  const grown=el('button','kids-grownups','');grown.type='button';grown.id='kids-grownups';
+  grown.append(el('span','kids-grownups-fill'),el('span','kids-grownups-text','Grown-ups: hold'));
+  let holdTimer=0;
+  const start=ev=>{ev.preventDefault();grown.classList.add('holding');clearTimeout(holdTimer);holdTimer=setTimeout(()=>{location.href='/';},3000);};
+  const stop=()=>{grown.classList.remove('holding');clearTimeout(holdTimer);};
+  grown.addEventListener('pointerdown',start);for(const t of ['pointerup','pointerleave','pointercancel'])grown.addEventListener(t,stop);
+  grown.addEventListener('keydown',ev=>{if((ev.key==='Enter'||ev.key===' ')&&!ev.repeat)start(ev);});grown.addEventListener('keyup',stop);
+  root.append(bar,count,grown);
+  setInterval(()=>{const t=kidsCountText();if(count.textContent!==t)count.textContent=t;},1000);
+}
+function buildKidsWelcome(w){
+  const {back,card}=makeDialog('tpa-kids-welcome','TPA Kids');
+  card.classList.add('kids-welcome');
+  const pics=el('div','kids-welcome-pics');
+  for(const id of ['bus','rail','air']){const s=el('span','kid-art kids-wave');s.innerHTML=KID_ART[id];pics.append(s);}
+  const hello=el('p','kids-hello','Tap a bus, a train or a plane to say hello!');
+  const go=el('button','tpa-primary kids-go',"Let's play!");go.type='button';
+  go.onclick=()=>{window.TPAKidsSounds?.unlock();window.TPAKidsSounds?.play('bus',kidsMuted);closeDialog(back);};
+  const small=el('p','kids-small','For grown-ups: these are real buses, trains and planes, shown as closely as the open data allows. '+
+    'For fun only - not for planning journeys or safety. Nothing about you is collected: no cookies, adverts or tracking.');
+  card.append(pics,hello,go,small);
+  return back;
+}
+if(KIDS)buildKidsBar();
 async function loadSiteConfig(){
   let cfg;
   try{cfg=await requestBounded('/data/site-config.json',65536,5000);}catch(_){return;}
@@ -1129,6 +1247,7 @@ async function loadSiteConfig(){
   $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
   let seen=false;try{seen=localStorage.getItem(WELCOME_KEY)==='1';}catch(_){}
   if(cfg.welcome?.everyVisit===true)seen=false;      // 4.7.0 (owner 1 Nov 15:22): the welcome screen every visit
+  if(KIDS){try{openDialog(buildKidsWelcome(cfg.welcome));}catch(_){}return;}
   if(welcome&&cfg.welcome?.enabled===true&&!seen)openDialog(welcome);
   startPreparing(!(welcome&&cfg.welcome?.enabled===true&&!seen));   // 4.6.0: returning visitors get the short panel
 }
