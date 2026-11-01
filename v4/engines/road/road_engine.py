@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.2.0'
+ENGINE_VERSION = '0.3.0'
 COMPONENT = 'road'
 CONTRACT = '1.0'
 TOMTOM_TILE = 'https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/{z}/{x}/{y}'
@@ -46,6 +46,13 @@ MIN_ZOOM, MAX_ZOOM = 8, 17
 # default - a quarter as many requests per screen (and a quarter of the TomTom allowance). TomTom's
 # 512 picture at zoom z covers the same ground as its 256 picture at z, so HQ asks for one zoom level
 # lower (Leaflet zoomOffset -1) to keep the same detail; an older HQ simply shows them at 256.
+# 0.3.0 (owner 1 Nov 13:06-13:11: TomTom's thick lines "give the impression buses are not quite on the
+# roads"; "what if a user was sat on a bus and wanted to know why he/she was stopped"): close in, the
+# traffic is drawn see-through so the real road edges show, and free-flowing (green) roads are left clear,
+# so only hold-ups are coloured. Zoomed out it is drawn as before. TomTom's own style colours
+# (developer docs, Orbis raster flow tiles v2): free flow = speed at 75% or more of normal.
+STREET_ZOOM = 15
+FREE_FLOW = {'dark': ['#118845', '#165f36'], 'light': ['#2ae57b', '#27a55e']}
 TILE_SIZE = 256 if os.environ.get('TPA_ROAD_TILE_SIZE', '512').strip() == '256' else 512
 Z_SHIFT = 1 if TILE_SIZE == 512 else 0
 CACHE_MAX_SECONDS = 600   # 0.2.0: up to 10 minutes, if TomTom's own max-age allows
@@ -221,7 +228,9 @@ def snapshot() -> dict:
              'nextPollAfterMs': 60000, 'attribution': ATTRIBUTION, 'entities': [],
              'overlay': {'type': 'raster', 'tiles': f'/api/v4/components/{COMPONENT}/tiles/{{z}}/{{x}}/{{y}}.png',
                          'minZoom': MIN_ZOOM, 'maxZoom': MAX_ZOOM, 'opacity': 0.85, 'refreshSeconds': 600,   # owner 31 Oct 22:29: every 10 minutes is plenty
-                         'tileSize': TILE_SIZE}}
+                         'tileSize': TILE_SIZE,
+                         'opacityByZoom': [[0, 0.85], [STREET_ZOOM, 0.5], [STREET_ZOOM + 1, 0.4]],
+                         'hideColours': FREE_FLOW.get(STYLE, []), 'hideFromZoom': STREET_ZOOM, 'hideTolerance': 40}}
     if notice:
         frame['notice'] = notice
     return frame

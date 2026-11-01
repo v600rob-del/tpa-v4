@@ -386,7 +386,13 @@ document.querySelector('.onair strong').textContent=anyLive?(anyMock?'TEST · LI
 const banner=document.querySelector('.mock-banner');
 if(banner){if(!banner.dataset.original)banner.dataset.original=banner.textContent;
   const liveNames=IDS.filter(id=>state.live[id]&&!state.parked[id]).map(layerName);
-  banner.textContent=anyLive?'TEST VERSION · LIVE: '+liveNames.join(', ').toUpperCase()+(anyMock?' · OTHER ICONS ARE PRETEND':' · OTHER LAYERS NOT CONNECTED YET'):banner.dataset.original;}
+  banner.textContent=anyLive?'TEST VERSION · LIVE: '+liveNames.join(', ').toUpperCase()+(anyMock?' · OTHER ICONS ARE PRETEND':' · OTHER LAYERS NOT CONNECTED YET'):banner.dataset.original;
+  // 4.3.0 (owner 1 Nov 13:11: "can you get rid of this to somewhere off map?"): when everything shown is
+  // real, the notice moves to the side menu under the status line; while any pretend icons are on the
+  // map it stays on the map, so they can never be mistaken for live ones.
+  const onair=document.querySelector('.onair'),toMenu=anyLive&&!anyMock;
+  if(toMenu&&onair&&!banner.classList.contains('in-sidebar')){window.__tpaBannerHome=banner.parentNode;onair.after(banner);banner.classList.add('in-sidebar');}
+  else if(!toMenu&&banner.classList.contains('in-sidebar')&&window.__tpaBannerHome){window.__tpaBannerHome.append(banner);banner.classList.remove('in-sidebar');}}
 const statsTitle=document.querySelector('.stats-panel h2');if(statsTitle){if(!statsTitle.dataset.original)statsTitle.dataset.original=statsTitle.textContent;statsTitle.textContent=anyLive?'VEHICLES IN VIEW':statsTitle.dataset.original;}
 const statsMicro=document.querySelector('.stats-panel .micro');if(statsMicro){if(!statsMicro.dataset.original)statsMicro.dataset.original=statsMicro.textContent;statsMicro.textContent=anyLive?'TEST VERSION':statsMicro.dataset.original;}
 const note=document.querySelector('.stats-panel .panel-note');if(note){if(!note.dataset.original)note.dataset.original=note.textContent;note.textContent=anyLive?'Live layers show real reported positions. Layers marked MOCK are pretend.':note.dataset.original;}
@@ -428,7 +434,14 @@ const notice=typeof f.notice==='string'?f.notice.slice(0,120):'';
 let overlay=null;const o=f.overlay;
 if(o&&typeof o==='object'&&o.type==='raster'&&o.tiles===`/api/v4/components/${id}/tiles/{z}/{x}/{y}.png`&&Number.isInteger(o.minZoom)&&Number.isInteger(o.maxZoom)&&o.minZoom>=0&&o.maxZoom<=22&&o.minZoom<=o.maxZoom&&validNum(o.opacity)&&o.opacity>0&&o.opacity<=1)
   overlay={tiles:o.tiles,minZoom:o.minZoom,maxZoom:o.maxZoom,opacity:o.opacity,refreshSeconds:Number.isInteger(o.refreshSeconds)?clamp(o.refreshSeconds,60,3600):300,
-    tileSize:o.tileSize===512?512:256};
+    tileSize:o.tileSize===512?512:256,
+    // 4.3.0 optional (owner 1 Nov 13:06: thick traffic lines "give the impression buses are not quite on the
+    // roads"): a different see-through level from a zoom level on, and colours made fully clear from a zoom
+    // level on (e.g. free-flowing traffic, so only hold-ups are drawn close in). Generic: HQ knows no colours.
+    opacitySteps:Array.isArray(o.opacityByZoom)?o.opacityByZoom.filter(q=>Array.isArray(q)&&q.length===2&&Number.isInteger(q[0])&&q[0]>=0&&q[0]<=22&&validNum(q[1])&&q[1]>=0&&q[1]<=1).slice(0,8).sort((a,b)=>a[0]-b[0]):[],
+    hide:Array.isArray(o.hideColours)&&Number.isInteger(o.hideFromZoom)&&o.hideFromZoom>=0&&o.hideFromZoom<=22?
+      {from:o.hideFromZoom,tol:validNum(o.hideTolerance)?clamp(o.hideTolerance,0,120):40,
+       rgb:o.hideColours.filter(c=>typeof c==='string'&&/^#[0-9a-fA-F]{6}$/.test(c)).slice(0,12).map(c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16)))}:null};
 const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,5000,120000):30000;
 return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs};}
 // 4.1.0 optional motion hint from an engine. HQ only does generic arithmetic with it
@@ -493,6 +506,26 @@ function viewQuery(){
 // 4.0.10: a socket may supply a see-through picture layer (e.g. coloured roads).
 // HQ only places it on the map; the engine decides what the pictures show.
 let overlayPane=null;
+function overlayOpacity(o,z){let op=o.opacity;for(const [zz,v] of o.opacitySteps||[])if(z>=zz)op=v;return op;}
+function clearColours(canvas,hide){
+  const ctx=canvas.getContext('2d',{willReadFrequently:true}),img=ctx.getImageData(0,0,canvas.width,canvas.height),d=img.data,cs=hide.rgb,tol=hide.tol;
+  for(let i=0;i<d.length;i+=4){if(!d[i+3])continue;const r=d[i],g=d[i+1],b=d[i+2];
+    for(const c of cs)if(Math.abs(r-c[0])+Math.abs(g-c[1])+Math.abs(b-c[2])<=tol){d[i+3]=0;break;}}
+  ctx.putImageData(img,0,0);
+}
+function makeTileLayer(url,opts,hide){
+  if(!hide||!hide.rgb.length||typeof L.TileLayer?.extend!=='function')return L.tileLayer(url,opts);
+  const Clearing=L.TileLayer.extend({createTile(coords,done){
+    const canvas=document.createElement('canvas'),size=this.getTileSize();canvas.width=size.x;canvas.height=size.y;
+    const img=new Image();
+    img.onload=()=>{try{const ctx=canvas.getContext('2d');ctx.drawImage(img,0,0,size.x,size.y);if(coords.z>=hide.from)clearColours(canvas,hide);}catch(e){}done(null,canvas);};
+    img.onerror=e=>done(e,canvas);img.src=this.getTileUrl(coords);return canvas;}});
+  return new Clearing(url,opts);
+}
+function applyOverlayOpacity(){
+  if(!map)return;const z=map.getZoom();
+  for(const id of IDS){const have=state.overlays[id],o=state.frames[id]?.overlay;if(have&&o&&!have.next)have.layer.setOpacity(overlayOpacity(o,z));}
+}
 function syncOverlays(){
   // Only a real Leaflet map can hold picture layers; anything else keeps working without them.
   if(!map||!window.L||typeof map.createPane!=='function'||typeof L.tileLayer!=='function')return;
@@ -510,10 +543,10 @@ function syncOverlays(){
     // - a refresh loads the new pictures underneath and only then removes the old ones,
     //   instead of blanking the whole layer and reloading it.
     const big=o.tileSize===512;
-    const layer=L.tileLayer(url,{pane:'tpa-socket-overlays',minZoom:o.minZoom,maxNativeZoom:o.maxZoom,maxZoom:18,opacity:o.opacity,
+    const layer=makeTileLayer(url,{pane:'tpa-socket-overlays',minZoom:o.minZoom,maxNativeZoom:o.maxZoom,maxZoom:18,opacity:overlayOpacity(o,map.getZoom()),
       tileSize:big?512:256,zoomOffset:big?-1:0,updateWhenIdle:false,updateWhenZooming:false,keepBuffer:3,crossOrigin:false,
       // Leaflet shows attribution as HTML, so escape the engine's plain text first.
-      attribution:String(state.frames[id]?.attribution||'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';')});
+      attribution:String(state.frames[id]?.attribution||'').replace(/[&<>"']/g,c=>'&#'+c.charCodeAt(0)+';')},o.hide);
     layer.on('loading',()=>{SPEED.trafficFrom=performance.now();});
     layer.on('load',()=>{speedMark('traffic shown');if(SPEED.trafficFrom){SPEED.trafficLast=performance.now()-SPEED.trafficFrom;SPEED.trafficFrom=0;}});
     if(!have){layer.addTo(map);state.overlays[id]={layer,url};continue;}
@@ -521,7 +554,7 @@ function syncOverlays(){
     have.next={layer,url};
     layer.setOpacity(0);                           // invisible until every picture has arrived
     layer.once('load',()=>{const cur=state.overlays[id];if(!cur||cur.next?.layer!==layer)return;
-      layer.setOpacity(o.opacity);map.removeLayer(cur.layer);state.overlays[id]={layer,url};});
+      layer.setOpacity(overlayOpacity(o,map.getZoom()));map.removeLayer(cur.layer);state.overlays[id]={layer,url};});
     layer.addTo(map);
   }
 }
@@ -666,6 +699,7 @@ try{
   map.on('zoomanim',zoomAnimStart);
   map.on('movestart',()=>{SPEED.mapFrom=performance.now();});
   map.on('zoomend',zoomAnimEnd);
+  map.on('zoomend',applyOverlayOpacity);
   map.on('moveend',refetchLiveView);
   // 4.1.2: while the map moves, markers follow it instantly (no gliding lag).
   if(typeof map.on==='function')map.on('movestart zoomstart',()=>{mapMoving=true;for(const p of pins.values())p.b.classList.remove('glide');});
