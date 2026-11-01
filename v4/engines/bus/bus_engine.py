@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.5.5'
+ENGINE_VERSION = '0.5.6'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -89,7 +89,11 @@ ROAD_RETRY_HOURS = 6
 ROAD_VIEW_SPAN = 0.12        # follow roads only when zoomed in to town/city level (view under ~13 km tall);
                              # further out a bus is a dot and the straight glide looks the same (0.4.1)
 INLINE_BUDGET = 0.25
-NEW_AREA_BUDGET = 1.0        # 0.5.4: first look at a new area         # seconds a snapshot may spend working out roads; the rest wait for the helper thread
+NEW_AREA_BUDGET = 1.0        # 0.5.4: first look at a new area
+# 0.5.6 (owner 1 Nov 00:18: "this needs to LOOK right"): road positions are also prepared for areas
+# looked at from further out (a whole city), so zooming in finds every bus already on its road.
+PREP_VIEW_SPAN = 0.6         # views up to about 65 km tall
+PREP_MAX = 900               # buses prepared per download, nearest the middle of what's being looked at first         # seconds a snapshot may spend working out roads; the rest wait for the helper thread
 
 KEY = (os.environ.get('TPA_BODS_API_KEY') or '').strip()
 _test_area = os.environ.get('TPA_BUS_TEST_AREA_URL', '').strip()
@@ -325,20 +329,34 @@ def prepare_paths() -> None:
         views = [w for _, w in VIEWS]
         if not views:
             return
+        # 0.5.4: a margin of half the view on every side for close-up views, so panning nearby lands on
+        # buses whose road paths are already prepared. 0.5.6: wider views (a whole city) too, as they are.
+        areas = [((s - (n - s) / 2, w - (e - w) / 2, n + (n - s) / 2, e + (e - w) / 2) if n - s <= ROAD_VIEW_SPAN else (s, w, n, e),
+                  ((s + n) / 2, (w + e) / 2), n - s <= ROAD_VIEW_SPAN) for s, w, n, e in views]
+        picks = []
         for v in STATE['vehicles']:
-            if not v.get('speed') or v.get('bearing') is None or now - v['recorded'] > DROP_AFTER:
+            if not v.get('speed') or v.get('bearing') is None or now - v['recorded'] > STALE_AFTER:
                 continue
-            # 0.5.4: a margin of half the view on every side, so panning nearby lands on buses whose road
-            # paths are already prepared (owner 31 Oct 22:46: moving "a couple of tiles" looked wrong)
-            if not any(s - (n - s) / 2 <= v['lat'] <= n + (n - s) / 2 and w - (e - w) / 2 <= v['lon'] <= e + (e - w) / 2
-                       for s, w, n, e in views):
+            best = None
+            for (s, w, n, e), (cy, cx), close in areas:
+                if s <= v['lat'] <= n and w <= v['lon'] <= e:
+                    rank = (0 if close else 1, (v['lat'] - cy) ** 2 + (v['lon'] - cx) ** 2)
+                    best = rank if best is None or rank < best else best
+            if best is None:
                 continue
             known = PATHS.get(v['key'])
             if known and known[0] == v['recorded']:
                 continue
-            if (v['key'], v['recorded']) not in PENDING_SET and len(PENDING) < 3000:
-                PENDING_SET.add((v['key'], v['recorded']))
-                PENDING.append(v)
+            if (v['key'], v['recorded']) not in PENDING_SET:
+                picks.append((best, v))
+        picks.sort(key=lambda p: p[0])                    # close-up views first, then nearest the middle
+        chosen = [v for _, v in picks[:max(0, min(PREP_MAX, 3000 - len(PENDING)))]]
+        # worked through area by area, so each piece of road map is loaded once
+        tile = road_map.tile_of
+        chosen.sort(key=lambda v: tile(round(v['lon'] * 1e6), round(v['lat'] * 1e6)))
+        for v in chosen:
+            PENDING_SET.add((v['key'], v['recorded']))
+            PENDING.append(v)
 
 
 def _fetch_once(area) -> None:
@@ -493,7 +511,7 @@ def snapshot(view) -> dict:
                                                      for t, (s, w, n, e) in VIEWS if now - t < VIEW_MEMORY))
     deadline = time.monotonic() + (INLINE_BUDGET if known_area else NEW_AREA_BUDGET)
     roads = north - south <= ROAD_VIEW_SPAN
-    if roads:
+    if north - south <= PREP_VIEW_SPAN:
         with LOCK:
             VIEWS.append((now, view))
             del VIEWS[:-50]

@@ -824,7 +824,7 @@ def _allowed(flags, step):
 
 
 class RoadMap:
-    def __init__(self, path, max_tiles=150, max_points=2_500_000):
+    def __init__(self, path, max_tiles=350, max_points=4_000_000):   # 0.5.6: room for a whole city
         self.path, self.max_tiles, self.max_points = path, max_tiles, max_points
         self.db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, check_same_thread=False)
         self.lock = threading.Lock()
