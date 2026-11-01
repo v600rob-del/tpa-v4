@@ -231,10 +231,12 @@ body.vector-ready .vector-map{z-index:4}
 .user-view .crumb .hq-label+.dot-green+span,.user-view .crumb .chevron,.user-view .onair,
 .user-view .mock-banner.in-sidebar,.user-view .stats-panel .micro,.user-view .stats-panel .panel-note,
 .user-view .sidebar-footer,.user-view #speed-panel,.user-view .brand h1 em{display:none!important}
-/* 4.9.1 (owner 1 Nov 17:01: "The bottom yellow line of a highlighted bus or train goes through the number"):
-   for buses and trains the yellow ring goes round the icon AND its number board */
+/* 4.9.1/4.9.2 (owner 1 Nov 17:01: "The bottom yellow line of a highlighted bus or train goes through the number";
+   17:25: "just the train or bus icon being highlighted and the number always being over the top"):
+   for buses and trains the yellow ring goes round the icon only, drawn underneath the number board */
 .marker-layer .review-pin.bus.selected-pin,.marker-layer .review-pin.rail.selected-pin,
 .marker-layer .review-pin.bus:focus-visible,.marker-layer .review-pin.rail:focus-visible{outline:none}
 .marker-layer .review-pin.bus.selected-pin::after,.marker-layer .review-pin.rail.selected-pin::after,
 .marker-layer .review-pin.bus:focus-visible::after,.marker-layer .review-pin.rail:focus-visible::after{content:'';position:absolute;pointer-events:none;
-  top:-9px;left:-9px;right:-9px;bottom:calc(var(--pin-s,1) * -6px - 23px);border:3px solid #ffdf35;border-radius:15px}
+  inset:-8px;border:3px solid #ffdf35;border-radius:14px;z-index:1}
+.marker-layer .review-pin.bus .review-route,.marker-layer .review-pin.rail .review-route{z-index:2}
