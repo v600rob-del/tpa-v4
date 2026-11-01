@@ -484,7 +484,7 @@ function startFollow(e){
   updateFollowUI();paint();
 }
 function stopFollow(){
-  if(!follow)return;follow=null;
+  if(!follow)return;follow=null;settleMap();
   if(map){map.options.scrollWheelZoom=true;map.options.touchZoom=true;map.options.doubleClickZoom=true;}
   updateFollowUI();paint();refetchLiveView();
 }
@@ -501,10 +501,24 @@ function followFrame(now){
   const p=followAt(now);if(!p)return;
   let ox=0,oy=0;if(paintRef&&paintRef.z===map.getZoom()){const q=map.latLngToContainerPoint(paintRef.ll);ox=q.x-paintRef.x;oy=q.y-paintRef.y;}
   const size=map.getSize(),dx=p[0]+ox-size.x/2,dy=p[1]+oy-size.y/2;
-  if(Math.abs(dx)+Math.abs(dy)<0.2)return;
+  if(Math.abs(dx)+Math.abs(dy)<0.002)return;
   const f=now-follow.started<900?0.12:1;          // glide in when following starts, then stay locked on
-  followPanning=true;try{map.panBy([dx*f,dy*f],{animate:false});}finally{followPanning=false;}
+  followPanning=true;try{slideMap(dx*f,dy*f);}finally{followPanning=false;}
   if(now-follow.lastAsk>1000){follow.lastAsk=now;refetchLiveView();}   // vehicles for the new area, about once a second
+}
+// 4.10.1 (owner 1 Nov 18:20: "Could the scrolling be smoother?"): Leaflet's panBy rounds every move to whole
+// pixels, so a slow vehicle moved the map in 1-pixel jerks. Slide by fractions of a pixel instead (the same
+// steps panBy takes, without the rounding); the browser draws fractional positions smoothly.
+function slideMap(dx,dy){
+  if(typeof map._rawPanBy==='function'&&typeof map._getMapPanePos==='function'&&window.L?.point){
+    map.fire('movestart');map._rawPanBy(L.point(dx,dy));map.fire('move').fire('moveend');
+  }else map.panBy([dx,dy],{animate:false});
+}
+// When following stops, put the map back on a whole pixel so map pictures stay sharp.
+function settleMap(){
+  if(!map||typeof map._getMapPanePos!=='function')return;
+  const p=map._getMapPanePos(),fx=p.x-Math.round(p.x),fy=p.y-Math.round(p.y);
+  if(Math.abs(fx)>0.001||Math.abs(fy)>0.001){followPanning=true;try{slideMap(fx,fy);}finally{followPanning=false;}}
 }
 function closeFollowMenu(){if(followMenu){followMenu.remove();followMenu=null;}}
 function openFollowMenu(e,x,y){
