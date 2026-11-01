@@ -1,16 +1,100 @@
 #!/bin/bash
-# sudo tpa-update <commit>  - switch the server to another version of the public TPA code.
-# The previous version stays on disk, so going back is the same command with the old commit.
+# tpa-update - switch the server to another version of the public TPA code.
+#
+#   sudo tpa-update <commit>            everything (HQ, every layer and the server kit) - frozen layers are kept
+#   sudo tpa-update <layer> <commit>    ONE layer only: hq, bus, rail, air or road. Only that part restarts.
+#   sudo tpa-update freeze <layer>      a signed-off layer: no update changes it until it is unfrozen
+#   sudo tpa-update unfreeze <layer>
+#   sudo tpa-update show                which version each layer is running
+#
+# Going back is the same command with the old commit. Every version stays on disk.
 # Keys, passwords and saved data are kept. Shows tpa-status at the end.
+# (Server kit 4.11: per-layer updates, owner 1 Nov 2026 17:44: "protect that at all costs".)
 set -euo pipefail
 [[ $EUID -eq 0 ]] || exec sudo -n "$0" "$@"
-COMMIT="${1:-}"
-[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "usage: sudo tpa-update <40-character commit>" >&2; exit 2; }
 SRC=/opt/tpa/src
-echo "Current version: $(cat /var/lib/tpa/installed 2>/dev/null || echo unknown)"
-git -C "$SRC" fetch --quiet origin
-git -C "$SRC" checkout --quiet --detach "$COMMIT"
-[[ "$(git -C "$SRC" rev-parse HEAD)" == "$COMMIT" ]] || { echo "Could not switch to $COMMIT" >&2; exit 1; }
-bash "$SRC/v4/server/install.sh" "$COMMIT"
-sleep 5
-/usr/local/sbin/tpa-status || true
+LAYERS=(hq bus rail air road)
+FROZEN=/etc/tpa/frozen
+declare -A SCRIPT=([hq]=v4/hq/serve_hq.py [bus]=v4/engines/bus/bus_engine.py [rail]=v4/engines/rail/rail_engine.py
+                   [air]=v4/engines/air/air_engine.py [road]=v4/engines/road/road_engine.py)
+declare -A NAME=([hq]="HQ (the map page)" [bus]="Buses" [rail]="Trains" [air]="Aircraft" [road]="Road traffic")
+
+usage() {
+    cat >&2 <<'EOF'
+usage:
+  sudo tpa-update <40-character commit>            update everything (frozen layers are kept)
+  sudo tpa-update <layer> <40-character commit>    update one layer: hq, bus, rail, air or road
+  sudo tpa-update freeze <layer>                   protect a signed-off layer from updates
+  sudo tpa-update unfreeze <layer>
+  sudo tpa-update show                             which version each layer is running
+EOF
+    exit 2
+}
+is_layer() { local l; for l in "${LAYERS[@]}"; do [[ "$1" == "$l" ]] && return 0; done; return 1; }
+is_frozen() { [[ -f "$FROZEN" ]] && grep -qx "$1" "$FROZEN"; }
+layer_commit() {   # the commit a layer runs (before per-layer updates existed: the whole bundle's)
+    local target
+    target="$(readlink "/opt/tpa/layers/$1" 2>/dev/null || readlink /opt/tpa/current 2>/dev/null || true)"
+    [[ -n "$target" ]] && basename "$target" || echo "unknown"
+}
+show() {
+    echo "Server kit (last full update): $(cat /var/lib/tpa/installed 2>/dev/null || echo unknown)"
+    local l c
+    for l in "${LAYERS[@]}"; do
+        c="$(layer_commit "$l")"
+        printf '  %-5s %s%s\n' "$l" "$c" "$(is_frozen "$l" && echo '   FROZEN (signed off)' || true)"
+    done
+}
+fetch_release() {  # commit -> /opt/tpa/releases/<commit>, without touching anything that is running
+    local commit=$1 rel="/opt/tpa/releases/$1"
+    git -C "$SRC" fetch --quiet origin
+    git -C "$SRC" cat-file -e "$commit^{commit}" 2>/dev/null || { echo "That version ($commit) is not in the public TPA code." >&2; exit 1; }
+    if [[ ! -f "$rel/v4/hq/serve_hq.py" ]]; then
+        rm -rf "$rel.tmp"; mkdir -p "$rel.tmp"
+        git -C "$SRC" archive "$commit" v4 | tar -x -C "$rel.tmp"
+        chown -R root:root "$rel.tmp"; chmod -R go-w "$rel.tmp"
+        mv "$rel.tmp" "$rel"
+    fi
+}
+
+case "${1:-show}" in
+    show)
+        show ;;
+    freeze|unfreeze)
+        layer="${2:-}"; is_layer "$layer" || usage
+        install -d -m 0700 /etc/tpa; touch "$FROZEN"
+        if [[ "$1" == freeze ]]; then
+            is_frozen "$layer" || echo "$layer" >> "$FROZEN"
+            echo "${NAME[$layer]}: FROZEN at $(layer_commit "$layer"): no update will change it until: sudo tpa-update unfreeze $layer"
+        else
+            grep -vx "$layer" "$FROZEN" > "$FROZEN.new" || true; mv "$FROZEN.new" "$FROZEN"
+            echo "${NAME[$layer]}: unfrozen, updates can change it again."
+        fi ;;
+    hq|bus|rail|air|road)
+        layer=$1; commit="${2:-}"
+        [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || usage
+        if is_frozen "$layer"; then
+            echo "${NAME[$layer]}: FROZEN (signed off), so nothing was changed." >&2
+            echo "If you really mean to change it: sudo tpa-update unfreeze $layer   (then run this again)" >&2
+            exit 1
+        fi
+        [[ -L "/opt/tpa/layers/$layer" ]] || { echo "This server has not had a full update with per-layer support yet. Run a full update first: sudo tpa-update <commit>" >&2; exit 1; }
+        echo "${NAME[$layer]}: now $(layer_commit "$layer")"
+        fetch_release "$commit"
+        [[ -f "/opt/tpa/releases/$commit/${SCRIPT[$layer]}" ]] || { echo "That version has no ${NAME[$layer]} part - nothing changed." >&2; exit 1; }
+        ln -sfn "/opt/tpa/releases/$commit" "/opt/tpa/layers/$layer.new" && mv -T "/opt/tpa/layers/$layer.new" "/opt/tpa/layers/$layer"
+        systemctl restart "tpa-$layer"
+        echo "${NAME[$layer]}: switched to $commit (only tpa-$layer restarted; everything else untouched)"
+        sleep 5
+        /usr/local/sbin/tpa-status || true ;;
+    *)
+        COMMIT=$1
+        [[ "$COMMIT" =~ ^[0-9a-f]{40}$ && $# -eq 1 ]] || usage
+        echo "Current version: $(cat /var/lib/tpa/installed 2>/dev/null || echo unknown)"
+        git -C "$SRC" fetch --quiet origin
+        git -C "$SRC" checkout --quiet --detach "$COMMIT"
+        [[ "$(git -C "$SRC" rev-parse HEAD)" == "$COMMIT" ]] || { echo "Could not switch to $COMMIT" >&2; exit 1; }
+        bash "$SRC/v4/server/install.sh" "$COMMIT"
+        sleep 5
+        /usr/local/sbin/tpa-status || true ;;
+esac

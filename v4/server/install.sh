@@ -52,6 +52,19 @@ if [[ ! -f "$REL/v4/hq/serve_hq.py" ]]; then
     mv "$REL.tmp" "$REL"
 fi
 ln -sfn "$REL" /opt/tpa/current.new && mv -T /opt/tpa/current.new /opt/tpa/current
+# Server kit 4.11 (owner 1 Nov 17:44, "protect that at all costs"): each layer runs from its own link, so one
+# layer can be updated or rolled back on its own (sudo tpa-update <layer> <commit>). A layer the owner has
+# frozen (signed off) keeps the version it has; every other layer moves to this one.
+FROZEN=/etc/tpa/frozen
+is_frozen() { [[ -f "$FROZEN" ]] && grep -qx "$1" "$FROZEN"; }
+install -d -m 0755 /opt/tpa/layers
+for e in "${ENGINES[@]}"; do
+    if is_frozen "$e" && [[ -L "/opt/tpa/layers/$e" ]]; then
+        say "$e is FROZEN: kept at $(basename "$(readlink "/opt/tpa/layers/$e")")"
+    else
+        ln -sfn "$REL" "/opt/tpa/layers/$e.new" && mv -T "/opt/tpa/layers/$e.new" "/opt/tpa/layers/$e"
+    fi
+done
 install -d -m 0755 /usr/local/sbin /usr/local/bin
 install -m 0755 "$REL/v4/server/tpa-setup" /usr/local/sbin/tpa-setup
 install -m 0755 "$REL/v4/server/tpa-status" /usr/local/sbin/tpa-status
@@ -96,7 +109,7 @@ Group=tpa-$name
 Environment=$penv=$port
 $extra
 ${keys:+EnvironmentFile=-/etc/tpa/$keys}
-ExecStart=/usr/bin/python3 /opt/tpa/current/$script
+ExecStart=/usr/bin/python3 /opt/tpa/layers/$name/$script
 Restart=always
 RestartSec=5
 MemoryMax=$mem
@@ -122,6 +135,8 @@ UMask=0077
 WantedBy=multi-user.target
 EOF
 }
+declare -A BEFORE
+for e in "${ENGINES[@]}"; do BEFORE[$e]="$(sha256sum "/etc/systemd/system/tpa-$e.service" 2>/dev/null | cut -d' ' -f1)"; done
 unit road "road traffic engine (TomTom)" TPA_ROAD_ENGINE_PORT 8782 \
     "Environment=TPA_ROAD_DATA_DIR=/var/lib/tpa/road" 200M road.env v4/engines/road/road_engine.py
 unit bus "bus engine (BODS, whole-country mode)" TPA_BUS_ENGINE_PORT 8781 \
@@ -166,7 +181,15 @@ WantedBy=multi-user.target
 EOF
 systemctl daemon-reload
 systemctl enable --quiet tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web
-systemctl restart tpa-road tpa-bus tpa-air tpa-rail tpa-hq
+# restart every layer that moved; a frozen layer only if its service settings changed (it still runs its own code)
+restart=()
+for e in "${ENGINES[@]}"; do
+    if ! is_frozen "$e"; then restart+=("tpa-$e")
+    elif [[ "${BEFORE[$e]}" != "$(sha256sum "/etc/systemd/system/tpa-$e.service" | cut -d' ' -f1)" ]]; then
+        say "$e is FROZEN but its service settings changed: restarting it (its code is unchanged)"; restart+=("tpa-$e")
+    fi
+done
+[[ ${#restart[@]} -gt 0 ]] && systemctl restart "${restart[@]}"
 [[ -f /etc/tpa/web.env ]] && systemctl restart tpa-web || true
 
 # ---- this machine's own firewall (Oracle's Ubuntu image blocks everything but SSH) --

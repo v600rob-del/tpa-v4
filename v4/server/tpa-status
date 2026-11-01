@@ -40,6 +40,9 @@ if isinstance(d.get("measure"), dict):   # bus 0.5.9: accuracy figures
 ' "$1" || { printf '%-8s status unreadable\n' "$1"; ok=0; }
 }
 summary road 8782; summary bus 8781; summary air 8783; summary rail 8784
+echo
+# server kit 4.11: which version each layer runs, and which are frozen (signed off)
+if [[ -x /usr/local/sbin/tpa-update ]]; then /usr/local/sbin/tpa-update show 2>/dev/null || true; echo; fi
 code="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:8778' http://127.0.0.1:8778/api/v4/manifest)"
 printf '%-8s %s\n' "hq" "manifest HTTP $code"
 [[ "$code" == 200 ]] || ok=0
