@@ -51,7 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.4.1'
+ENGINE_VERSION = '0.4.2'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · railway lines: Network Rail track model (OGL) · stations: DfT NaPTAN (OGL) · junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
@@ -116,6 +116,25 @@ PENDING = []           # legs waiting to be worked out (newest last)
 PENDING_SET = set()
 ROUTE_WAKE = threading.Event()
 ROUTER = None
+PLACED = {}            # 0.4.2: (lon, lat) of a station/timing point -> the nearest point on the track
+
+
+def on_track(lon: float, lat: float):
+    """Where to draw a train standing at (lon, lat): on the track itself once the track map is loaded."""
+    router = ROUTER
+    if router is None:
+        return lon, lat
+    key = (lon, lat)
+    got = PLACED.get(key)
+    if got is None:
+        try:
+            got = router.place(lon, lat) or key
+        except Exception:
+            got = key
+        if len(PLACED) > 20000:
+            PLACED.clear()
+        PLACED[key] = got
+    return got
 
 
 def iso(ts: float) -> str:
@@ -641,7 +660,7 @@ def snapshot(view) -> dict:
     inside.sort(key=lambda x: x[0])
     for _, tid, t, age in inside[:MAX_PER_VIEW]:
         entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
-                  'position': {'lon': t['lon'], 'lat': t['lat'], 'headingDeg': None},
+                  'position': dict(zip(('lon', 'lat'), on_track(t['lon'], t['lat'])), headingDeg=None),
                   'quality': 'observed' if age <= FRESH_FOR and not t.get('cancelled') else 'stale', 'observedAt': iso(t['when'])}
         if t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
             key = leg_key(t)

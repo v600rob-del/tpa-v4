@@ -7,6 +7,13 @@ const IDS=Object.freeze(['air','sea','rail','bus','road']);
 const SOCKETS=Object.freeze(Object.fromEntries(IDS.map(id=>[id,Object.freeze({id,contractVersion:'1.0',type:'data-only',path:'/api/v4/components/'+id})])));
 Object.defineProperty(window,'TPA_HQ_SOCKETS',{value:SOCKETS,writable:false,configurable:false});
 const $=id=>document.getElementById(id),root=$('map'),canvas=$('geo-canvas'),ctx=canvas.getContext('2d');
+// 4.9.0 (owner 1 Nov 16:55: "a user page ... to see what a standard user would see without all the admin
+// things"): https://…/user (or ?view=user) hides the test and admin bits; the map, layers, search, welcome,
+// bus details and credits are the same. Pretend (MOCK) icons still carry their on-map warning.
+const USER_VIEW=location.pathname==='/user'||new URLSearchParams(location.search).get('view')==='user';
+if(USER_VIEW){document.documentElement.classList.add('user-view');document.title='TPA · live UK transport map';
+  const h=document.querySelector('.search-panel h2');if(h)h.textContent='FIND A PLACE';
+  const m=document.querySelector('.search-panel .micro');if(m)m.textContent='';}
 const HOME={lon:-0.423,lat:53.842,z:11};
 const POI=[
 ['Beverley',-0.423,53.842],['Hull',-0.334,53.745],['York',-1.082,53.960],['Leeds',-1.549,53.801],

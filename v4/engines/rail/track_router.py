@@ -16,6 +16,10 @@ CELL = 0.02          # degrees, for finding the nearest junction quickly
 MAX_SNAP_M = 1500    # a place further than this from any track gets no route (metres)
 MAX_EXPANSIONS = 80000
 MAX_POINTS = 160
+# 0.4.2 (owner 1 Nov 17:01: trains "slightly of[f] the railway indication line"): stations and timing points
+# are often a few to tens of metres beside the track (station building, forecourt). A train is drawn at the
+# nearest point ON the track when that is within this distance, and its route starts and ends there.
+ON_TRACK_M = 300
 
 
 def metres(lon1, lat1, lon2, lat2):
@@ -75,6 +79,13 @@ class TrackRouter:
                         best, bd = (k, self.cum[k][i] + t * seg, (x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)), d
         return best
 
+    def place(self, lon, lat):
+        """(lon, lat) moved onto the nearest track if within ON_TRACK_M, else None."""
+        s = self.snap(lon, lat)
+        if s and metres(lon, lat, *s[2]) <= ON_TRACK_M:
+            return (round(s[2][0], 6), round(s[2][1], 6))
+        return None
+
     def part(self, k, d1, d2):
         """Shape of edge k between distances d1 and d2 along it (either direction)."""
         line, cum = self.geom[k][2], self.cum[k]
@@ -110,6 +121,11 @@ class TrackRouter:
             return None
         straight = metres(*a, *b)
         (ka, da, pa), (kb, db, pb) = sa, sb
+        # 0.4.2: start and end on the track itself (as the standing train is drawn), not beside it
+        if metres(*a, *pa) <= ON_TRACK_M:
+            a = pa
+        if metres(*b, *pb) <= ON_TRACK_M:
+            b = pb
         if ka == kb:                                   # both on the same piece of track
             pts = [tuple(a)] + self.part(ka, da, db) + [tuple(b)]
             return finish(pts, straight)

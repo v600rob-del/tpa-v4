@@ -30,8 +30,8 @@ import time
 
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
-PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg'}   # 4.7.0: Geoff (owner's cat) on the welcome screen
-HQ_VERSION = '4.8.0'
+PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user'}   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
+HQ_VERSION = '4.9.1'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # HQ relays data only (JSON frames, PNG overlay tiles); it contains no supplier
@@ -502,7 +502,7 @@ class HQHandler(SimpleHTTPRequestHandler):
                 record_error('openfreemap',sanitized_error(exc),relative[:160])
                 return self.send_error(502,'Map resource unavailable; check hq-map-status')
         if path in PUBLIC:
-            self.path='/index.html' if path=='/' else path
+            self.path='/index.html' if path in ('/','/user') else path
             return super().do_GET()
         return self.send_error(404,'HQ standard-only resource allowlist')
     def do_POST(self):
