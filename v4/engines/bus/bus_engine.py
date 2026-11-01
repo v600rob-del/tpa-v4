@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.5.8'
+ENGINE_VERSION = '0.5.9'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -160,7 +160,12 @@ def clean(text: str, limit: int) -> str:
 
 
 FIELDS = ('Latitude', 'Longitude', 'LineRef', 'PublishedLineName', 'VehicleRef', 'OperatorRef',
-          'DestinationName', 'RecordedAtTime', 'Bearing')
+          'DestinationName', 'RecordedAtTime', 'Bearing') + ('DatedVehicleJourneyRef', 'OriginRef', 'DestinationRef',
+          'OriginAimedDepartureTime', 'BlockRef')
+# 0.5.9 (owner 1 Nov 09:05: "having more points of reference for a buses journey will give us higher
+# accuracy"): count which buses carry the details needed to find their timetabled journey (bit flags in
+# 'jd'). Only counted for now - nothing is shown or changed.
+JOURNEY_BITS = {'DatedVehicleJourneyRef': 1, 'OriginRef': 2, 'DestinationRef': 4, 'OriginAimedDepartureTime': 8, 'BlockRef': 16}
 
 
 class GuardedStream(io.RawIOBase):
@@ -218,7 +223,8 @@ def parse_siri(stream) -> list[dict]:
             pass
         out.append({'key': key, 'lat': round(lat, 6), 'lon': round(lon, 6), 'bearing': bearing,
                     'route': clean(vals.get('PublishedLineName') or vals.get('LineRef') or '', 12),
-                    'destination': clean(vals.get('DestinationName', ''), 80), 'recorded': when})
+                    'destination': clean(vals.get('DestinationName', ''), 80), 'recorded': when,
+                    'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name))})
     return out
 
 
@@ -299,6 +305,90 @@ def add_motion(new: list, old: list) -> None:
         v['speed'] = round(speed, 2)
         if went is not None and (v['bearing'] is None or min(abs(v['bearing'] - went) % 360, 360 - abs(v['bearing'] - went) % 360) > 60):
             v['bearing'] = went
+
+
+MEASURE_KEEP = 3000          # 0.5.9: recent guesses kept for the accuracy figures
+MEASURE = {'errors': [], 'gaps': [], 'offsets': []}
+
+
+def _point_along(points, metres_to_go):
+    """The point `metres_to_go` along a [lon, lat] path (its end if the path is shorter)."""
+    for a, b in zip(points, points[1:]):
+        d = metres(a[1], a[0], b[1], b[0])
+        if d >= metres_to_go and d > 0:
+            f = metres_to_go / d
+            return a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f
+        metres_to_go -= d
+    return points[-1][0], points[-1][1]
+
+
+def _glide_metres(speed, seconds):
+    """How far HQ carries a bus `seconds` after its report: steady, then easing to a stop ("slowToStop")."""
+    ease = GLIDE_SECONDS - STEADY_SECONDS
+    t = max(0.0, min(seconds, GLIDE_SECONDS))
+    if t <= STEADY_SECONDS:
+        return speed * t
+    tau = t - STEADY_SECONDS
+    return speed * (STEADY_SECONDS + tau - tau * tau / (2 * ease))
+
+
+def measure_guesses(new: list, old: list) -> None:
+    """0.5.9 (owner 1 Nov 09:14: "smooth movement for short periods then pauses, often followed by speedy
+    movements"): when a bus's next report arrives, how far from it was the position we were showing
+    for that moment? Ahead = we had it further on than it really was. Also how often each bus reports,
+    and how far its reported position was from the road we drew it on. Counted only; nothing changes."""
+    before = {v['key']: v for v in old}
+    for v in new:
+        p = before.get(v['key'])
+        if p is None or v['recorded'] <= p['recorded']:
+            continue
+        dt = v['recorded'] - p['recorded']
+        MEASURE['gaps'].append(dt)
+        if dt > 120 or not p.get('speed') or p.get('bearing') is None:
+            continue
+        known = PATHS.get(p['key'])
+        motion = known[1] if known and known[0] == p['recorded'] else None
+        go = _glide_metres(p['speed'], dt)
+        if motion and motion.get('mode') == 'path' and len(motion['points']) >= 2:
+            start = motion['points'][0]
+            MEASURE['offsets'].append(metres(p['lat'], p['lon'], start[1], start[0]))
+            lon, lat = _point_along(motion['points'], go)
+            way = 'road'
+        else:
+            b = math.radians(p['bearing'])
+            lat = p['lat'] + go * math.cos(b) / 111_320
+            lon = p['lon'] + go * math.sin(b) / (111_320 * max(0.2, math.cos(math.radians(p['lat']))))
+            way = 'straight'
+        err = metres(lat, lon, v['lat'], v['lon'])
+        # ahead or behind: compare distance from the old report along the way the bus went
+        ahead = metres(p['lat'], p['lon'], lat, lon) > metres(p['lat'], p['lon'], v['lat'], v['lon'])
+        MEASURE['errors'].append((err, ahead, way))
+    for k in MEASURE:
+        del MEASURE[k][:-MEASURE_KEEP]
+
+
+def _pct(values, q):
+    if not values:
+        return None
+    s = sorted(values)
+    return round(s[min(len(s) - 1, int(q * len(s)))])
+
+
+def measure_summary(vehicles: list, now: float) -> dict:
+    """0.5.9: the figures shown by tpa-status as 'measure' (and on /status)."""
+    errs = MEASURE['errors']
+    fresh = [v for v in vehicles if now - v['recorded'] <= DROP_AFTER]
+    jd = [v.get('jd', 0) for v in fresh]
+    share = (lambda bits: round(100 * sum(1 for x in jd if x & bits == bits) / len(jd)) if jd else None)
+    return {'guesses': len(errs),
+            'guessOutMedianM': _pct([e[0] for e in errs], 0.5), 'guessOut90pcM': _pct([e[0] for e in errs], 0.9),
+            'guessAheadPct': round(100 * sum(1 for e in errs if e[1]) / len(errs)) if errs else None,
+            'guessOnRoadPct': round(100 * sum(1 for e in errs if e[2] == 'road') / len(errs)) if errs else None,
+            'reportGapMedianS': _pct(MEASURE['gaps'], 0.5), 'reportGap90pcS': _pct(MEASURE['gaps'], 0.9),
+            'roadOffsetMedianM': _pct(MEASURE['offsets'], 0.5), 'roadOffset90pcM': _pct(MEASURE['offsets'], 0.9),
+            'busesFresh': len(fresh),
+            'journeyRefPct': share(1), 'originRefPct': share(2), 'destinationRefPct': share(4),
+            'originDeparturePct': share(8), 'blockRefPct': share(16), 'timetableMatchablePct': share(2 | 8)}
 
 
 def fetch_once(area) -> None:
@@ -445,8 +535,14 @@ def _fetch_once(area) -> None:
             vehicles = parse_siri(io.BytesIO(raw))
             coverage = area
         ages = sorted(started - v['recorded'] for v in vehicles if v['recorded'] <= started)
+        # 0.5.9: buses whose last report is over 30 minutes old are never shown, so they are not kept
+        # (the national file holds ~16,000 of them on a Sunday morning: memory for nothing).
+        in_file = len(vehicles)
+        vehicles = [v for v in vehicles if started - v['recorded'] <= DROP_AFTER]
         with LOCK:
             add_motion(vehicles, STATE['vehicles'])
+            measure_guesses(vehicles, STATE['vehicles'])
+            STATE['busesInFile'] = in_file
             live = {v['key'] for v in vehicles}
             for k in [k for k in PATHS if k not in live]:
                 del PATHS[k]
@@ -859,7 +955,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'contractVersion': CONTRACT, 'live': True, 'health': h, 'notice': notice, 'mode': MODE,
                                         'keyConfigured': bool(KEY), 'lastError': STATE['lastError'],
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
-                                        'busesInLastDownload': len(STATE['vehicles']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
+                                        'busesInLastDownload': STATE.get('busesInFile', len(STATE['vehicles'])), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
                                         'reportAgeMedianSeconds': STATE['reportAgeMedian'], 'busesWithSpeed': STATE['busesWithSpeed'],
                                         'bodsDownloadsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
                                         'roadMap': STATE['roadMap'], 'roadMapDetail': STATE['roadMapDetail'],
@@ -868,6 +964,9 @@ class Handler(BaseHTTPRequestHandler):
                                         'roadPathsKnown': sum(1 for x in PATHS.values() if x[1]),
                                         'roadTilesLoaded': len(ROADS['map'].tiles) if ROADS['map'] else 0,
                                         'lastFetchSeconds': TIMING['fetch'], 'roadPathMs': TIMING['pathMs'],
+                                        'roadCacheMB': round(ROADS['map'].bytes / 1e6) if ROADS['map'] else 0,
+                                        'roadCacheLimitMB': round(ROADS['map'].max_bytes / 1e6) if ROADS['map'] else 0,
+                                        'measure': measure_summary(STATE['vehicles'], now),
                                         'lastView': STATE.get('lastView')})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))

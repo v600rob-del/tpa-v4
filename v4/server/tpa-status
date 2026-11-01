@@ -26,9 +26,11 @@ d = json.load(sys.stdin)
 keep = ("engineVersion", "health", "notice", "loginConfigured", "keyConfigured", "connected", "alwaysOn",
         "trainsTracked", "stationsKnown", "trackMapLoaded", "busesInLastDownload", "busesWithSpeed",
         "reportAgeMedianSeconds", "lastFetchSeconds", "roadMap", "roadMapSource", "roadMapDetail", "roadPathsKnown", "roadPathMs", "mode", "lastError",
-        "referenceError", "trackError", "roadMapError", "lastView")
+        "referenceError", "trackError", "roadMapError", "roadCacheMB", "roadCacheLimitMB", "lastView")
 parts = [f"{k}={d[k]}" for k in keep if k in d and d[k] not in ("", None)]
 print(f"{name:8s} " + ", ".join(parts))
+if isinstance(d.get("measure"), dict):   # bus 0.5.9: accuracy figures
+    print(f"{'':8s} measure: " + ", ".join(f"{k}={v}" for k, v in d["measure"].items() if v is not None))
 ' "$1"
 }
 summary road 8782; summary bus 8781; summary air 8783; summary rail 8784

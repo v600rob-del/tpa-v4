@@ -781,10 +781,15 @@ def cells_of(x0, y0, x1, y1):
     return [(cx, cy) for cx in range(cx0, cx1 + 1) for cy in range(cy0, cy1 + 1)]
 
 
+TILE_BYTES_BASE = 20_000
+TILE_BYTES_PER = {'point': 8, 'link': 400, 'node': 160, 'nodeRef': 70, 'cellRef': 9}
+CACHE_MB = max(20, int(os.environ.get('TPA_BUS_ROAD_CACHE_MB', '90') or 90))   # 0.5.9: road cache memory limit
+
+
 class Tile:
     """One map area in memory: road pieces (compact arrays), a street index for finding the road
     nearest a point, and the junction index: every point where two or more pieces meet."""
-    __slots__ = ('links', 'nodes', 'size', 'cells', 'points')
+    __slots__ = ('links', 'nodes', 'size', 'cells', 'points', 'bytes')
 
     def __init__(self, blobs, fmt=FORMAT_VERSION):
         self.links, self.nodes, self.size, self.cells, self.points = {}, {}, 0, {}, 0
@@ -817,6 +822,12 @@ class Tile:
         # keep only real meeting points (and piece ends) - most points are just bends in a road
         self.nodes = {k: v for k, v in seen.items()
                       if len(v) > 1 or v[0][1] == 0 or v[0][1] == len(self.links[v[0][0]][2]) // 2 - 1}
+        # 0.5.9: memory this tile takes (Python objects, measured 1 Nov 2026: this errs ~10-25% high).
+        # 0.5.6 capped the cache at 4 million points, but each point costs ~77 bytes once loaded, so a
+        # full cache needed ~300 MB - the bus engine's whole limit (server 1 Nov 09:23: 249 MB and rising).
+        self.bytes = (TILE_BYTES_BASE + TILE_BYTES_PER['point'] * self.points + TILE_BYTES_PER['link'] * len(self.links)
+                      + TILE_BYTES_PER['node'] * len(self.nodes) + TILE_BYTES_PER['nodeRef'] * sum(len(v) for v in self.nodes.values())
+                      + TILE_BYTES_PER['cellRef'] * sum(len(v) for v in self.cells.values()))
 
 
 def _allowed(flags, step):
@@ -847,8 +858,11 @@ def _keep_left(out, two, metres, lat):
 
 
 class RoadMap:
-    def __init__(self, path, max_tiles=350, max_points=4_000_000):   # 0.5.6: room for a whole city
+    def __init__(self, path, max_tiles=350, max_points=4_000_000, max_bytes=None):   # 0.5.6: room for a whole city
+        # 0.5.9: also capped by memory (max_bytes, default TPA_BUS_ROAD_CACHE_MB = 90 MB), which is what matters.
         self.path, self.max_tiles, self.max_points = path, max_tiles, max_points
+        self.max_bytes = int(max_bytes if max_bytes is not None else CACHE_MB * 1_000_000)
+        self.bytes = 0
         self.db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, check_same_thread=False)
         self.lock = threading.Lock()
         self.tiles = OrderedDict()
@@ -871,9 +885,13 @@ class RoadMap:
             t = Tile(rows, self.fmt)
             self.tiles[(tx, ty)] = t
             self.points += t.points
+            self.bytes += t.bytes
             self.tile_loads += 1
-            while len(self.tiles) > 1 and (len(self.tiles) > self.max_tiles or self.points > self.max_points):
-                self.points -= self.tiles.popitem(last=False)[1].points
+            while len(self.tiles) > 1 and (len(self.tiles) > self.max_tiles or self.points > self.max_points
+                                           or self.bytes > self.max_bytes):
+                old = self.tiles.popitem(last=False)[1]
+                self.points -= old.points
+                self.bytes -= old.bytes
             return t
 
     def _tile_at(self, x, y):
