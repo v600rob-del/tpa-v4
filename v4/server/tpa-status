@@ -27,7 +27,7 @@ keep = ("engineVersion", "health", "notice", "loginConfigured", "keyConfigured",
         "trainsTracked", "stationsKnown", "trackMapLoaded", "busesInLastDownload", "busesWithSpeed",
         "reportAgeMedianSeconds", "lastFetchSeconds", "roadMap", "roadMapSource", "roadMapDetail", "roadPathsKnown", "roadPathMs", "mode", "lastError",
         "referenceError", "trackError", "roadMapError", "roadCacheMB", "roadCacheLimitMB", "lastView")
-keep2 = ("timetable", "timetableDetail", "timetableUpdate", "timetableError")
+keep2 = ("timetable", "timetableDetail", "timetableUpdate", "timetableError", "replaySeconds", "journeyRound")
 parts = [f"{k}={d[k]}" for k in keep if k in d and d[k] not in ("", None)]
 print(f"{name:8s} " + ", ".join(parts))
 tparts = [f"{k}={d[k]}" for k in keep2 if k in d and d[k] not in ("", None)]

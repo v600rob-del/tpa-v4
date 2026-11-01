@@ -44,6 +44,7 @@ import threading
 import time
 import zipfile
 from collections import deque
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -52,7 +53,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.6.0'
+ENGINE_VERSION = '0.7.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -131,6 +132,20 @@ _spec.loader.exec_module(timetable)
 TIMETABLE = {'tt': None}
 MATCH_EVERY = max(1, int(os.environ.get('TPA_BUS_MATCH_SECONDS', '300') or 300))
 MATCH_SAMPLE = 400
+_spec = importlib.util.spec_from_file_location('tpa_bus_replay', Path(__file__).resolve().parent / 'replay.py')
+replay = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(replay)
+# 0.7.0 (owner 1 Nov 11:37: "option 1. remember the goal is about the user experience"): buses matched
+# to their timetabled journey are replayed REPLAY_SECONDS behind real time along their real route,
+# between the positions they really reported (replay.py). Unmatched buses move as before.
+REPLAY_SECONDS = max(0, int(os.environ.get('TPA_BUS_REPLAY_SECONDS', '90') or 0))
+TRIPS: dict = {}             # bus key -> (journey details, trip_id or None)
+FOLLOW: dict = {}            # bus key -> (trip_id, [(report time, metres along route)]) or (trip_id, None) = off route
+SHAPES = OrderedDict()       # trip_id -> replay.Shape or None (no shape in the timetable); newest last
+SHAPES_KEEP = 1500
+JOURNEY_WAKE = threading.Event()
+JOURNEY_LOCK = threading.RLock()   # TRIPS, FOLLOW and SHAPES (worker thread and page requests)
+JOURNEY_MAX = 900            # buses worked on per round, nearest what people are looking at first
 ROADS = {'map': None, 'licence': '', 'source': ''}
 PATHS: dict = {}             # bus key -> (report time, motion or None)
 PLACED: dict = {}            # 0.5.7: bus key -> (report time, [lon, lat] on its road, or None)
@@ -429,6 +444,7 @@ def fetch_once(area) -> None:
         TIMING['fetch'] = round(time.time() - started, 1)
         prepare_paths()
         PATH_WAKE.set()
+        JOURNEY_WAKE.set()
         save_memory()
 
 
@@ -665,7 +681,8 @@ def snapshot(view) -> dict:
     received = fetched or now
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
-             'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else ''),
+             'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else '')
+             + (' · bus routes: BODS timetables, Department for Transport (OGL)' if REPLAY_SECONDS and TIMETABLE['tt'] is not None else ''),
              'entities': []}
     if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame['notice'] = 'Zoom in to see buses'
@@ -696,7 +713,9 @@ def snapshot(view) -> dict:
             VIEWS.append((now, view))
             del VIEWS[:-50]
     why = {'road': 0, 'straight-pending': 0, 'straight-no-road-match': 0, 'straight-zoomed-out': 0, 'still-no-speed': 0,
-           'placed-on-road': 0}
+           'placed-on-road': 0, 'replay': 0, 'replay-waiting': 0, 'replay-pending': 0}
+    if REPLAY_SECONDS and TIMETABLE['tt'] is not None and not known_area:
+        JOURNEY_WAKE.set()
     for _, v, age in inside[:MAX_PER_VIEW]:
         route = v['route'] or 'Bus'
         label = (f'Bus {route}' if v['route'] else 'Bus') + (f' to {v["destination"]}' if v['destination'] else '')
@@ -705,6 +724,17 @@ def snapshot(view) -> dict:
             'badge': re.sub(r'[^A-Za-z0-9]', '', v['route'])[:8] or None,
             'position': {'lon': v['lon'], 'lat': v['lat'], 'headingDeg': v['bearing']},
             'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(v['recorded'])}
+        r = replay_for(v, now, deadline) if age <= STALE_AFTER else None
+        if r is not None:
+            # 0.7.0: replayed along its real route, REPLAY_SECONDS behind, between its real reports
+            entity['position']['lon'], entity['position']['lat'] = round(r['position'][0], 6), round(r['position'][1], 6)
+            entity['motion'] = {'mode': 'timed', 'points': [[round(a, 6), round(b, 6)] for a, b in r['points']],
+                                'times': r['times'], 'delaySeconds': REPLAY_SECONDS}
+            why['replay-waiting' if r['waiting'] else 'replay'] += 1
+            frame['entities'].append(entity)
+            continue
+        if REPLAY_SECONDS and TIMETABLE['tt'] is not None and v.get('origin') and v.get('dep') and v['key'] not in TRIPS:
+            why['replay-pending'] += 1          # not worked out yet: moved the old way until it is
         if v.get('speed') and v['bearing'] is not None and age <= STALE_AFTER:   # 0.4.2: old reports stay put
             # 0.3.1: reports reach us 20-40 s late, so buses are carried forward up to 90 s, easing
             # to a stop, and corrected by a short slide when the next real report arrives.
@@ -910,6 +940,10 @@ def timetable_keeper() -> None:
         return
     time.sleep(float(os.environ.get('TPA_BUS_TIMETABLE_START_DELAY', '120')))   # let buses and roads settle first
     while True:
+        if TIMETABLE['tt'] is not None:
+            # 0.7.0 (1 Nov 11:06: the first build slowed the bus downloads from 6 s to 36 s and squeezed
+            # the other layers): once there is a timetable, refreshes only happen in the night.
+            time.sleep(seconds_until_night())
         ok = refresh_timetable()
         if ok:
             with LOCK:
@@ -920,7 +954,21 @@ def timetable_keeper() -> None:
         if TIMETABLE['tt'] is None and not ok:
             with LOCK:
                 STATE['timetable'] = 'unavailable'
-        time.sleep(86400 if ok else ROAD_RETRY_HOURS * 3600)
+        if not ok:
+            time.sleep(ROAD_RETRY_HOURS * 3600)
+
+
+NIGHT_HOUR = 2               # UK time: the weekly timetable refresh starts at 02:00 (done long before morning)
+
+
+def seconds_until_night(now: float | None = None) -> float:
+    """Seconds until the next 02:00 UK time (at least 60)."""
+    now = time.time() if now is None else now
+    local = datetime.fromtimestamp(now, timetable.LONDON)
+    nxt = local.replace(hour=NIGHT_HOUR, minute=0, second=0, microsecond=0)
+    if nxt <= local:
+        nxt = datetime.fromtimestamp(nxt.timestamp() + 86400 + 3600, timetable.LONDON).replace(hour=NIGHT_HOUR, minute=0, second=0, microsecond=0)
+    return max(60.0, nxt.timestamp() - now)
 
 
 def count_matches() -> dict | None:
@@ -961,6 +1009,127 @@ def match_counter() -> None:
         if r is not None:
             with LOCK:
                 STATE['timetableMatch'] = r
+
+
+def shape_for(trip_id):
+    if trip_id in SHAPES:
+        SHAPES.move_to_end(trip_id)
+        return SHAPES[trip_id]
+    tt = TIMETABLE['tt']
+    try:
+        pts = tt.shape_of(trip_id) if tt else []
+        sh = replay.Shape(pts) if len(pts) >= 2 else None
+    except Exception:          # one odd journey must never break the layer
+        sh = None
+    SHAPES[trip_id] = sh
+    while len(SHAPES) > SHAPES_KEEP:
+        SHAPES.popitem(last=False)
+    return sh
+
+
+def follow_bus(v: dict) -> None:
+    """Match this bus to its journey (once per journey) and place its new reports on the route."""
+    with JOURNEY_LOCK:
+        _follow_bus(v)
+
+
+def _follow_bus(v: dict) -> None:
+    tt = TIMETABLE['tt']
+    if tt is None or not REPLAY_SECONDS:
+        return
+    sig = (v.get('origin'), v.get('dep'), v.get('route'), v.get('dest'))
+    known = TRIPS.get(v['key'])
+    if known is None or known[0] != sig:
+        tid = None
+        if v.get('origin') and v.get('dep'):
+            try:
+                got = tt.match(v['origin'], v['dep'], v.get('route', ''), v.get('dest', ''))
+                tid = got[0] if len(got) == 1 else None
+            except Exception as exc:   # one odd bus must never break the layer
+                with LOCK:
+                    STATE['timetableError'] = ('match: ' + type(exc).__name__)[:100]
+        known = TRIPS[v['key']] = (sig, tid)
+        FOLLOW.pop(v['key'], None)
+    tid = known[1]
+    if not tid:
+        return
+    sh = shape_for(tid)
+    if sh is None:
+        return
+    with LOCK:
+        hist = list(HISTORY.get(v['key']) or [(v['recorded'], v['lat'], v['lon'])])
+    was = FOLLOW.get(v['key'])
+    prev = was[1] if was and was[0] == tid and was[1] else None
+    placed = replay.follow(sh, [(t, lon, lat) for t, lat, lon in hist], prev)
+    if placed is not None and not prev:
+        placed = placed[-replay.MAX_POINTS:]
+    FOLLOW[v['key']] = (tid, placed[-12:] if placed else None)
+
+
+def journey_worker() -> None:
+    """0.7.0: after each download (and when a new area is looked at), match and place the buses in
+    the areas people are looking at, nearest first; everything else waits until someone looks."""
+    while True:
+        JOURNEY_WAKE.wait(timeout=30)
+        JOURNEY_WAKE.clear()
+        if TIMETABLE['tt'] is None or not REPLAY_SECONDS:
+            continue
+        while FETCHING.is_set():
+            time.sleep(0.2)
+        now = time.time()
+        with LOCK:
+            views = [w for t, w in VIEWS if now - t < VIEW_MEMORY]
+            vehicles = STATE['vehicles']
+        if not views:
+            continue
+        picks = []
+        for v in vehicles:
+            if now - v['recorded'] > DROP_AFTER:
+                continue
+            best = None
+            for s0, w0, n0, e0 in views:
+                hs, hw = (n0 - s0) / 2, (e0 - w0) / 2
+                if s0 - hs <= v['lat'] <= n0 + hs and w0 - hw <= v['lon'] <= e0 + hw:
+                    d = (v['lat'] - (s0 + n0) / 2) ** 2 + (v['lon'] - (w0 + e0) / 2) ** 2
+                    best = d if best is None or d < best else best
+            if best is not None:
+                f = FOLLOW.get(v['key'])
+                if f and f[1] and f[1][-1][0] >= v['recorded'] and TRIPS.get(v['key'], (None,))[0] == (v.get('origin'), v.get('dep'), v.get('route'), v.get('dest')):
+                    continue          # already up to date
+                picks.append((best, v))
+        picks.sort(key=lambda p: p[0])
+        t0 = time.monotonic()
+        for _, v in picks[:JOURNEY_MAX]:
+            if FETCHING.is_set():
+                break
+            follow_bus(v)
+        with JOURNEY_LOCK, LOCK:          # always this order (follow_bus takes LOCK inside JOURNEY_LOCK)
+            live = {v['key'] for v in STATE['vehicles']}
+            for d in (TRIPS, FOLLOW):
+                for k in [k for k in d if k not in live]:
+                    del d[k]
+            STATE['journeyRound'] = {'buses': min(len(picks), JOURNEY_MAX), 'waiting': max(0, len(picks) - JOURNEY_MAX),
+                                     'seconds': round(time.monotonic() - t0, 1)}
+
+
+def replay_for(v: dict, now: float, deadline: float):
+    """The replayed track for this bus, or None (moved the ordinary way)."""
+    if not REPLAY_SECONDS or TIMETABLE['tt'] is None:
+        return None
+    f = FOLLOW.get(v['key'])
+    sig = (v.get('origin'), v.get('dep'), v.get('route'), v.get('dest'))
+    fresh = f and f[1] and f[1][-1][0] >= v['recorded'] and TRIPS.get(v['key'], (None,))[0] == sig
+    if not fresh and v.get('origin') and v.get('dep') and time.monotonic() < deadline and not FETCHING.is_set():
+        follow_bus(v)                       # a new area: work it out now rather than switch later
+        f = FOLLOW.get(v['key'])
+        fresh = f and f[1] and f[1][-1][0] >= v['recorded']
+    if not fresh:
+        return None
+    with JOURNEY_LOCK:
+        sh = SHAPES.get(f[0])
+    if sh is None:
+        return None
+    return replay.track(sh, f[1], now, REPLAY_SECONDS, KEEP_LEFT_M)
 
 
 def road_motion(v: dict):
@@ -1111,7 +1280,8 @@ class Handler(BaseHTTPRequestHandler):
                                         'measure': measure_summary(STATE['vehicles'], now),
                                         'timetable': STATE.get('timetable'), 'timetableDetail': STATE.get('timetableDetail'),
                                         'timetableUpdate': STATE.get('timetableUpdate'), 'timetableError': STATE.get('timetableError'),
-                                        'timetableMatch': STATE.get('timetableMatch'),
+                                        'timetableMatch': STATE.get('timetableMatch'), 'replaySeconds': REPLAY_SECONDS,
+                                        'journeyRound': STATE.get('journeyRound'),
                                         'lastView': STATE.get('lastView')})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
@@ -1133,6 +1303,7 @@ def main() -> None:
     threading.Thread(target=road_keeper, daemon=True).start()
     threading.Thread(target=timetable_keeper, daemon=True).start()
     threading.Thread(target=match_counter, daemon=True).start()
+    threading.Thread(target=journey_worker, daemon=True).start()
     threading.Thread(target=path_worker, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)

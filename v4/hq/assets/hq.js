@@ -145,6 +145,13 @@ function keyOf(e){return e.component+':'+e.id;}
 function estimate(e,now){
   const p=e.position,m=state.live[e.component]?e.motion:null;
   if(!p)return null;
+  // 4.2.0 "timed": be at each point at its own clock time (the engine replays a real journey).
+  if(m&&m.mode==='timed'){
+    const T=m.times,P=m.pts;if(now<=T[0])return {lon:P[0][0],lat:P[0][1],est:true};
+    let i=1;while(i<T.length&&T[i]<now)i++;if(i>=T.length)return {lon:P[P.length-1][0],lat:P[P.length-1][1],est:true};
+    const q=T[i]>T[i-1]?(now-T[i-1])/(T[i]-T[i-1]):1,a=P[i-1],b=P[i];
+    return {lon:a[0]+(b[0]-a[0])*q,lat:a[1]+(b[1]-a[1])*q,est:true};
+  }
   const t0=Date.parse(e.observedAt);let t=(now-t0)/1000;
   if(!m||!(t>0))return {lon:p.lon,lat:p.lat,est:false};
   t=Math.min(t,m.maxSeconds);
@@ -215,6 +222,7 @@ function noteNewFrame(f,now,fresh){
 function infoText(e,est){
   const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
   if(!state.live[e.component])return e.component.toUpperCase()+' · '+e.quality.toUpperCase()+' · STATIC MOCK POSITION';
+  if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   return (e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · may have moved':'');
 }
@@ -432,6 +440,18 @@ function checkMotion(m,p){
     // stop like "heading") instead of spreading the path evenly until arriveAt. Buses on roads.
     const speed=validNum(m.speedMps)&&m.speedMps>0&&m.speedMps<=350?m.speedMps:null;
     return {mode:'path',pts,cum,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds,speedMps:speed,slow:speed!==null&&m.slowToStop===true};
+  }
+  // 4.2.0 "timed" (bus engine 0.7.0, owner 1 Nov 11:37 "option 1"): follow these points, being at each
+  // one at its own clock time (seconds since 1970). Lets an engine replay a vehicle's real reported
+  // journey a little behind real time, so nothing on screen is a guess that later needs correcting.
+  if(m.mode==='timed'&&Array.isArray(m.points)&&Array.isArray(m.times)&&m.points.length>=1&&m.points.length<=200&&m.times.length===m.points.length){
+    const pts=[],times=[];
+    for(let i=0;i<m.points.length;i++){const q=m.points[i],t=m.times[i];
+      if(!Array.isArray(q)||q.length!==2||!validNum(q[0])||!validNum(q[1])||Math.abs(q[0]-p.lon)>2||Math.abs(q[1]-p.lat)>2||!validNum(t))return null;
+      if(i&&t<times[i-1]/1000)return null;pts.push([q[0],q[1]]);times.push(t*1000);}
+    if(Math.abs(pts[0][0]-p.lon)>0.05||Math.abs(pts[0][1]-p.lat)>0.05||times[times.length-1]-times[0]>7800000)return null;
+    const delay=validNum(m.delaySeconds)&&m.delaySeconds>=0&&m.delaySeconds<=600?Math.round(m.delaySeconds):0;
+    return {mode:'timed',pts,times,delay};
   }
   return null;
 }
