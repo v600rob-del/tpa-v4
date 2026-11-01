@@ -162,7 +162,9 @@ function selectEntity(e){
   // 4.10.0 (owner 1 Nov 17:49): "Follow me!" - also here, for phones and tablets (no right-click)
   const fb=document.createElement('button');fb.type='button';fb.className='follow-button';
   fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};
-  selected.replaceChildren(h,info,more,fb,warning,close);if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
+  const rb=REPORT_ON?el('button','report-button','📋 Report this'):null;
+  if(rb){rb.type='button';rb.onclick=()=>copyReport(e);}
+  selected.replaceChildren(...[h,info,more,fb,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
   $('map-place').textContent=e.label.toUpperCase();paint();
   loadDetails(e,more);
 }
@@ -352,10 +354,10 @@ function markers(){
    const next=new Set();for(const [,k] of list)if(glideOK.has(k)&&next.size<glideBudget)next.add(k);
    for(const [,k] of list){if(next.size>=glideBudget)break;next.add(k);}
    glideOK=next;glideCount=glideOK.size;}
-  const items=[];
+  const items=[],present=new Set();
   for(const e of listEntities()){
     if(!e.position)continue;
-    const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;
+    const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;present.add(k);
     if(pos.est||blends.has(k)||(state.live[e.component]&&e.motion))moving++;
     shown.set(k,{lon:pos.lon,lat:pos.lat});
     const [x,y]=pixel(pos.lon,pos.lat);
@@ -402,7 +404,7 @@ function markers(){
     }else if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;if(follow?.key===k)followTo(x,y,glide,null);}
     b.onclick=KIDS?()=>kidsTap(e,b):()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
   }
-  for(const [k,pin] of pins)if(!keep.has(k)){pin.b.remove();pins.delete(k);}
+  for(const [k,pin] of pins)if(!keep.has(k)){noteVanish(k,pin,present,d);pin.b.remove();pins.delete(k);}
   drawStacks(viewMoved);
   if(shown.size>keep.size*4+4000)for(const k of shown.keys())if(!keep.has(k))shown.delete(k);
   updateSelectedInfo(now);
@@ -560,6 +562,37 @@ markerLayer.addEventListener('contextmenu',ev=>{
   if(!state.selected||state.selected.id!==hit.id||state.selected.component!==hit.component)selectEntity(hit);
   openFollowMenu(hit,ev.clientX,ev.clientY);
 });
+// 4.12.0 (owner 1 Nov 20:02, bus sign-off): count vehicles that disappear while on screen - their engine stopped
+// sending them while the map was showing them (not ones that moved off screen, went into a group or whose layer
+// was switched off) - so "buses vanish" becomes a number, shown in #speed and in every report.
+const VANISH={total:0,byLayer:Object.create(null),byKey:new Map(),recent:[]};
+function noteVanish(k,pin,present,d){
+  if(present.has(k)||!pin.e||zoomAnim||!state.visible[pin.e.component]||!state.live[pin.e.component]||pin.lat==null)return;
+  const [x,y]=pixel(pin.lon,pin.lat);if(x<0||y<0||x>d.w||y>d.h)return;
+  const c=pin.e.component;VANISH.total++;VANISH.byLayer[c]=(VANISH.byLayer[c]||0)+1;VANISH.byKey.set(k,(VANISH.byKey.get(k)||0)+1);
+  VANISH.recent.push({id:pin.e.id,label:pin.e.label,at:Date.now()});if(VANISH.recent.length>20)VANISH.recent.shift();
+}
+// 4.12.0: "Report this" (test phase; site-config "report": true) - one click copies everything needed to trace
+// what that vehicle did, to paste to Claude. The server command is generic: the server kit knows the layers.
+let REPORT_ON=false;
+function reportText(e){
+  const now=new Date(),pos=whereNow(e,Date.now())||e.position,k=keyOf(e);
+  const t=x=>x.toLocaleTimeString('en-GB',{hour12:false});
+  const v=VANISH.byKey.get(k)||0;
+  return ['TPA report · '+($('zoom-level')?.closest('.map-bottom')?.querySelector('.preview-stamp')?.textContent||'HQ').replace(' · TEST VERSION','')+' · '+now.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',year:'numeric'})+' '+t(now),
+    e.label+'  ('+e.id+')',
+    'Shown at '+pos.lat.toFixed(5)+', '+pos.lon.toFixed(5)+(pos.est?' · estimated position':'')+' · zoom '+state.z.toFixed(1)+' · last reported '+t(new Date(e.observedAt)),
+    'Vanished on screen this visit: '+VANISH.total+' vehicles'+(v?' (this one '+v+' times)':''),
+    'What I saw: ',
+    'Server check (paste into Cloud Shell): ssh -i ~/.ssh/tpa_v4_server ubuntu@143.47.230.28 "sudo tpa-trace \''+e.id.replace(/'/g,'')+'\'"'].join('\n');
+}
+async function copyReport(e){
+  const text=reportText(e);
+  try{await navigator.clipboard.writeText(text);toast('Report copied · paste it to Claude, with what you saw');return text;}
+  catch(_){const {back,card}=makeDialog('tpa-report','Report');const ta=el('textarea','report-text');ta.value=text;ta.rows=8;ta.readOnly=true;
+    const close=el('button','tpa-primary','Close');close.type='button';close.onclick=()=>{closeDialog(back);back.remove();};
+    card.append(el('p','','Copy this and paste it to Claude:'),ta,close);openDialog(back);ta.select();return text;}
+}
 function pin0(k){const p=pins.get(k);return p&&p.tf?p:null;}
 function currentEntity(sel){const f=state.frames[sel.component];return f?.entities.find(x=>x.id===sel.id)||null;}
 function updateSelectedInfo(now){
@@ -704,6 +737,8 @@ function speedPanel(){
     'Traffic first shown   '+s(SPEED.first['traffic shown'])+'   after last move '+ms(SPEED.trafficLast)];
   for(const id of ['bus','rail','air']){const a=SPEED.ask[id];
     L1.push((id==='bus'?'Buses':id==='rail'?'Trains':'Aircraft').padEnd(10)+' first shown '+s(SPEED.first[id+' shown'])+'   server answer last '+ms(a?.last)+' avg '+ms(a?.n?a.sum/a.n:null)+' ('+(a?.n||0)+')');}
+  L1.push('Vanished on screen   '+VANISH.total+'  (buses '+(VANISH.byLayer.bus||0)+', trains '+(VANISH.byLayer.rail||0)+', aircraft '+(VANISH.byLayer.air||0)+')'+
+    (VANISH.recent.length?'   last: '+VANISH.recent[VANISH.recent.length-1].label.slice(0,40)+' at '+new Date(VANISH.recent[VANISH.recent.length-1].at).toLocaleTimeString('en-GB',{hour12:false}):''));
   box.textContent=L1.join('\n');
 }
 setInterval(speedPanel,1000);
@@ -1255,6 +1290,7 @@ async function loadSiteConfig(){
   if(!cfg||typeof cfg!=='object'||cfg.configVersion!==1)return;
   for(const c of Array.isArray(cfg.credits)?cfg.credits:[]){const l=str(c?.layer,40).toLowerCase(),sh=str(c?.short,40);if(l&&sh)shortCredit[l]=sh;}
   liveCredit();
+  REPORT_ON=cfg.report===true;      // 4.12.0: the "Report this" button, for the testing phase
   const credits=buildCredits(cfg.credits);
   let welcome=null;try{welcome=buildWelcome(cfg.welcome,cfg.tip,credits);}catch(_){}   // 4.5.0: a welcome problem never costs the side menu
   const about=el('section','panel about-panel');about.setAttribute('aria-label','About TPA');

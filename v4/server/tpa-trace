@@ -1,0 +1,20 @@
+#!/bin/bash
+# sudo tpa-trace '<vehicle id>'  - everything the server knows about one vehicle, to trace a reported problem
+# (e.g. from HQ's "Report this" button: 'bus:YCST:5A 101'). Read-only; shows no keys or passwords.
+# (Server kit 4.12, owner 1 Nov 2026 20:02: bus sign-off testing.)
+set -uo pipefail
+[[ $EUID -eq 0 ]] || exec sudo -n "$0" "$@"
+id="${1:-}"
+[[ -n "$id" && ${#id} -le 140 ]] || { echo "usage: sudo tpa-trace '<vehicle id from a TPA report>'" >&2; exit 2; }
+case "${id%%:*}" in
+    bus) port=8781;; rail) port=8784;; air) port=8783;; road) port=8782;;
+    *) echo "Not a TPA vehicle id: $id" >&2; exit 2;;
+esac
+q="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$id")"
+out="$(curl -s --max-time 10 -w '\n%{http_code}' "http://127.0.0.1:$port/trace?id=$q")" || { echo "The ${id%%:*} engine is not answering (see: sudo tpa-status)"; exit 1; }
+code="${out##*$'\n'}"; body="${out%$'\n'*}"
+case "$code" in
+    200) printf '%s' "$body" | python3 -m json.tool ;;
+    404) echo "Tracing is not available for this layer yet (${id%%:*})." ;;
+    *)   echo "The ${id%%:*} engine answered HTTP $code" ;;
+esac

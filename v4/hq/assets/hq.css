@@ -303,3 +303,6 @@ body.vector-ready .vector-map{z-index:4}
 .kids-toggle.kids-voice{background:#e6f6ff}
 .kids-credits{background:none;border:0;padding:0;color:inherit;text-decoration:underline;font:inherit;cursor:pointer}
 @media(max-width:760px){.kids-view .kids-lead{font-size:26px}.kids-view .kids-say{font-size:20px}}
+/* 4.12.0: "Report this" (testing phase) */
+.map-selection button.report-button{position:static;width:auto;height:auto;align-self:flex-start;font:700 12px/1.2 system-ui,sans-serif;padding:6px 11px;border:1px solid #9cc7d880;border-radius:999px;color:#cfe6f0;background:#ffffff0d}
+.report-text{width:100%;font:12px/1.4 ui-monospace,Consolas,monospace;background:#071323;color:#cfe6f0;border:1px solid #365e72;border-radius:8px;padding:8px}

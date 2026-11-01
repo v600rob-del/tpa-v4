@@ -69,6 +69,7 @@ install -d -m 0755 /usr/local/sbin /usr/local/bin
 install -m 0755 "$REL/v4/server/tpa-setup" /usr/local/sbin/tpa-setup
 install -m 0755 "$REL/v4/server/tpa-status" /usr/local/sbin/tpa-status
 install -m 0755 "$REL/v4/server/tpa-update" /usr/local/sbin/tpa-update
+install -m 0755 "$REL/v4/server/tpa-trace" /usr/local/sbin/tpa-trace      # kit 4.12: trace one reported vehicle
 
 # ---- users, data folders, settings folder ------------------------------------------
 for e in "${ENGINES[@]}"; do

@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.1'
+ENGINE_VERSION = '0.8.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -74,6 +74,8 @@ FRAME_TTL = 90               # HQ treats a frame as stale after this
 MAX_DOWNLOAD = 32_000_000    # same safety size as v3
 MAX_XML_BYTES = 600_000_000
 MAX_PER_VIEW = 400           # keeps the map responsive on phones and tablets
+REPLAY_MARGIN_DEG = 0.02      # 0.8.2: ~2 km - how far a bus can get beyond the view while still shown inside it
+REPLAY_LOOKBACK = 120         # 0.8.2: seconds of reports before the replayed moment that may still be drawn
 MAX_VIEW_SPAN = 1.6          # degrees of latitude; wider views ask the user to zoom in
 AREA_PADDING = 0.15          # degrees added around the viewed area in "area" mode
 MAX_AREA_SPAN = 3.0          # never ask BODS for an area bigger than this (degrees)
@@ -701,10 +703,23 @@ def snapshot(view) -> dict:
     south, west, north, east = view
     clat, clon = (south + north) / 2, (west + east) / 2
     inside = []
+    # 0.8.2 (owner 1 Nov 20:02, hunting vanishing buses): a bus is drawn REPLAY_SECONDS behind real time, so
+    # it is sent when the stretch it is being replayed along touches the view - not only when its NEWEST
+    # report does. Before, a bus that had just driven out of the view in real life was left out while its
+    # icon was still in the middle of the street being watched, and vanished.
+    near_lat, near_lon = REPLAY_MARGIN_DEG, REPLAY_MARGIN_DEG / max(0.2, math.cos(math.radians(clat)))
+    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
     for v in vehicles:
         age = now - v['recorded']
-        if age > DROP_AFTER or not (south <= v['lat'] <= north and west <= v['lon'] <= east):
+        if age > DROP_AFTER:
             continue
+        if not (south <= v['lat'] <= north and west <= v['lon'] <= east):
+            if not (REPLAY_SECONDS and age <= STALE_AFTER and south - near_lat <= v['lat'] <= north + near_lat
+                    and west - near_lon <= v['lon'] <= east + near_lon):
+                continue
+            hist = HISTORY.get(v['key']) or ()
+            if not any(t >= recent and south <= la <= north and west <= lo <= east for t, la, lo in hist[-12:]):
+                continue
         inside.append(((v['lat'] - clat) ** 2 + (v['lon'] - clon) ** 2, v, age))
     inside.sort(key=lambda t: t[0])  # nearest the middle of the screen first
     # 0.5.4: for an area nobody was looking at, take up to a second to work out road paths before
@@ -1250,6 +1265,41 @@ def stops_along(trip_id: str, sh):
     return out
 
 
+def trace(entity_id: str) -> dict:
+    """0.8.2 (owner 1 Nov 20:02: sign-off testing): everything this engine knows about one bus, so a reported
+    problem ("this bus vanished / went the wrong way") can be traced. Only reachable on the server itself."""
+    key = entity_id[4:] if entity_id.startswith('bus:') else entity_id
+    now = time.time()
+    with LOCK:
+        v = next((dict(x) for x in STATE['vehicles'] if x['key'] == key), None)
+        hist = list(HISTORY.get(key) or [])
+        fetched = STATE['fetchedAt']
+    out = {'id': 'bus:' + key, 'engineVersion': ENGINE_VERSION, 'askedAt': iso(now), 'lastDownloadAt': iso(fetched) if fetched else None}
+    if v is None:
+        out['state'] = 'not in the latest reports (finished, or not reporting for over 30 minutes)'
+        return out
+    age = now - v['recorded']
+    out['state'] = 'dropped (no report for over 30 min)' if age > DROP_AFTER else 'stale (no report for over 5 min): shown standing' if age > STALE_AFTER else 'reporting'
+    out['latest'] = {k: v.get(k) for k in ('route', 'destination', 'lat', 'lon', 'speed', 'bearing', 'origin', 'dep', 'dest', 'jd')}
+    out['latest']['reportedAt'] = iso(v['recorded']); out['latest']['ageSeconds'] = round(age)
+    out['reports'] = [{'at': iso(t), 'agoSeconds': round(now - t), 'lat': la, 'lon': lo} for t, la, lo in hist[-12:]]
+    with JOURNEY_LOCK:
+        known, f = TRIPS.get(key), FOLLOW.get(key)
+    out['timetable'] = ('matched to journey ' + str(known[1])) if known and known[1] else ('no match' if known else 'not worked out yet')
+    out['following'] = None if not f else ('off its route' if f[1] is None else f'{len(f[1])} reports placed along its route')
+    try:
+        r = replay_for(v, now, time.monotonic() + 0.5) if age <= STALE_AFTER else None
+    except Exception as exc:   # tracing must never break the layer
+        r, out['replayError'] = None, type(exc).__name__
+    if r is not None:
+        out['shownAt'] = {'lon': round(r['position'][0], 6), 'lat': round(r['position'][1], 6),
+                          'how': 'waiting for its next report' if r['waiting'] else 'along the roads' if r.get('road') else 'along its timetabled route',
+                          'secondsBehind': REPLAY_SECONDS}
+    else:
+        out['shownAt'] = {'lon': v['lon'], 'lat': v['lat'], 'how': 'at its newest report (not replayed)'}
+    return out
+
+
 def details(entity_id: str) -> dict:
     out = {'component': COMPONENT, 'id': entity_id, 'rows': []}
     key = entity_id[4:] if entity_id.startswith('bus:') else ''
@@ -1479,6 +1529,9 @@ class Handler(BaseHTTPRequestHandler):
         if split.path == '/details':
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
             return self.reply(200, details(want))
+        if split.path == '/trace':
+            want = (parse_qs(split.query).get('id') or [''])[0][:140]
+            return self.reply(200, trace(want))
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
         return self.reply(404, {'error': 'not found'})
