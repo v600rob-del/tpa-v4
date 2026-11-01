@@ -783,7 +783,9 @@ def cells_of(x0, y0, x1, y1):
 
 TILE_BYTES_BASE = 20_000
 TILE_BYTES_PER = {'point': 8, 'link': 400, 'node': 160, 'nodeRef': 70, 'cellRef': 9}
-CACHE_MB = max(20, int(os.environ.get('TPA_BUS_ROAD_CACHE_MB', '90') or 90))   # 0.5.9: road cache memory limit
+CACHE_MB = max(20, int(os.environ.get('TPA_BUS_ROAD_CACHE_MB', '200') or 200))   # 0.5.9: road cache memory limit
+# 0.6.0: 200 MB (owner 1 Nov 09:53: 0.5.9's 90 MB looked worse - more vanishing and teleporting). The bus
+# engine's allowance is 500 MB from 0.6.0, so a full cache still leaves room for the timetable builder.
 
 
 class Tile:
@@ -859,7 +861,7 @@ def _keep_left(out, two, metres, lat):
 
 class RoadMap:
     def __init__(self, path, max_tiles=350, max_points=4_000_000, max_bytes=None):   # 0.5.6: room for a whole city
-        # 0.5.9: also capped by memory (max_bytes, default TPA_BUS_ROAD_CACHE_MB = 90 MB), which is what matters.
+        # 0.5.9: also capped by memory (max_bytes, default TPA_BUS_ROAD_CACHE_MB = 200 MB from 0.6.0), which is what matters.
         self.path, self.max_tiles, self.max_points = path, max_tiles, max_points
         self.max_bytes = int(max_bytes if max_bytes is not None else CACHE_MB * 1_000_000)
         self.bytes = 0

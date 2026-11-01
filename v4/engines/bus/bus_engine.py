@@ -34,6 +34,7 @@ import io
 import json
 import math
 import os
+import random
 import re
 import signal
 import ssl
@@ -51,7 +52,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.5.9'
+ENGINE_VERSION = '0.6.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -79,6 +80,7 @@ GB = (49.8, -8.7, 61.0, 2.0)  # south, west, north, east
 GLIDE_SECONDS = 90           # how long a bus is carried forward after its last report
 STEADY_SECONDS = 60          # ...at steady speed, then easing to a stop (HQ "slowToStop")
 ROAD_MODE = os.environ.get('TPA_BUS_ROAD_MAP', 'off').strip().lower()      # 'download' on the server
+TIMETABLE_MODE = os.environ.get('TPA_BUS_TIMETABLE', 'off').strip().lower()     # 'download' on the server
 DATA_DIR = Path(os.environ.get('TPA_BUS_DATA_DIR', '') or Path(__file__).resolve().parent / 'data')
 ROAD_CHECK_DAYS = 1          # daily look: OS asks whether a new edition exists (tiny); OpenStreetMap is rebuilt when 45 days old
 # 0.5.0 (owner 31 Oct 20:27: "the map detail doesnt match where the buses are driving"): with
@@ -100,7 +102,9 @@ _test_area = os.environ.get('TPA_BUS_TEST_AREA_URL', '').strip()
 _test_bulk = os.environ.get('TPA_BUS_TEST_BULK_URL', '').strip()
 _test_roads = os.environ.get('TPA_BUS_ROADS_TEST_API', '').strip()
 _test_osm = os.environ.get('TPA_BUS_OSM_TEST_INDEX', '').strip()
-for _u in (_test_area, _test_bulk, _test_roads, _test_osm):
+_test_tt = os.environ.get('TPA_BUS_TIMETABLE_TEST_URL', '').strip()
+_test_naptan = os.environ.get('TPA_BUS_NAPTAN_TEST_URL', '').strip()
+for _u in (_test_area, _test_bulk, _test_roads, _test_osm, _test_tt, _test_naptan):
     if _u and not re.match(r'^http://127\.0\.0\.1:\d+/', _u):
         raise SystemExit('Test URLs must point at 127.0.0.1 only')
 AREA_URL = _test_area or BODS_AREA_URL
@@ -112,12 +116,21 @@ STATE = {
     'lastError': '' if KEY else 'no-key', 'lastDemandAt': 0.0, 'wanted': None,
     'downloadBytes': 0, 'downloadsThisRun': 0, 'consecutiveErrors': 0, 'reportAgeMedian': None, 'busesWithSpeed': 0,
     'roadMap': 'off' if ROAD_MODE != 'download' else 'starting', 'roadMapDetail': '', 'roadMapError': '',
+    'timetable': 'off' if TIMETABLE_MODE != 'download' else 'starting', 'timetableDetail': '', 'timetableError': '',
 }
 WAKE = threading.Event()
 
 _spec = importlib.util.spec_from_file_location('tpa_bus_road_map', Path(__file__).resolve().parent / 'road_map.py')
 road_map = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(road_map)
+_spec = importlib.util.spec_from_file_location('tpa_bus_timetable', Path(__file__).resolve().parent / 'timetable.py')
+timetable = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(timetable)
+# 0.6.0 (owner 1 Nov 09:57, step 1 of "stops and timetables"): bus stops (NaPTAN) and timetables (BODS)
+# are downloaded and kept on disk; the engine only counts how many buses it can match. Nothing on the map changes.
+TIMETABLE = {'tt': None}
+MATCH_EVERY = max(1, int(os.environ.get('TPA_BUS_MATCH_SECONDS', '300') or 300))
+MATCH_SAMPLE = 400
 ROADS = {'map': None, 'licence': '', 'source': ''}
 PATHS: dict = {}             # bus key -> (report time, motion or None)
 PLACED: dict = {}            # 0.5.7: bus key -> (report time, [lon, lat] on its road, or None)
@@ -129,7 +142,7 @@ PATH_WAKE = threading.Event()
 # 0.4.1 (server log 30 Oct: downloads took 5 s normally, 17-42 s and timed out while road work ran):
 # the BODS download always comes first. Road work waits while it runs, and a map rebuild is paused.
 FETCHING = threading.Event()
-BUILDER = {'proc': None}
+BUILDER = {'proc': None, 'tt': None}     # road map / timetable builders (paused during each bus download)
 TIMING = {'fetch': None, 'pathMs': None}
 VIEWS: list = []             # (time, view) recently looked at closely enough for roads (0.4.2)
 # 0.5.8 (owner 1 Nov 01:21: after an update buses took ~2 minutes to move again, "instead of waiting"):
@@ -224,7 +237,9 @@ def parse_siri(stream) -> list[dict]:
         out.append({'key': key, 'lat': round(lat, 6), 'lon': round(lon, 6), 'bearing': bearing,
                     'route': clean(vals.get('PublishedLineName') or vals.get('LineRef') or '', 12),
                     'destination': clean(vals.get('DestinationName', ''), 80), 'recorded': when,
-                    'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name))})
+                    'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
+                    'origin': clean(vals.get('OriginRef', ''), 20), 'dep': clean(vals.get('OriginAimedDepartureTime', ''), 32),
+                    'dest': clean(vals.get('DestinationRef', ''), 20)})
     return out
 
 
@@ -394,18 +409,18 @@ def measure_summary(vehicles: list, now: float) -> dict:
 def fetch_once(area) -> None:
     """One BODS download, with everything else in this engine paused so it gets the processor."""
     FETCHING.set()
-    proc = BUILDER['proc']
-    paused = False
-    if proc is not None and proc.poll() is None:
-        try:
-            os.kill(proc.pid, signal.SIGSTOP); paused = True
-        except OSError:
-            pass
+    paused = []
+    for proc in (BUILDER['proc'], BUILDER['tt']):
+        if proc is not None and proc.poll() is None:
+            try:
+                os.kill(proc.pid, signal.SIGSTOP); paused.append(proc)
+            except OSError:
+                pass
     started = time.time()
     try:
         _fetch_once(area)
     finally:
-        if paused:
+        for proc in paused:
             try:
                 os.kill(proc.pid, signal.SIGCONT)
             except OSError:
@@ -821,6 +836,133 @@ def road_keeper() -> None:
         time.sleep((ROAD_CHECK_DAYS * 86400) if ok else ROAD_RETRY_HOURS * 3600)
 
 
+def open_timetable() -> bool:
+    path = DATA_DIR / 'timetable.sqlite'
+    if not path.exists():
+        return False
+    try:
+        new = timetable.Timetable(str(path))
+    except Exception as exc:   # damaged or old format: the next check rebuilds it
+        with LOCK:
+            STATE['timetableError'] = ('open: ' + type(exc).__name__ + ' ' + str(exc))[:100]
+        return False
+    old = TIMETABLE['tt']
+    c = new.meta.get('counts', {})
+    with LOCK:
+        TIMETABLE['tt'] = new
+        STATE['timetable'] = 'ready'
+        STATE['timetableDetail'] = (f"{c.get('tripsWithStops', 0)} journeys, {c.get('stopsNaptan', 0) + c.get('stopsOnlyInTimetable', 0)} stops, "
+                                    f"{c.get('shapes', 0)} route shapes, built {iso(new.meta.get('builtAt', 0))}")
+    if old:
+        old.close()
+    print('Timetable ready:', STATE['timetableDetail'], flush=True)
+    return True
+
+
+def refresh_timetable() -> bool:
+    """Run timetable.py fetch as a low-priority child; True if it finished without error."""
+    cmd = [sys.executable, str(Path(__file__).resolve().parent / 'timetable.py'), 'fetch', str(DATA_DIR)]
+    env = dict(os.environ)
+    if _test_tt:
+        env['TPA_BUS_TIMETABLE_TEST_URL'] = _test_tt
+    if _test_naptan:
+        env['TPA_BUS_NAPTAN_TEST_URL'] = _test_naptan
+    ok, last_logged = True, None
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env) as proc:
+        BUILDER['tt'] = proc
+        for line in proc.stdout:
+            if not line.startswith('TIMETABLE '):
+                continue
+            try:
+                info = json.loads(line[10:])
+            except ValueError:
+                continue
+            st = info.get('state', '')
+            with LOCK:
+                if st == 'error':
+                    STATE['timetableError'] = str(info.get('error', ''))[:120]
+                    ok = False
+                elif st == 'warning':
+                    STATE['timetableError'] = str(info.get('warning', ''))[:120]
+                elif st in ('downloading', 'building'):
+                    detail = ' '.join(str(x) for x in (st, info.get('what', ''), info.get('step', ''),
+                                                        f"{info['percent']}%" if 'percent' in info else '',
+                                                        f"{info['mb']} MB" if 'mb' in info else '',
+                                                        f"{info['rows']} rows" if 'rows' in info else '') if x)
+                    if TIMETABLE['tt'] is None:
+                        STATE['timetable'] = st
+                        STATE['timetableDetail'] = detail
+                    else:
+                        STATE['timetableUpdate'] = detail
+            key = (st, info.get('what'), info.get('step'))
+            if st in ('built', 'error', 'warning') or key != last_logged:
+                last_logged = key
+                print('Timetable:', line[10:].strip(), flush=True)
+    BUILDER['tt'] = None
+    with LOCK:
+        STATE.pop('timetableUpdate', None)
+    return ok and proc.returncode == 0
+
+
+def timetable_keeper() -> None:
+    open_timetable()
+    if TIMETABLE_MODE != 'download':
+        return
+    time.sleep(float(os.environ.get('TPA_BUS_TIMETABLE_START_DELAY', '120')))   # let buses and roads settle first
+    while True:
+        ok = refresh_timetable()
+        if ok:
+            with LOCK:
+                STATE['timetableError'] = ''
+        path, cur = DATA_DIR / 'timetable.sqlite', TIMETABLE['tt']
+        if path.exists() and (cur is None or path.stat().st_mtime > cur.meta.get('builtAt', 0) + 60):
+            open_timetable()
+        if TIMETABLE['tt'] is None and not ok:
+            with LOCK:
+                STATE['timetable'] = 'unavailable'
+        time.sleep(86400 if ok else ROAD_RETRY_HOURS * 3600)
+
+
+def count_matches() -> dict | None:
+    """0.6.0: how many buses (a sample of up to 400 with journey details) the timetable can match.
+    Counted only. matched = exactly one timetabled journey; unsure = several (never guessed)."""
+    tt = TIMETABLE['tt']
+    if tt is None:
+        return None
+    now = time.time()
+    with LOCK:
+        fresh = [v for v in STATE['vehicles'] if now - v['recorded'] <= STALE_AFTER]
+    usable = [v for v in fresh if v.get('origin') and v.get('dep')]
+    sample = random.sample(usable, min(MATCH_SAMPLE, len(usable)))
+    res = {'matched': 0, 'unsure': 0, 'notFound': 0}
+    t0 = time.perf_counter()
+    for v in sample:
+        try:
+            got = tt.match(v['origin'], v['dep'], v.get('route', ''), v.get('dest', ''))
+        except Exception as exc:   # one odd bus must never break the layer
+            with LOCK:
+                STATE['timetableError'] = ('match: ' + type(exc).__name__)[:100]
+            got = []
+        res['matched' if len(got) == 1 else 'unsure' if got else 'notFound'] += 1
+    n = len(sample)
+    return {'busesChecked': n, 'withJourneyDetailsPct': round(100 * len(usable) / len(fresh)) if fresh else None,
+            'matchedPct': round(100 * res['matched'] / n) if n else None,
+            'unsurePct': round(100 * res['unsure'] / n) if n else None,
+            'notFoundPct': round(100 * res['notFound'] / n) if n else None,
+            'msPerBus': round((time.perf_counter() - t0) * 1000 / n, 1) if n else None, 'at': iso(now)}
+
+
+def match_counter() -> None:
+    while True:
+        time.sleep(MATCH_EVERY)
+        if FETCHING.is_set():
+            time.sleep(10)
+        r = count_matches()
+        if r is not None:
+            with LOCK:
+                STATE['timetableMatch'] = r
+
+
 def road_motion(v: dict):
     """Path along the road ahead for this report, or None (straight-line movement is used instead)."""
     rm = ROADS['map']
@@ -967,6 +1109,9 @@ class Handler(BaseHTTPRequestHandler):
                                         'roadCacheMB': round(ROADS['map'].bytes / 1e6) if ROADS['map'] else 0,
                                         'roadCacheLimitMB': round(ROADS['map'].max_bytes / 1e6) if ROADS['map'] else 0,
                                         'measure': measure_summary(STATE['vehicles'], now),
+                                        'timetable': STATE.get('timetable'), 'timetableDetail': STATE.get('timetableDetail'),
+                                        'timetableUpdate': STATE.get('timetableUpdate'), 'timetableError': STATE.get('timetableError'),
+                                        'timetableMatch': STATE.get('timetableMatch'),
                                         'lastView': STATE.get('lastView')})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
@@ -986,6 +1131,8 @@ def main() -> None:
     signal.signal(signal.SIGINT, _stop)
     threading.Thread(target=poller, daemon=True).start()
     threading.Thread(target=road_keeper, daemon=True).start()
+    threading.Thread(target=timetable_keeper, daemon=True).start()
+    threading.Thread(target=match_counter, daemon=True).start()
     threading.Thread(target=path_worker, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
