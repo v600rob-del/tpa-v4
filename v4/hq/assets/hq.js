@@ -124,7 +124,11 @@ function selectEntity(e){
   const live=!!state.live[e.component];
   const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
   const info=document.createElement('small');info.textContent=infoText(e,!!whereNow(e,Date.now())?.est);void seen;
-  const warning=document.createElement('small');warning.className=live?'live-source':'review-no-live';warning.textContent=live?(state.frames[e.component]?.attribution||''):'FICTIONAL DEMONSTRATION — NOT AN ACTUAL VEHICLE';
+  // 4.4.1 (owner 1 Nov 13:59: the data-source lines "look busy and cluttered. Simple experience for the end
+  // user"): live vehicles' sources stay in the map's credit line and "Data sources & credits", not here.
+  // Pretend vehicles keep their warning.
+  const warning=document.createElement('small');warning.className=live?'live-source':'review-no-live';warning.textContent=live?'':'FICTIONAL DEMONSTRATION — NOT AN ACTUAL VEHICLE';
+  if(live)warning.hidden=true;
   const close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','Close target details');
   close.onclick=()=>{selected.classList.add('hidden');state.selected=null;paint();};
   // 4.4.0 (owner 1 Nov 13:42): more about this vehicle from its own engine (start, end, next stop for a bus)
