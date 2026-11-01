@@ -28,8 +28,10 @@
   },
   "tip": {
     "label": "Buy me a coffee",
+    "text": "Enjoying TPA? It's free and always will be. If you'd like to say thanks, you can buy Rob a coffee.",
     "note": "Completely optional. TPA stays free either way.",
-    "url": ""
+    "url": "",
+    "preview": true
   },
   "credits": [
     {

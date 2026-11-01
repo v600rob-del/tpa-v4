@@ -160,3 +160,9 @@ body.vector-ready .vector-map{z-index:4}
 .welcome-section li{margin:0 0 6px;line-height:1.45;font-size:14px}
 .welcome-small{margin:4px 0 8px;border-top:1px solid var(--line);padding-top:10px}
 .welcome-small p{margin:0 0 6px;font-size:11.5px;line-height:1.45;color:var(--soft)}
+
+/* 4.5.1 coffee box */
+.tip-box{margin-top:4px;padding:12px;border:1px dashed #8a6a2c;border-radius:12px;background:#1d1912}
+.tip-text{margin:0 0 4px;font-size:14px;line-height:1.45;text-align:center;color:var(--white)}
+.tip-button{font-size:15px}
+.tip-button .tip-soon{font-weight:500;font-size:12px;opacity:.85}

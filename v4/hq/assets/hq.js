@@ -784,6 +784,10 @@ function str(v,max){return typeof v==='string'&&v.length<=max?v:'';}
 function tipControl(tip){
   const label='☕ '+(str(tip?.label,60)||'Buy me a coffee'),url=safeLink(tip?.url);
   if(url){const a=el('a','tip-button',label);a.href=url;a.target='_blank';a.rel='noopener noreferrer';return a;}
+  // 4.5.1 (owner 1 Nov 14:39: "add the buy me a coffee ... so i can see what it looks like"): with
+  // "preview": true and no link yet, the button is shown but does nothing ("link coming soon").
+  if(tip?.preview===true){const b=el('button','tip-button',label);b.type='button';b.disabled=true;b.title='Link coming soon';
+    b.append(el('span','tip-soon',' · link coming soon'));return b;}
   return null;     // 4.5.0 (owner 1 Nov 14:15: "we can add the coffee part later"): no link yet = no button
 }
 // 4.5.0 (owner 1 Nov 14:13: the welcome screen should "obviously be fun"): a little parade of the map's
@@ -838,7 +842,8 @@ function buildWelcome(w,tip,credits){
   const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
   card.append(enter);
   const tipBtn=tipControl(tip);
-  if(tipBtn){const tipBox=el('div','tip-box');tipBox.append(tipBtn);const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));card.append(tipBox);}
+  if(tipBtn){const tipBox=el('div','tip-box');const said=str(tip?.text,240);if(said)tipBox.append(el('p','tip-text',said));
+    tipBox.append(tipBtn);const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));card.append(tipBox);}
   const small=(Array.isArray(w?.smallPrint)?w.smallPrint.slice(0,6):[]).map(t=>str(t,300)).filter(Boolean);
   if(small.length){const sp=el('div','welcome-small');for(const t of small)sp.append(el('p','',t));card.append(sp);}
   const more=el('button','tpa-link-button','Data sources & credits');more.type='button';more.onclick=()=>{closeDialog(back);openDialog(credits);};
