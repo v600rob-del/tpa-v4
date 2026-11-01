@@ -453,13 +453,19 @@ function makeReadyList(){
   const box=el('div','prep-list');box.setAttribute('aria-live','polite');
   const items={};for(const [id,icon,name] of PREP_ITEMS){const row=el('span','prep-item');row.dataset.id=id;
     row.append(el('span','prep-icon',icon),el('span','prep-name',name),el('span','prep-tick','…'));items[id]=row;box.append(row);}
-  prepLists.add({box,items});updatePrep();return box;
+  prepLists.add({box,items,t0:performance.now()});updatePrep();return box;
 }
 function updatePrep(){
   let all=true;
-  for(const {box,items} of prepLists){
+  const now=performance.now();
+  for(const list of prepLists){const {box,items}=list;
     if(!box.isConnected&&box.dataset.started)continue;box.dataset.started='1';
-    for(const [id] of PREP_ITEMS){const row=items[id],want=prepWanted(id),ok=!want||prepReady(id);
+    // 4.7.2 (owner 1 Nov 16:00: "still no animation on the welcome screen"): everything was usually ready before
+    // anyone could see it, so the tiles were green at once. Each tile now pulses for a moment, then turns green in
+    // turn (0.6 s, 1.4 s, 2.2 s ...) - never before its layer is really ready, so green is always true.
+    let n=0;
+    for(const [id] of PREP_ITEMS){const row=items[id],want=prepWanted(id);
+      const ok=!want||(prepReady(id)&&now>=list.t0+600+800*n);if(want)n++;
       row.hidden=!want;row.classList.toggle('done',ok);const t=row.querySelector('.prep-tick');t.textContent=ok?'✓':'…';if(!ok)all=false;}
   }
   return all;
@@ -860,6 +866,7 @@ function makeDialog(id,title){
   return {back,card};
 }
 function openDialog(back){lastFocus=document.activeElement;back.classList.remove('hidden');
+  for(const list of prepLists)if(back.contains(list.box))list.t0=performance.now();   // 4.7.2: the tiles play again each time
   const enter=back._enter,wait=Number(back.dataset.enterAfter||0);
   if(enter&&wait>0){clearTimeout(back._enterTimer);enter.classList.add('waiting');enter.disabled=true;enter.setAttribute('aria-hidden','true');
     back._enterTimer=setTimeout(()=>{enter.classList.remove('waiting');enter.disabled=false;enter.removeAttribute('aria-hidden');enter.focus();},wait*1000);}
@@ -885,33 +892,33 @@ function buildWelcome(w,tip,credits){
   card.classList.add('welcome-card');
   card.prepend(welcomeParade());
   const sub=str(w?.subtitle,120);if(sub)card.append(el('p','tpa-dialog-sub',sub));
-  for(const line of (Array.isArray(w?.lines)?w.lines.slice(0,8):[])){const t=str(line,300);if(t)card.append(el('p','tpa-dialog-line',t));}
-  // 4.5.0: "what to expect" and other short sections, then the small print (all text from site-config.json)
+  // 4.7.2 (owner 1 Nov 16:00: "two pages long ... needs to be just one page, smaller text, it's not why they're
+  // here anyway"): two columns on wide screens - what TPA is and Let's go! on the left, coffee and small print
+  // on the right - and smaller type throughout.
+  const cols=el('div','welcome-cols'),main=el('div','welcome-main'),side=el('div','welcome-side');cols.append(main,side);card.append(cols);
+  for(const line of (Array.isArray(w?.lines)?w.lines.slice(0,8):[])){const t=str(line,300);if(t)main.append(el('p','tpa-dialog-line',t));}
   for(const sec of (Array.isArray(w?.sections)?w.sections.slice(0,4):[])){
     const head=str(sec?.heading,60),items=(Array.isArray(sec?.items)?sec.items.slice(0,6):[]).map(t=>str(t,240)).filter(Boolean);
     if(!head||!items.length)continue;
     const box=el('div','welcome-section');box.append(el('h3','',head));const ul=el('ul','');
-    for(const t of items)ul.append(el('li','',t));box.append(ul);card.append(box);}
+    for(const t of items)ul.append(el('li','',t));box.append(ul);main.append(box);}
   const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
-  // 4.7.0 (owner 1 Nov 15:22: "imperative the welcome screen says Let's go! with that part appearing when the 5
-  // seconds are up"): the streams tick in a row of icons that pulse and turn green; the button replaces them
-  // after enterAfterSeconds (5), counted from when the welcome screen opens.
+  // 4.7.0: the streams pulse and turn green; Let's go! appears after enterAfterSeconds (5) from opening
   const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Preparing streams'),makeReadyList());
   const wait=Number.isFinite(w?.enterAfterSeconds)?clamp(w.enterAfterSeconds,0,10):0;
   if(wait>0){enter.classList.add('waiting');enter.disabled=true;enter.setAttribute('aria-hidden','true');back.dataset.enterAfter=String(wait);}
   back._enter=enter;
-  card.append(ready,enter);
+  main.append(ready,enter);
   const tipBtn=tipControl(tip);
   if(tipBtn){const tipBox=el('div','tip-box');
-    // 4.7.0 (owner 1 Nov 15:22): a photo of Geoff, Rob's cat, beside the coffee/treats line (same-origin file only)
     const pic=typeof tip?.picture==='string'&&/^\/assets\/[a-z0-9-]{1,40}\.(?:jpg|png)$/.test(tip.picture)?tip.picture:'';
-    if(pic){const img=el('img','tip-picture');img.src=pic;img.alt=str(tip?.pictureAlt,80)||'';img.width=96;img.height=96;img.loading='eager';tipBox.append(img);}
+    if(pic){const img=el('img','tip-picture');img.src=pic;img.alt=str(tip?.pictureAlt,80)||'';img.width=72;img.height=72;img.loading='eager';tipBox.append(img);}
     const said=str(tip?.text,240);if(said)tipBox.append(el('p','tip-text',said));
-    tipBox.append(tipBtn);const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));card.append(tipBox);}
+    tipBox.append(tipBtn);const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));side.append(tipBox);}
   const small=(Array.isArray(w?.smallPrint)?w.smallPrint.slice(0,6):[]).map(t=>str(t,300)).filter(Boolean);
-  if(small.length){const sp=el('div','welcome-small');for(const t of small)sp.append(el('p','',t));card.append(sp);}
+  if(small.length){const sp=el('div','welcome-small');for(const t of small)sp.append(el('p','',t));side.append(sp);}
   const more=el('button','tpa-link-button','Data sources & credits');more.type='button';more.onclick=()=>{closeDialog(back);openDialog(credits);};
-  card.append(more);return back;
+  side.append(more);return back;
 }
 // 4.1.15 (owner 31 Oct 23:47: "no mention of bods data"): the map's own credit line names the live data
 // sources of the layers being shown, from site-config.json's short credits (data, not code).

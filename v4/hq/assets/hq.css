@@ -152,7 +152,7 @@ body.vector-ready .vector-map{z-index:4}
 .parade-pin svg{width:22px;height:22px;fill:currentColor}
 .parade-pin.air{background:#144359;color:#73dcff}.parade-pin.rail{background:#3b2355;color:#d6a5ff}
 .parade-pin.bus{background:#1f7a55;color:#fff}.parade-pin.sea{background:#533724;color:#ffc17d}
-@keyframes tpa-parade{from{transform:translateX(0)}to{transform:translateX(620px)}}
+@keyframes tpa-parade{from{transform:translateX(0)}to{transform:translateX(920px)}}
 @media(prefers-reduced-motion:reduce){.parade-pin{animation:none;position:static;display:inline-flex;margin:6px 4px}.welcome-parade{display:flex;justify-content:center}}
 .welcome-section{margin:12px 0 4px}
 .welcome-section h3{margin:0 0 6px;font-size:12px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}
@@ -194,3 +194,26 @@ body.vector-ready .vector-map{z-index:4}
 .tip-picture{display:block;width:96px;height:96px;margin:0 auto 8px;border-radius:50%;object-fit:cover;clip-path:circle(46%);box-shadow:0 0 0 3px #8a6a2c55}
 @media(prefers-reduced-motion:reduce){.prep-item:not(.done) .prep-icon{animation:none}}
 .prep-item[hidden]{display:none}
+
+/* 4.7.2 one screen: two columns, smaller type */
+.welcome-card{width:min(860px,100%);padding:18px 22px 16px}
+.welcome-card .tpa-dialog-title{font-size:22px;margin:0 0 2px}
+.welcome-card .tpa-dialog-sub{font-size:11.5px;margin:0 0 10px}
+.welcome-parade{height:40px;margin:-6px -22px 8px}
+.parade-pin{top:4px;width:30px;height:30px}
+.welcome-cols{display:grid;grid-template-columns:1fr;gap:12px 22px}
+@media(min-width:720px){.welcome-cols{grid-template-columns:minmax(0,1.25fr) minmax(0,1fr)}}
+.welcome-card .tpa-dialog-line{font-size:13.5px;line-height:1.45;margin:0 0 8px}
+.welcome-card .welcome-section{margin:6px 0 2px}
+.welcome-card .welcome-section h3{font-size:10.5px;margin:0 0 4px}
+.welcome-card .welcome-section li{font-size:12.5px;margin:0 0 4px;line-height:1.4}
+.welcome-card .welcome-ready{margin:8px 0 0}
+.welcome-card .tpa-primary{margin:10px 0 0;padding:11px}
+.welcome-card .tip-box{margin:0;padding:10px}
+.welcome-card .tip-picture{width:72px;height:72px;margin:0 auto 6px}
+.welcome-card .tip-text{font-size:12.5px;margin:0 0 6px}
+.welcome-card .tip-button{font-size:13px;padding:8px}
+.welcome-card .tip-box small{font-size:10.5px}
+.welcome-card .welcome-small{margin:10px 0 6px;padding-top:8px}
+.welcome-card .welcome-small p{font-size:10.5px;line-height:1.4;margin:0 0 4px}
+.welcome-card .tpa-link-button{font-size:12px;padding:7px}
