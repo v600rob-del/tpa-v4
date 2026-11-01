@@ -30,8 +30,8 @@ keep = ("engineVersion", "health", "notice", "loginConfigured", "keyConfigured",
 parts = [f"{k}={d[k]}" for k in keep if k in d and d[k] not in ("", None)]
 print(f"{name:8s} " + ", ".join(parts))
 if isinstance(d.get("measure"), dict):   # bus 0.5.9: accuracy figures
-    print(f"{'':8s} measure: " + ", ".join(f"{k}={v}" for k, v in d["measure"].items() if v is not None))
-' "$1"
+    print(" " * 9 + "measure: " + ", ".join(f"{k}={v}" for k, v in d["measure"].items() if v is not None))
+' "$1" || { printf '%-8s status unreadable\n' "$1"; ok=0; }
 }
 summary road 8782; summary bus 8781; summary air 8783; summary rail 8784
 code="$(curl -s --max-time 3 -o /dev/null -w '%{http_code}' -H 'Host: 127.0.0.1:8778' http://127.0.0.1:8778/api/v4/manifest)"
