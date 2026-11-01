@@ -166,3 +166,17 @@ body.vector-ready .vector-map{z-index:4}
 .tip-text{margin:0 0 4px;font-size:14px;line-height:1.45;text-align:center;color:var(--white)}
 .tip-button{font-size:15px}
 .tip-button .tip-soon{font-weight:500;font-size:12px;opacity:.85}
+
+/* 4.6.0 "Preparing streams" */
+.prep-list{display:flex;flex-wrap:wrap;gap:6px 12px;justify-content:center}
+.prep-item{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--soft);transition:color .3s}
+.prep-item.done{color:var(--white)}
+.prep-item .prep-tick{min-width:12px;font-weight:800;color:var(--accent)}
+.prep-item.done .prep-tick{color:#62e3b3}
+.prep-item:not(.done) .prep-tick{animation:pulse 1.2s infinite}
+.welcome-ready{margin:-4px 0 12px;text-align:center}
+.welcome-ready .prep-caption{display:block;margin-bottom:5px;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--soft)}
+.prep-panel{position:fixed;z-index:990;left:50%;top:50%;transform:translate(-50%,-50%);min-width:260px;max-width:90vw;padding:16px 20px;border-radius:14px;border:1px solid var(--line);background:#0c1828ee;box-shadow:0 12px 40px #000a;text-align:center;pointer-events:none;transition:opacity .6s}
+.prep-panel .prep-title{display:block;margin-bottom:10px;color:var(--cyan);font-size:15px;letter-spacing:.04em}
+.prep-panel.fading{opacity:0}
+@media(prefers-reduced-motion:reduce){.prep-item:not(.done) .prep-tick{animation:none}}

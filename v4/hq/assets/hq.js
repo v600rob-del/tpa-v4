@@ -430,6 +430,50 @@ const note=document.querySelector('.stats-panel .panel-note');if(note){if(!note.
 // part took to appear in THIS browser. Measuring only; nothing is sent anywhere.
 const SPEED={first:Object.create(null),ask:Object.create(null),trafficFrom:0,trafficLast:null,mapFrom:0,mapLast:null};
 function speedMark(name){if(!(name in SPEED.first))SPEED.first[name]=performance.now();}
+// 4.6.0 (owner 1 Nov 15:00: "a 5 second timer with 'Preparing streams' ... buys the browser time to build
+// that user experience"): a list that ticks each layer the moment it is really ready on this screen.
+// Never waits longer than needed; the panel for returning visitors gives up after PREP_MAX_MS.
+const PREP_MAX_MS=5000;
+const PREP_ITEMS=[['map','🗺','Map'],['road','≋','Traffic'],['bus','🚌','Buses'],['rail','🚂','Trains'],['air','✈','Planes']];
+const prepLists=new Set();
+function prepWanted(id){
+  if(id==='map')return true;
+  if(!state.live[id]||state.parked[id]||!state.visible[id])return false;
+  if(state.status[id]!=='ready'&&state.status[id]!=='stale')return false;     // not answering: don't hold anyone up
+  if(id==='road'){const o=state.frames.road?.overlay;return !!o&&state.z>=o.minZoom;}
+  return true;
+}
+function prepReady(id){
+  if(id==='map')return 'street map drawn' in SPEED.first||state.renderer==='fallback'||state.renderer==='leaflet-degraded';
+  if(id==='road')return 'traffic shown' in SPEED.first;
+  return (SPEED.ask[id]?.n||0)>0;
+}
+function makeReadyList(){
+  const box=el('div','prep-list');box.setAttribute('aria-live','polite');
+  const items={};for(const [id,icon,name] of PREP_ITEMS){const row=el('span','prep-item');row.dataset.id=id;
+    row.append(el('span','prep-icon',icon),el('span','prep-name',name),el('span','prep-tick','…'));items[id]=row;box.append(row);}
+  prepLists.add({box,items});updatePrep();return box;
+}
+function updatePrep(){
+  let all=true;
+  for(const {box,items} of prepLists){
+    if(!box.isConnected&&box.dataset.started)continue;box.dataset.started='1';
+    for(const [id] of PREP_ITEMS){const row=items[id],want=prepWanted(id),ok=!want||prepReady(id);
+      row.hidden=!want;row.classList.toggle('done',ok);const t=row.querySelector('.prep-tick');t.textContent=ok?'✓':'…';if(!ok)all=false;}
+  }
+  return all;
+}
+function startPreparing(showPanel){
+  const t0=performance.now();let panel=null;
+  if(showPanel){panel=el('div','prep-panel');panel.setAttribute('role','status');
+    panel.append(el('strong','prep-title','Preparing streams…'),makeReadyList());document.body.append(panel);}
+  const timer=setInterval(()=>{
+    const done=updatePrep(),waited=performance.now()-t0;
+    if(panel&&(done||waited>PREP_MAX_MS)){const p=panel;panel=null;if(done)p.querySelector('.prep-title').textContent='All set';
+      p.classList.add('fading');setTimeout(()=>p.remove(),done?700:400);}
+    if((done&&!panel)||waited>30000)clearInterval(timer);
+  },200);
+}
 window.TPA_HQ_SPEED_MARK=speedMark;
 window.TPA_HQ_MAP_IDLE=()=>{speedMark('street map complete');if(SPEED.mapFrom){SPEED.mapLast=performance.now()-SPEED.mapFrom;SPEED.mapFrom=0;}};
 function speedPanel(){
@@ -841,6 +885,7 @@ function buildWelcome(w,tip,credits){
     for(const t of items)ul.append(el('li','',t));box.append(ul);card.append(box);}
   const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
   card.append(enter);
+  const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Getting your map ready'),makeReadyList());card.append(ready);   // 4.6.0
   const tipBtn=tipControl(tip);
   if(tipBtn){const tipBox=el('div','tip-box');const said=str(tip?.text,240);if(said)tipBox.append(el('p','tip-text',said));
     tipBox.append(tipBtn);const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));card.append(tipBox);}
@@ -874,6 +919,7 @@ async function loadSiteConfig(){
   $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
   let seen=false;try{seen=localStorage.getItem(WELCOME_KEY)==='1';}catch(_){}
   if(welcome&&cfg.welcome?.enabled===true&&!seen)openDialog(welcome);
+  startPreparing(!(welcome&&cfg.welcome?.enabled===true&&!seen));   // 4.6.0: returning visitors get the short panel
 }
 paint();discover();beginMap();setInterval(discover,30000);
 // 4.0.11: also check every 10 s, but only while a live layer is still connecting.
