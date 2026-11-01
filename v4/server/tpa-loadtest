@@ -1,0 +1,419 @@
+#!/usr/bin/env python3
+"""tpa-loadtest - how many people can the TPA test site serve at once? (server kit 4.13)
+
+Owner, 1 Nov 2026 20:42: "incremental that we can monitor, 10, 100, 1000, 10000, 100000 and 1000000. unless it
+craps its pants at the early stages of course." Agreed guide: steps 10, 25, 50, 100, 250, 500, 1000, each about
+90 s, stopping by itself at the first sign of trouble; bigger numbers are estimated from what one viewer costs.
+
+Run it from Oracle Cloud Shell (a separate machine, so the pretend crowd does not use the server's own
+processor):
+    python3 tpa-loadtest
+It asks for the test-site password itself (hidden as you type - never put it in a chat). Each pretend viewer
+behaves like the real page: it looks at a part of a UK city, asks for buses, trains and aircraft as often as
+those layers say (about every 15-30 s), fetches traffic pictures, and every 20-40 s pans or zooms. Read-only:
+nothing on the server is changed. Between steps it reads the server's memory and processor use over SSH
+(systemctl show - no admin rights needed).
+
+Stops at the first step where: the typical (median) answer takes over 2 s, 1 in 20 answers takes over 5 s,
+more than 2% of requests fail, or a part of the server is above 90% of its memory limit. A step is also cut
+short if, in any 10 seconds, more than 20% of requests fail.
+
+Options: --steps 10,25,50 --seconds 90 --host test.tpalive.co.uk --no-server-stats --yes
+(--url http://127.0.0.1:8778 and TPA_LOADTEST_PASSWORD are for the builders' own tests.)
+"""
+import argparse
+import asyncio
+import base64
+import getpass
+import json
+import math
+import os
+import random
+import ssl
+import statistics
+import subprocess
+import sys
+import time
+import urllib.parse
+
+VERSION = '4.13'
+DEFAULT_STEPS = [10, 25, 50, 100, 250, 500, 1000]
+CITIES = [('York', 53.959, -1.082), ('Hull', 53.744, -0.333), ('Leeds', 53.797, -1.547), ('Manchester', 53.479, -2.244),
+          ('London', 51.507, -0.128), ('Birmingham', 52.480, -1.899), ('Nottingham', 52.954, -1.150), ('Newcastle', 54.973, -1.613),
+          ('Bristol', 51.455, -2.588), ('Glasgow', 55.861, -4.251), ('Sheffield', 53.381, -1.470), ('Liverpool', 53.408, -2.991)]
+LAYERS = ('bus', 'rail', 'air')
+UNITS = ('tpa-hq', 'tpa-bus', 'tpa-rail', 'tpa-air', 'tpa-road', 'tpa-web')
+SERVER = 'ubuntu@143.47.230.28'
+KEY = os.path.expanduser('~/.ssh/tpa_v4_server')
+LIMITS = {'p50': 2.0, 'p95': 5.0, 'fail': 0.02, 'mem': 0.90}
+
+
+class Conn:
+    """One keep-alive HTTP/1.1 connection, like one browser tab (a minimal client: standard library only)."""
+    def __init__(self, host, port, tls, auth):
+        self.host, self.port, self.tls, self.auth = host, port, tls, auth
+        self.hosthdr = host if port == (443 if tls else 80) else f'{host}:{port}'
+        self.r = self.w = None
+
+    async def close(self):
+        if self.w:
+            try:
+                self.w.close()
+            except Exception:
+                pass
+        self.r = self.w = None
+
+    async def get(self, path, timeout=10.0):
+        return await asyncio.wait_for(self._get(path), timeout)
+
+    async def _get(self, path):
+        for attempt in (0, 1):
+            if self.w is None:
+                ctx = ssl.create_default_context() if self.tls else None
+                self.r, self.w = await asyncio.open_connection(self.host, self.port, ssl=ctx, server_hostname=self.host if self.tls else None)
+            try:
+                head = (f'GET {path} HTTP/1.1\r\nHost: {self.hosthdr}\r\nAuthorization: Basic {self.auth}\r\n'
+                        'Accept: application/json, image/png\r\nAccept-Encoding: identity\r\nUser-Agent: tpa-loadtest/' + VERSION +
+                        '\r\nConnection: keep-alive\r\n\r\n')
+                self.w.write(head.encode()); await self.w.drain()
+                status_line = await self.r.readline()
+                if not status_line:
+                    raise ConnectionError('closed')
+                status = int(status_line.split()[1])
+                headers = {}
+                while True:
+                    line = await self.r.readline()
+                    if line in (b'\r\n', b'\n', b''):
+                        break
+                    k, _, v = line.decode('latin-1').partition(':')
+                    headers[k.strip().lower()] = v.strip()
+                if headers.get('transfer-encoding', '').lower() == 'chunked':
+                    body = bytearray()
+                    while True:
+                        size = int((await self.r.readline()).split(b';')[0], 16)
+                        if size == 0:
+                            await self.r.readline(); break
+                        body += await self.r.readexactly(size); await self.r.readline()
+                    body = bytes(body)
+                else:
+                    body = await self.r.readexactly(int(headers.get('content-length', '0')))
+                if headers.get('connection', '').lower() == 'close':
+                    await self.close()
+                return status, body
+            except (ConnectionError, asyncio.IncompleteReadError, OSError):
+                await self.close()
+                if attempt:
+                    raise
+        raise ConnectionError('failed')
+
+
+class Stats:
+    def __init__(self):
+        self.rows = []          # (time, layer, seconds, ok)
+
+    def add(self, layer, seconds, ok):
+        self.rows.append((time.monotonic(), layer, seconds, ok))
+
+    def since(self, t0):
+        return [r for r in self.rows if r[0] >= t0]
+
+
+def bbox(lat, lon, z, w=1440, h=900, pad=0.2):
+    dpp = 360 / (256 * 2 ** z)
+    dlon = w * dpp * (1 + 2 * pad) / 2
+    dlat = h * dpp * math.cos(math.radians(lat)) * (1 + 2 * pad) / 2
+    return f'west={lon - dlon:.4f}&south={lat - dlat:.4f}&east={lon + dlon:.4f}&north={lat + dlat:.4f}'
+
+
+def tiles_for(lat, lon, z):
+    n = 2 ** z
+    x = int((lon + 180) / 360 * n)
+    y = int((1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n)
+    return [(z, x + dx, y + dy) for dx in (0, 1) for dy in (0, 1)]
+
+
+async def viewer(i, base, stats, stop, rnd, layers):
+    city = rnd.choice(CITIES)
+    lat, lon = city[1] + rnd.uniform(-0.03, 0.03), city[2] + rnd.uniform(-0.05, 0.05)
+    z = rnd.choice([12, 13, 14, 15, 16])
+    conn = Conn(*base)
+    now = time.monotonic()
+    due = {l: now + rnd.uniform(0, 3) for l in layers}       # a page opens: asks straight away
+    pan_at = now + rnd.uniform(20, 40)
+    try:
+        while not stop.is_set():
+            now = time.monotonic()
+            if now >= pan_at:                                   # pans or zooms, then asks again for the new area
+                lat += rnd.uniform(-1, 1) * 900 * 360 / (256 * 2 ** z) * 0.4
+                lon += rnd.uniform(-1, 1) * 1440 * 360 / (256 * 2 ** z) * 0.4
+                z = max(11, min(17, z + rnd.choice([-1, 0, 0, 1])))
+                pan_at = now + rnd.uniform(20, 40)
+                for l in layers:
+                    due[l] = min(due[l], now + 0.3)
+                if 'road' in layers_all(layers):
+                    for tz, tx, ty in tiles_for(lat, lon, min(z, 15)):
+                        await fetch(conn, f'/api/v4/components/road/tiles/{tz}/{tx}/{ty}.png', 'traffic', stats)
+            layer = min(due, key=due.get)
+            wait = due[layer] - time.monotonic()
+            if wait > 0:
+                try:
+                    await asyncio.wait_for(stop.wait(), min(wait, pan_at - time.monotonic() if pan_at > time.monotonic() else 0.01))
+                    break
+                except asyncio.TimeoutError:
+                    continue
+            body = await fetch(conn, f'/api/v4/components/{layer}/snapshot?{bbox(lat, lon, z)}', layer, stats)
+            poll = 15.0
+            if body:
+                try:
+                    poll = max(5.0, min(60.0, json.loads(body).get('nextPollAfterMs', 15000) / 1000))
+                except Exception:
+                    pass
+            due[layer] = time.monotonic() + poll
+    finally:
+        await conn.close()
+
+
+def layers_all(layers):
+    return set(layers) | {'road'}
+
+
+async def fetch(conn, path, layer, stats):
+    t0 = time.monotonic()
+    try:
+        status, body = await conn.get(path)
+        ok = status < 500 and status not in (401, 403)
+        stats.add(layer, time.monotonic() - t0, ok)
+        if status == 401:
+            raise PermissionError('password not accepted')
+        return body if status == 200 else None
+    except PermissionError:
+        raise
+    except Exception:
+        stats.add(layer, time.monotonic() - t0, False)
+        await conn.close()
+        return None
+
+
+def server_stats(enabled):
+    if not enabled:
+        return None
+    cmd = 'systemctl show -p Id -p CPUUsageNSec -p MemoryCurrent -p MemoryMax ' + ' '.join(UNITS) + '; echo; cat /proc/loadavg; nproc'
+    try:
+        out = subprocess.run(['ssh', '-i', KEY, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=8', SERVER, cmd],
+                             capture_output=True, text=True, timeout=25).stdout
+    except Exception:
+        return None
+    units, cur = {}, {}
+    for line in out.splitlines():
+        if '=' in line:
+            k, _, v = line.partition('=')
+            cur[k] = v
+            if k == 'Id':
+                units[v.replace('.service', '')] = cur
+        elif not line.strip():
+            cur = {}
+    lines = [l for l in out.splitlines() if l.strip()]
+    load = lines[-2].split()[0] if len(lines) >= 2 else '?'
+    cpus = lines[-1].strip() if lines else '?'
+    snap = {'at': time.monotonic(), 'load': load, 'cpus': cpus, 'units': {}}
+    for name, d in units.items():
+        num = lambda k: int(d[k]) if d.get(k, '').isdigit() else None
+        snap['units'][name] = {'cpu': num('CPUUsageNSec'), 'mem': num('MemoryCurrent'), 'max': num('MemoryMax')}
+    return snap
+
+
+def pct(values, p):
+    if not values:
+        return None
+    s = sorted(values)
+    return s[min(len(s) - 1, int(round(p / 100 * (len(s) - 1))))]
+
+
+async def run_step(n, seconds, base, layers, rnd):
+    stats, stop = Stats(), asyncio.Event()
+    tasks = []
+    started = time.monotonic()
+    aborted = ''
+    ramp = min(15.0, seconds / 4)
+
+    async def watchdog():
+        nonlocal aborted
+        while not stop.is_set():
+            try:
+                await asyncio.wait_for(stop.wait(), 10)
+                return
+            except asyncio.TimeoutError:
+                pass
+            recent = stats.since(time.monotonic() - 10)
+            if len(recent) >= 20 and sum(1 for r in recent if not r[3]) / len(recent) > 0.20:
+                aborted = 'more than 20% of requests failing'
+                stop.set()
+
+    async def spawn():
+        for i in range(n):
+            if stop.is_set():
+                return
+            tasks.append(asyncio.create_task(viewer(i, base, stats, stop, random.Random(rnd.random()), layers)))
+            await asyncio.sleep(ramp / n)
+
+    wd = asyncio.create_task(watchdog())
+    await spawn()
+    try:
+        await asyncio.wait_for(stop.wait(), max(0.0, seconds - (time.monotonic() - started)))
+    except asyncio.TimeoutError:
+        pass
+    stop.set()
+    for t in tasks:
+        t.cancel()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    wd.cancel()
+    if any(isinstance(r, PermissionError) for r in results):
+        raise PermissionError('password not accepted')
+    elapsed = time.monotonic() - started
+    rows = [r for r in stats.rows if r[0] >= started + ramp]          # the settled part of the step
+    if not rows:
+        rows = stats.rows
+    times = [r[2] for r in rows if r[3]]
+    fails = sum(1 for r in rows if not r[3])
+    by_layer = {}
+    for r in rows:
+        by_layer.setdefault(r[1], []).append(r[2])
+    return {'n': n, 'elapsed': elapsed, 'requests': len(rows), 'rate': len(rows) / max(1e-9, elapsed - ramp if elapsed > ramp else elapsed),
+            'p50': pct(times, 50), 'p95': pct(times, 95), 'fail': fails / len(rows) if rows else 1.0,
+            'layers': {k: (pct(v, 50), pct(v, 95), len(v)) for k, v in by_layer.items()}, 'aborted': aborted}
+
+
+def server_use(before, after):
+    if not before or not after:
+        return None
+    wall = max(1e-9, after['at'] - before['at'])
+    out = {'load': after['load'], 'cpus': after['cpus'], 'units': {}}
+    for name, a in after['units'].items():
+        b = before['units'].get(name, {})
+        cpu = (a['cpu'] - b['cpu']) / 1e9 / wall if a.get('cpu') is not None and b.get('cpu') is not None else None
+        memf = a['mem'] / a['max'] if a.get('mem') and a.get('max') and a['max'] < 2 ** 62 else None
+        out['units'][name] = {'cpu': cpu, 'mem': a.get('mem'), 'memf': memf}
+    return out
+
+
+def fmt_s(v):
+    return '   -  ' if v is None else f'{v:5.2f}s'
+
+
+def verdict(step, use):
+    why = []
+    if step['aborted']:
+        why.append(step['aborted'])
+    if step['p50'] is None or step['p50'] > LIMITS['p50']:
+        why.append(f"typical answer {fmt_s(step['p50']).strip()} (limit {LIMITS['p50']:.0f} s)")
+    if step['p95'] is not None and step['p95'] > LIMITS['p95']:
+        why.append(f"1 in 20 answers over {fmt_s(step['p95']).strip()} (limit {LIMITS['p95']:.0f} s)")
+    if step['fail'] > LIMITS['fail']:
+        why.append(f"{step['fail']:.0%} of requests failed (limit {LIMITS['fail']:.0%})")
+    if use:
+        for name, u in use['units'].items():
+            if u['memf'] is not None and u['memf'] > LIMITS['mem']:
+                why.append(f"{name} at {u['memf']:.0%} of its memory limit")
+    return why
+
+
+def estimate(healthy, uses):
+    """From the biggest healthy step: what one viewer costs, and what bigger crowds would need."""
+    lines = []
+    if not healthy:
+        return ['No step was healthy, so there is nothing to estimate from: the server struggles even at the first step.']
+    best = healthy[-1]
+    use = uses.get(best['n'])
+    lines.append(f"Biggest healthy step: {best['n']} viewers, {best['rate']:.1f} requests a second, typical answer {fmt_s(best['p50']).strip()}.")
+    if use:
+        cpu = sum(u['cpu'] or 0 for u in use['units'].values())
+        try:
+            cores = float(use['cpus'])
+        except ValueError:
+            cores = 1.0
+        per = cpu / best['n']
+        lines.append(f"Server processor in use: {cpu:.2f} of {cores:.0f} cores ({cpu / cores:.0%}); about {per * 1000:.1f} thousandths of a core per viewer.")
+        if per > 0:
+            cap = int(cores * 0.8 / per)
+            lines.append(f"Estimate: this server tops out around {cap} viewers (80% of its processor) - the real limit may be lower.")
+            for big in (1000, 10000, 100000, 1000000):
+                if big > cap:
+                    lines.append(f"  {big:>9,} viewers would need about {big * per / 0.8:,.0f} cores of the same speed, if nothing changed.")
+        busiest = max(use['units'].items(), key=lambda kv: kv[1]['cpu'] or 0)
+        lines.append(f"Busiest part: {busiest[0]} ({(busiest[1]['cpu'] or 0):.2f} cores).")
+    lines.append('Big crowds are reached by sharing work, not more cores: ready-made answers per map area ("chunks"),')
+    lines.append('refreshed every few seconds and cached by Cloudflare, so cost follows areas watched, not people watching.')
+    return lines
+
+
+async def main_async(args, base, layers):
+    rnd = random.Random(args.seed)
+    healthy, uses = [], {}
+    print(f"TPA load test {VERSION} · {args.host or args.url} · steps {', '.join(map(str, args.steps))} · {args.seconds:.0f} s each")
+    print(f"{'viewers':>8} {'req/s':>7} {'typical':>8} {'1 in 20':>8} {'failed':>7}  {'bus':>6} {'rail':>6} {'air':>6} {'traffic':>7}  server")
+    for n in args.steps:
+        before = server_stats(args.server_stats)
+        step = await run_step(n, args.seconds, base, layers, rnd)
+        after = server_stats(args.server_stats)
+        use = server_use(before, after)
+        uses[n] = use
+        lay = step['layers']
+        srv = ''
+        if use:
+            cpu = sum(u['cpu'] or 0 for u in use['units'].values())
+            top = max(use['units'].items(), key=lambda kv: kv[1]['memf'] or 0)
+            srv = f"cpu {cpu:.2f}/{use['cpus']} · load {use['load']} · fullest {top[0]} {(top[1]['memf'] or 0):.0%}"
+        print(f"{n:>8} {step['rate']:>7.1f} {fmt_s(step['p50']):>8} {fmt_s(step['p95']):>8} {step['fail']:>7.1%}  "
+              f"{fmt_s(lay.get('bus', (None,))[0]):>6} {fmt_s(lay.get('rail', (None,))[0]):>6} {fmt_s(lay.get('air', (None,))[0]):>6} "
+              f"{fmt_s(lay.get('traffic', (None,))[0]):>7}  {srv}", flush=True)
+        why = verdict(step, use)
+        if why:
+            print(f"STOPPED at {n} viewers: " + '; '.join(why))
+            break
+        healthy.append(step)
+        if n != args.steps[-1]:
+            await asyncio.sleep(args.pause)       # let the server settle between steps
+    else:
+        print(f"All steps healthy up to {args.steps[-1]} viewers.")
+    print()
+    for line in estimate(healthy, uses):
+        print(line)
+    return 0 if healthy else 1
+
+
+def main():
+    p = argparse.ArgumentParser(description='How many people can the TPA test site serve at once? (read-only)')
+    p.add_argument('--host', default='test.tpalive.co.uk')
+    p.add_argument('--url', default=None, help=argparse.SUPPRESS)
+    p.add_argument('--steps', default=','.join(map(str, DEFAULT_STEPS)))
+    p.add_argument('--seconds', type=float, default=90)
+    p.add_argument('--pause', type=float, default=20, help=argparse.SUPPRESS)
+    p.add_argument('--seed', type=int, default=None, help=argparse.SUPPRESS)
+    p.add_argument('--no-server-stats', dest='server_stats', action='store_false')
+    p.add_argument('--yes', action='store_true')
+    args = p.parse_args()
+    args.steps = [int(x) for x in args.steps.split(',') if x.strip()]
+    if args.url:
+        u = urllib.parse.urlsplit(args.url)
+        host, port, tls = u.hostname, u.port or (443 if u.scheme == 'https' else 80), u.scheme == 'https'
+        args.host = None
+    else:
+        host, port, tls = args.host, 443, True
+    pw = os.environ.get('TPA_LOADTEST_PASSWORD')
+    if pw is None:
+        pw = getpass.getpass('Test-site password (user "tpa"; hidden as you type): ')
+    auth = base64.b64encode(f'tpa:{pw}'.encode()).decode()
+    if not args.yes:
+        print('This makes the test site slow for a few minutes while it runs. Nothing is changed.')
+        if input('Type yes to start: ').strip().lower() != 'yes':
+            print('Not started.'); return 2
+    try:
+        return asyncio.run(main_async(args, (host, port, tls, auth), LAYERS))
+    except PermissionError:
+        print('The test site did not accept that password - nothing was tested.'); return 3
+    except KeyboardInterrupt:
+        print('\nStopped by you.'); return 130
+
+
+if __name__ == '__main__':
+    sys.exit(main())

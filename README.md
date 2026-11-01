@@ -10,6 +10,18 @@ This repository holds only the code the TPA server downloads and runs:
 No keys, passwords or personal settings are stored here. They are typed in privately on the
 server (`sudo tpa-setup`) and never committed.
 
+## Server commands
+
+| Command | What it does |
+|---|---|
+| `sudo tpa-status` | Health check: every part, memory, versions of each layer |
+| `sudo tpa-update <commit>` | Update everything (layers that are frozen are kept) |
+| `sudo tpa-update <layer> <commit>` | Update or roll back one layer only: `hq`, `bus`, `rail`, `air` or `road` |
+| `sudo tpa-update freeze <layer>` / `unfreeze <layer>` | Protect a signed-off layer from any update |
+| `sudo tpa-update show` | Which version each layer is running |
+| `sudo tpa-trace '<vehicle id>'` | Everything the server knows about one vehicle (from the map's "Report this") |
+| `python3 tpa-loadtest` | Run from Oracle Cloud Shell: how many viewers the site can serve (read-only) |
+
 Data credits are shown on the site. See also `v4/engines/rail/data/SOURCES.txt` for the
 train timing-point locations, which are shared under CC BY-SA 4.0 with the attributions listed there.
 
