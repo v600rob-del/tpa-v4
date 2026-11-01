@@ -973,6 +973,103 @@ class RoadMap:
             [(xu, yu)] = _keep_left([(xu, yu), (xu + b[0] - a[0], yu + b[1] - a[1])], [True], keep_left, lat)[:1]
         return [round(xu) / 1e6, round(yu) / 1e6]
 
+    def between(self, lon1, lat1, bearing1, lon2, lat2, max_m=1500.0, snap_m=25.0):
+        """0.7.1: the way along the roads from one report to the next - the shortest drive (obeying
+        one-way streets, no U-turns or turns sharper than MAX_TURN, service roads only when needed) of at
+        most max_m. [[lon, lat], ...] from the first report's place on its road to the second's, or None
+        when either is not on a road or no such drive exists (the engine then fades the bus across
+        instead of inventing a way)."""
+        import heapq
+        a = self.snap(lon1, lat1, bearing1, snap_m) if bearing1 is not None else None
+        if a is not None:
+            starts = [a]
+        else:
+            b0 = self.snap(lon1, lat1, None, snap_m)
+            if b0 is None:
+                return None
+            starts = [b0, b0[:3] + (False,) + b0[4:]]
+        e = self.snap(lon2, lat2, None, snap_m)
+        if e is None:
+            return None
+        elid, _, eseg, _, ex, ey = e
+        kx = math.cos(math.radians(lat1)) * M_PER_DEG * 1e-6
+        ky = M_PER_DEG * 1e-6
+
+        def dist(x1, y1, x2, y2):
+            return math.hypot((x2 - x1) * kx, (y2 - y1) * ky)
+        heap, best, prev, link_of, n_push = [], {}, {}, {}, 0
+        for lid, link, seg, forward, xu, yu in starts:
+            pts, flags = link[2], link[4]
+            step = 1 if forward else -1
+            if not _allowed(flags, step):
+                continue
+            if lid == elid and seg == eseg:              # the next report is further along the same stretch
+                along = (ex - xu) * (pts[2 * seg + 2] - pts[2 * seg]) + (ey - yu) * (pts[2 * seg + 3] - pts[2 * seg + 1])
+                if (along >= 0) == forward:
+                    return self._finish([(xu, yu), (ex, ey)])
+            vi = seg + 1 if forward else seg
+            key = (lid, vi, step)
+            c = dist(xu, yu, pts[2 * vi], pts[2 * vi + 1])
+            if c < best.get(key, 1e18):
+                best[key], prev[key], link_of[key] = c, ('start', xu, yu), link
+                heapq.heappush(heap, (c, n_push, key)); n_push += 1
+        done = None
+        while heap and n_push < 20000:
+            c, _, key = heapq.heappop(heap)
+            if c > best.get(key, 1e18):
+                continue
+            if done is not None and c >= done[0]:
+                break
+            lid, vi, step = key
+            link = link_of[key]
+            pts = link[2]
+            px, py = pts[2 * vi], pts[2 * vi + 1]
+            p = prev[key]
+            bx, by = (p[1], p[2]) if p[0] == 'start' else (link_of[p][2][2 * p[1]], link_of[p][2][2 * p[1] + 1])
+            came = _bearing(0, 0, (px - bx) * kx, (py - by) * ky) if (px, py) != (bx, by) else None
+            moves = []
+            if 0 <= vi + step < len(pts) // 2:
+                moves.append((lid, link, vi + step, step, vi))
+            tile = self._tile_at(px, py)
+            for lid2, j in tile.nodes.get((px << 32) | (py & 0xFFFFFFFF), ()):
+                if lid2 == lid:
+                    continue
+                link2 = tile.links.get(lid2)
+                if link2 is None:
+                    continue
+                for st2 in (1, -1):
+                    if 0 <= j + st2 < len(link2[2]) // 2 and _allowed(link2[4], st2):
+                        moves.append((lid2, link2, j + st2, st2, j))
+            for lid2, link2, nv, st2, fromv in moves:
+                p2 = link2[2]
+                nx, ny = p2[2 * nv], p2[2 * nv + 1]
+                if came is not None and _diff(came, _bearing(0, 0, (nx - px) * kx, (ny - py) * ky)) > MAX_TURN:
+                    continue                              # no U-turns or impossible turns
+                if lid2 == elid and min(fromv, nv) == eseg:   # reaches the next report on this stretch
+                    total = c + dist(px, py, ex, ey)
+                    if total <= max_m and (done is None or total < done[0]):
+                        done = (total, key)
+                    continue
+                cost = c + dist(px, py, nx, ny) + (40.0 if link2[1] == SERVICE and link[1] != SERVICE else 0.0)
+                k2 = (lid2, nv, st2)
+                if cost <= max_m and cost < best.get(k2, 1e18):
+                    best[k2], prev[k2], link_of[k2] = cost, key, link2
+                    heapq.heappush(heap, (cost, n_push, k2)); n_push += 1
+        if done is None:
+            return None
+        out, key = [(ex, ey)], done[1]
+        while True:
+            lid, vi, step = key
+            pts = link_of[key][2]
+            out.append((pts[2 * vi], pts[2 * vi + 1]))
+            p = prev[key]
+            if p[0] == 'start':
+                out.append((p[1], p[2]))
+                break
+            key = p
+        out.reverse()
+        return self._finish([o for i, o in enumerate(out) if i == 0 or o != out[i - 1]])
+
     def ahead(self, lon, lat, bearing, metres, keep_left=0.0):
         """Points [[lon, lat], ...] along the road for `metres`, or None if no road fits.
         At each meeting point the bus takes the most natural way on: the smallest turn, staying on the

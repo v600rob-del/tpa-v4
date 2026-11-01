@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.7.0'
+ENGINE_VERSION = '0.7.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -146,6 +146,11 @@ SHAPES_KEEP = 1500
 JOURNEY_WAKE = threading.Event()
 JOURNEY_LOCK = threading.RLock()   # TRIPS, FOLLOW and SHAPES (worker thread and page requests)
 JOURNEY_MAX = 900            # buses worked on per round, nearest what people are looking at first
+# 0.7.1 (owner 1 Nov 12:36 "yes": all buses on one clock): buses not matched to a timetable are replayed
+# the same way, along the road map's shortest drive between each pair of their reports (or shown
+# fading across when no drive fits), so no bus on screen is guessed any more.
+LEGS: dict = {}              # bus key -> {report time a: (report time b, way)}
+LEG_MAX_M = 3000.0
 ROADS = {'map': None, 'licence': '', 'source': ''}
 PATHS: dict = {}             # bus key -> (report time, motion or None)
 PLACED: dict = {}            # 0.5.7: bus key -> (report time, [lon, lat] on its road, or None)
@@ -254,7 +259,7 @@ def parse_siri(stream) -> list[dict]:
                     'destination': clean(vals.get('DestinationName', ''), 80), 'recorded': when,
                     'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
                     'origin': clean(vals.get('OriginRef', ''), 20), 'dep': clean(vals.get('OriginAimedDepartureTime', ''), 32),
-                    'dest': clean(vals.get('DestinationRef', ''), 20)})
+                    'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)})
     return out
 
 
@@ -713,8 +718,8 @@ def snapshot(view) -> dict:
             VIEWS.append((now, view))
             del VIEWS[:-50]
     why = {'road': 0, 'straight-pending': 0, 'straight-no-road-match': 0, 'straight-zoomed-out': 0, 'still-no-speed': 0,
-           'placed-on-road': 0, 'replay': 0, 'replay-waiting': 0, 'replay-pending': 0}
-    if REPLAY_SECONDS and TIMETABLE['tt'] is not None and not known_area:
+           'placed-on-road': 0, 'replay': 0, 'replay-waiting': 0, 'replay-pending': 0, 'replay-roads': 0}
+    if REPLAY_SECONDS and not known_area:
         JOURNEY_WAKE.set()
     for _, v, age in inside[:MAX_PER_VIEW]:
         route = v['route'] or 'Bus'
@@ -730,7 +735,7 @@ def snapshot(view) -> dict:
             entity['position']['lon'], entity['position']['lat'] = round(r['position'][0], 6), round(r['position'][1], 6)
             entity['motion'] = {'mode': 'timed', 'points': [[round(a, 6), round(b, 6)] for a, b in r['points']],
                                 'times': r['times'], 'delaySeconds': REPLAY_SECONDS}
-            why['replay-waiting' if r['waiting'] else 'replay'] += 1
+            why['replay-waiting' if r['waiting'] else 'replay-roads' if r.get('road') else 'replay'] += 1
             frame['entities'].append(entity)
             continue
         if REPLAY_SECONDS and TIMETABLE['tt'] is not None and v.get('origin') and v.get('dep') and v['key'] not in TRIPS:
@@ -986,7 +991,7 @@ def count_matches() -> dict | None:
     t0 = time.perf_counter()
     for v in sample:
         try:
-            got = tt.match(v['origin'], v['dep'], v.get('route', ''), v.get('dest', ''))
+            got = tt.match(*match_args(v))
         except Exception as exc:   # one odd bus must never break the layer
             with LOCK:
                 STATE['timetableError'] = ('match: ' + type(exc).__name__)[:100]
@@ -1009,6 +1014,16 @@ def match_counter() -> None:
         if r is not None:
             with LOCK:
                 STATE['timetableMatch'] = r
+
+
+def journey_sig(v: dict) -> tuple:
+    return (v.get('origin'), v.get('dep'), v.get('route'), v.get('dest'), v.get('jref'))
+
+
+def match_args(v: dict) -> tuple:
+    """0.7.1: the bus company (the first part of the bus's key, its NOC) and its own journey code help
+    tell apart journeys that leave the same stop at the same time."""
+    return (v['origin'], v['dep'], v.get('route', ''), v.get('dest', ''), v['key'].split(':', 1)[0], v.get('jref', ''))
 
 
 def shape_for(trip_id):
@@ -1037,13 +1052,13 @@ def _follow_bus(v: dict) -> None:
     tt = TIMETABLE['tt']
     if tt is None or not REPLAY_SECONDS:
         return
-    sig = (v.get('origin'), v.get('dep'), v.get('route'), v.get('dest'))
+    sig = journey_sig(v)
     known = TRIPS.get(v['key'])
     if known is None or known[0] != sig:
         tid = None
         if v.get('origin') and v.get('dep'):
             try:
-                got = tt.match(v['origin'], v['dep'], v.get('route', ''), v.get('dest', ''))
+                got = tt.match(*match_args(v))
                 tid = got[0] if len(got) == 1 else None
             except Exception as exc:   # one odd bus must never break the layer
                 with LOCK:
@@ -1072,7 +1087,7 @@ def journey_worker() -> None:
     while True:
         JOURNEY_WAKE.wait(timeout=30)
         JOURNEY_WAKE.clear()
-        if TIMETABLE['tt'] is None or not REPLAY_SECONDS:
+        if not REPLAY_SECONDS:
             continue
         while FETCHING.is_set():
             time.sleep(0.2)
@@ -1094,8 +1109,11 @@ def journey_worker() -> None:
                     best = d if best is None or d < best else best
             if best is not None:
                 f = FOLLOW.get(v['key'])
-                if f and f[1] and f[1][-1][0] >= v['recorded'] and TRIPS.get(v['key'], (None,))[0] == (v.get('origin'), v.get('dep'), v.get('route'), v.get('dest')):
+                if f and f[1] and f[1][-1][0] >= v['recorded'] and TRIPS.get(v['key'], (None,))[0] == journey_sig(v):
                     continue          # already up to date
+                legs = LEGS.get(v['key'])
+                if legs and any(b[0] >= v['recorded'] for b in legs.values()) and TRIPS.get(v['key'], (None,))[0] == journey_sig(v):
+                    continue
                 picks.append((best, v))
         picks.sort(key=lambda p: p[0])
         t0 = time.monotonic()
@@ -1103,33 +1121,118 @@ def journey_worker() -> None:
             if FETCHING.is_set():
                 break
             follow_bus(v)
+            f = FOLLOW.get(v['key'])
+            if not (f and f[1]) and ROADS['map'] is not None:
+                road_legs(v, time.time(), None)        # 0.7.1: unmatched buses replayed along the roads
         with JOURNEY_LOCK, LOCK:          # always this order (follow_bus takes LOCK inside JOURNEY_LOCK)
             live = {v['key'] for v in STATE['vehicles']}
-            for d in (TRIPS, FOLLOW):
+            for d in (TRIPS, FOLLOW, LEGS):
                 for k in [k for k in d if k not in live]:
                     del d[k]
             STATE['journeyRound'] = {'buses': min(len(picks), JOURNEY_MAX), 'waiting': max(0, len(picks) - JOURNEY_MAX),
                                      'seconds': round(time.monotonic() - t0, 1)}
 
 
+def _leg(v: dict, a, b, before):
+    """The drive from report a to report b (each (t, lat, lon)); `before` is the report before a or None."""
+    rm = ROADS['map']
+    (ta, la, oa), (tb, lb, ob) = a, b
+    straight = metres(la, oa, lb, ob)
+    bearing = None
+    if before is not None and metres(before[1], before[2], la, oa) >= 10:
+        bearing = _bearing(before[1], before[2], la, oa)
+    way = None
+    try:
+        if straight < 15:
+            p = rm.place(oa, la, bearing, PLACE_M) if rm else None
+            way = [(p[0], p[1]), (p[0], p[1])] if p else [(oa, la), (oa, la)]
+        elif rm is not None and straight <= LEG_MAX_M:
+            got = rm.between(oa, la, bearing, ob, lb, max_m=min(LEG_MAX_M, max(300.0, 2.5 * straight + 150)))
+            way = [tuple(q) for q in got] if got else None
+    except Exception as exc:   # one odd bus must never break the layer
+        with LOCK:
+            STATE['roadMapError'] = ('leg: ' + type(exc).__name__)[:100]
+    if way is None:
+        pa = (rm.place(oa, la, bearing, PLACE_M) if rm else None) or (oa, la)
+        pb = (rm.place(ob, lb, None, PLACE_M) if rm else None) or (ob, lb)
+        way = replay.Jump([tuple(pa), tuple(pb)])
+    return way
+
+
+def road_legs(v: dict, now: float, deadline: float | None):
+    """The legs between this bus's reports that the replay can still show; computes missing ones while
+    time allows (deadline None = no limit). None if any is still missing."""
+    with LOCK:
+        hist = list(HISTORY.get(v['key']) or [])
+    if not hist or hist[-1][0] < v['recorded']:
+        hist.append((v['recorded'], v['lat'], v['lon']))
+    keep_from = now - REPLAY_SECONDS - 120
+    idx = [i for i in range(len(hist)) if i == len(hist) - 1 or hist[i + 1][0] >= keep_from]
+    if not idx:
+        return None
+    first = idx[0]
+    with JOURNEY_LOCK:
+        known = LEGS.setdefault(v['key'], {})
+    legs = []
+    for i in range(first, len(hist) - 1):
+        a, b = hist[i], hist[i + 1]
+        got = known.get(a[0])
+        if got is None or got[0] != b[0]:
+            if deadline is not None and (time.monotonic() >= deadline or FETCHING.is_set()):
+                return None
+            got = known[a[0]] = (b[0], _leg(v, a, b, hist[i - 1] if i > 0 else None))
+        legs.append((a[0], b[0], got[1]))
+    for t in [t for t in known if t < hist[first][0]]:
+        del known[t]
+    if not legs:                         # a single report: the bus stands where it was seen
+        p = (hist[-1][2], hist[-1][1])
+        legs = [(hist[-1][0], hist[-1][0] + 0.001, [p, p])]
+    return legs
+
+
+def road_replay_for(v: dict, now: float, deadline: float | None):
+    legs = road_legs(v, now, deadline)
+    if not legs:
+        return None
+    try:
+        made = replay.road_route(legs)
+    except ValueError:
+        made = None
+    if made is None:                     # it has not moved: it stands where it was seen
+        p = legs[-1][2][-1]
+        return {'position': p, 'points': [p], 'times': [round(now, 1)], 'waiting': False, 'road': True}
+    sh, placed, jumps = made
+    r = replay.track(sh, placed, now, REPLAY_SECONDS, KEEP_LEFT_M, jumps)
+    if r is not None:
+        r['road'] = True
+    return r
+
+
 def replay_for(v: dict, now: float, deadline: float):
     """The replayed track for this bus, or None (moved the ordinary way)."""
-    if not REPLAY_SECONDS or TIMETABLE['tt'] is None:
+    if not REPLAY_SECONDS:
         return None
+    if TIMETABLE['tt'] is None:
+        return road_replay_for(v, now, deadline) if ROADS['map'] is not None else None
     f = FOLLOW.get(v['key'])
-    sig = (v.get('origin'), v.get('dep'), v.get('route'), v.get('dest'))
+    sig = journey_sig(v)
     fresh = f and f[1] and f[1][-1][0] >= v['recorded'] and TRIPS.get(v['key'], (None,))[0] == sig
     if not fresh and v.get('origin') and v.get('dep') and time.monotonic() < deadline and not FETCHING.is_set():
         follow_bus(v)                       # a new area: work it out now rather than switch later
         f = FOLLOW.get(v['key'])
         fresh = f and f[1] and f[1][-1][0] >= v['recorded']
-    if not fresh:
+    sh = None
+    if fresh:
+        with JOURNEY_LOCK:
+            sh = SHAPES.get(f[0])
+    if sh is not None:
+        return replay.track(sh, f[1], now, REPLAY_SECONDS, KEEP_LEFT_M)
+    known = TRIPS.get(v['key'])
+    if v.get('origin') and v.get('dep') and (known is None or known[0] != journey_sig(v)):
+        return None                  # not worked out yet: may still match its timetable
+    if ROADS['map'] is None:
         return None
-    with JOURNEY_LOCK:
-        sh = SHAPES.get(f[0])
-    if sh is None:
-        return None
-    return replay.track(sh, f[1], now, REPLAY_SECONDS, KEEP_LEFT_M)
+    return road_replay_for(v, now, deadline)          # 0.7.1: unmatched - along the road map instead
 
 
 def road_motion(v: dict):

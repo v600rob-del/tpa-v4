@@ -119,7 +119,45 @@ def _keep_left(points, metres, lat):
     return out
 
 
-def track(shape, placed, now, delay, keep_left=0.0):
+JUMP_SECONDS = 0.1          # a jump in a track: two points this close in time (HQ 4.2.1 draws it as a fade)
+
+
+def road_route(legs):
+    """0.7.1, for buses not matched to a timetable: one line made of the drives between consecutive
+    reports (from the road map). legs = [(t_a, t_b, [(lon, lat), ...] or None)], oldest first; None =
+    no drive found, so the bus is shown jumping (fading) to its next report rather than going a made-up
+    way. Returns (Shape, placed [(t, m)], jumps {index of the report a jump starts from}) or None."""
+    pts, placed, jumps = [], [], set()
+    for i, (ta, tb, way) in enumerate(legs):
+        if not way or len(way) < 2:
+            return None
+        if not pts:
+            pts.append(tuple(way[0]))
+            placed.append((ta, None))
+        elif tuple(way[0]) != pts[-1]:
+            pts.append(tuple(way[0]))                 # a small join where two drives meet
+        for q in way[1:]:
+            if tuple(q) != pts[-1]:
+                pts.append(tuple(q))
+        placed.append((tb, len(pts) - 1))
+        if getattr(way, 'jump', False):
+            jumps.add(i)
+    if len(pts) < 2:
+        return None
+    sh = Shape(pts)
+    # report positions as distances along the line (point indices -> metres)
+    out = []
+    for t, idx in placed:
+        out.append((t, sh.cum[0] if idx is None else sh.cum[min(idx, len(sh.cum) - 1)]))
+    return sh, out, jumps
+
+
+class Jump(list):
+    """A two-point 'way' (where the bus was, where it was next seen) to be shown as a jump."""
+    jump = True
+
+
+def track(shape, placed, now, delay, keep_left=0.0, jumps=frozenset()):
     """Where to show the bus now, and its way ahead with clock times, when it is replayed `delay`
     seconds behind its reports. placed = [(report time, m along route), ...].
     Returns dict(position=(lon, lat), points=[(lon, lat)], times=[epoch s], waiting=bool) or None.
@@ -132,22 +170,29 @@ def track(shape, placed, now, delay, keep_left=0.0):
         p = shape.point_at(seq[-1][1])
         return {'position': p, 'points': [p], 'times': [round(now, 1)], 'waiting': len(seq) > 0}
     if shown <= seq[0][0]:
-        start_t, start_m, rest = shown, seq[0][1], seq
+        start_t, start_m, first = shown, seq[0][1], 0
     else:
         i = next(k for k in range(1, len(seq)) if seq[k][0] > shown)
         (t0, m0), (t1, m1) = seq[i - 1], seq[i]
-        start_t, start_m, rest = shown, m0 + (m1 - m0) * (shown - t0) / (t1 - t0), seq[i:]
+        start_m = m0 if (i - 1) in jumps else m0 + (m1 - m0) * (shown - t0) / (t1 - t0)
+        start_t, first = shown, i
+    rest = seq[first:]
     # distance along -> clock time, straight between reports (the bus's average pace between them)
-    tm = [(start_t, start_m)] + [(t, m) for t, m in rest]
+    tm = [(start_t, start_m, first - 1)] + [(t, m, first + k) for k, (t, m) in enumerate(rest)]
     marks = []
-    for (ta, ma), (tb, mb) in zip(tm, tm[1:]):
+    for (ta, ma, _), (tb, mb, ib) in zip(tm, tm[1:]):
         if not marks:
             marks.append((ta, ma))
-        for m in shape.vertices_between(ma, mb):
-            marks.append((ta + (tb - ta) * (m - ma) / (mb - ma), m))
+        if (ib - 1) in jumps:                   # stays where it was last seen, then is seen at the next report
+            if tb - JUMP_SECONDS > ta:
+                marks.append((tb - JUMP_SECONDS, ma))
+        elif mb > ma:
+            for m in shape.vertices_between(ma, mb):
+                marks.append((ta + (tb - ta) * (m - ma) / (mb - ma), m))
         marks.append((tb, mb))
     if len(marks) > MAX_POINTS:                 # keep the reports themselves, thin the corners between
         keep = {0, len(marks) - 1} | {k for k, x in enumerate(marks) if any(x[0] == r[0] for r in rest)}
+        keep |= {k for k in range(len(marks) - 1) if marks[k + 1][0] - marks[k][0] <= JUMP_SECONDS + 1e-6}   # both ends of a jump
         step = (len(marks) - 1) / (MAX_POINTS - len(keep))
         keep |= {round(j * step) for j in range(MAX_POINTS - len(keep))}
         marks = [marks[k] for k in sorted(keep)][:MAX_POINTS]

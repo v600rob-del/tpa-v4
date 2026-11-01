@@ -439,31 +439,43 @@ class Timetable:
         self.runs[key] = ok
         return ok
 
-    def match(self, origin_ref, departure_iso, line='', destination_ref=''):
+    def match(self, origin_ref, departure_iso, line='', destination_ref='', operator='', journey_ref=''):
         """The timetabled journeys a bus could be running, from the stop it started at and its scheduled
-        departure time (sent with each BODS report), narrowed by route number and end stop. One trip_id
-        = matched; several = unsure (never guessed); [] = not found. A journey that started after
-        midnight on the previous service day (GTFS '24:30:00') is found too."""
+        departure time (sent with each BODS report), narrowed by route number, end stop, bus company
+        (NOC) and the company's own journey code. One trip_id = matched; several = unsure (never
+        guessed); [] = not found. A journey that started after midnight on the previous service day
+        (GTFS '24:30:00') is found too. 0.7.1: when nothing leaves at exactly that time, a journey of the
+        same route number leaving within 2 minutes is accepted if it is the only one."""
         when = service_day_and_seconds(departure_iso) if departure_iso else None
         if not origin_ref or when is None:
             return []
         date, secs = when
         prev = (datetime.strptime(date, '%Y%m%d') - timedelta(days=1)).strftime('%Y%m%d')
-        with self.lock:
-            cands = []
-            for day, s in ((date, secs), (prev, secs + 86400)):
-                for tid, sid, short, last in self.db.execute(
-                        'SELECT e.trip_id, t.service_id, r.short_name, e.last_stop FROM trip_ends e '
-                        'JOIN trips t ON t.trip_id = e.trip_id LEFT JOIN routes r ON r.route_id = t.route_id '
-                        'WHERE e.first_stop = ? AND e.first_dep = ?', (origin_ref, s)):
-                    if self.runs_on(sid, day):
-                        cands.append((tid, short or '', last or ''))
-        if len(cands) > 1 and line:
-            same = [c for c in cands if c[1].lower() == line.lower()]
-            cands = same or cands
-        if len(cands) > 1 and destination_ref:
-            same = [c for c in cands if c[2] == destination_ref]
-            cands = same or cands
+
+        def look(offsets):
+            out = []
+            with self.lock:
+                for day, base in ((date, secs), (prev, secs + 86400)):
+                    for tid, sid, short, last, noc, code in self.db.execute(
+                            'SELECT e.trip_id, t.service_id, r.short_name, e.last_stop, a.noc, t.journey_code FROM trip_ends e '
+                            'JOIN trips t ON t.trip_id = e.trip_id LEFT JOIN routes r ON r.route_id = t.route_id '
+                            'LEFT JOIN agency a ON a.agency_id = r.agency_id '
+                            'WHERE e.first_stop = ? AND e.first_dep BETWEEN ? AND ?', (origin_ref, base + offsets[0], base + offsets[1])):
+                        if self.runs_on(sid, day):
+                            out.append((tid, (short or '').lower(), last or '', (noc or '').upper(), code or ''))
+            return out
+
+        def narrow(cands):
+            for k, want in ((1, (line or '').lower()), (2, destination_ref), (3, (operator or '').upper()), (4, journey_ref)):
+                if len(cands) > 1 and want:
+                    same = [c for c in cands if c[k] == want]
+                    cands = same or cands
+            return cands
+        cands = narrow(look((0, 0)))
+        if not cands and line:
+            near = [c for c in look((-120, 120)) if c[1] == line.lower()]
+            near = narrow(near)
+            cands = near if len({c[0] for c in near}) == 1 else []
         return sorted({c[0] for c in cands})
 
     def stops_of(self, trip_id):

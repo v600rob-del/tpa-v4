@@ -181,11 +181,20 @@ function estimate(e,now){
 // waits at most 20 s and catches up at most 40% faster than its own speed; beyond that it fades in.
 const WAIT_MAX_MS=20000,CATCHUP_SHARE=0.4,CATCHUP_MAX_MS=30000;
 function metresXY(a,b){const k=Math.cos(a.lat*Math.PI/180);return [(b.lon-a.lon)*k*111195,(b.lat-a.lat)*111195];}
+// 4.2.1: a "timed" track may hold a jump (two points 0.2 s or less apart and over 30 m apart: the engine
+// could not tell which way the vehicle went between two reports). It is drawn as a fade, never a slide.
+const timedSeen=new Map();
+function timedJump(k,m,now){
+  const was=timedSeen.get(k);timedSeen.set(k,now);if(timedSeen.size>5000)timedSeen.clear();
+  if(was===undefined||!m.jumps.length)return false;
+  return m.jumps.some(t=>t>was&&t<=now);
+}
 function whereNow(e,now){
   const k=keyOf(e),target=estimate(e,now);if(!target)return null;
+  if(e.motion&&e.motion.mode==='timed'&&state.live[e.component]&&timedJump(k,e.motion,now)&&!REDUCED){blends.delete(k);return {...target,est:true,hop:true,jump:true};}
   const b=blends.get(k);
   if(b){
-    if(b.hop){blends.delete(k);return {...target,est:true,hop:true};}
+    if(b.hop){blends.delete(k);return {...target,est:true,hop:true,jump:!!b.jump};}
     if(b.wait&&!REDUCED){
       const [dx,dy]=metresXY(b,target);
       if(dx*b.ux+dy*b.uy<0&&now-b.t0<WAIT_MAX_MS)return {lon:b.lon,lat:b.lat,est:true};
@@ -205,6 +214,9 @@ function noteNewFrame(f,now,fresh){
     const next=estimate(e,now);if(!next||(Math.abs(next.lon-was.lon)<=1e-6&&Math.abs(next.lat-was.lat)<=1e-6))continue;
     // not being drawn (or just back): no corrections against frozen spots - apply directly, fading in if far
     if(fresh||notDrawing()){const [fx,fy]=metresXY(was,next);if(Math.hypot(fx,fy)>20&&!REDUCED)blends.set(k,{hop:true,t0:now});else blends.delete(k);continue;}
+    // 4.2.1: a replayed ("timed") vehicle is never slid across a big gap: its track is where it really went,
+    // so a big difference means it was seen somewhere else (a jump) - fade it in there.
+    if(e.motion&&e.motion.mode==='timed'){const [tx,ty]=metresXY(was,next);if(Math.hypot(tx,ty)>30&&!REDUCED)blends.set(k,{hop:true,jump:true,t0:now});else blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:BLEND_MS});continue;}
     const ahead=estimate(e,now+1000),[mx,my]=ahead?metresXY(next,ahead):[0,0],speed=Math.hypot(mx,my);
     const [gx,gy]=metresXY(was,next),gap=Math.hypot(gx,gy);
     if(e.motion&&speed>0.3&&gap>3){
@@ -305,7 +317,7 @@ function markers(){
     if(b.getAttribute('aria-pressed')!==String(active))b.setAttribute('aria-pressed',String(active));
     // Moved with a transform (no page re-layout), which phones handle on the graphics chip.
     const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) ${anchorOf(e.component)}${active?' scale(1.17)':''}`;
-    if(pos.hop&&canGlide){
+    if(pos.hop&&canGlide&&!pos.jump){
       // reappear one update back along its way and glide on at once, in step with everything else
       // (no standing still until the next update)
       const back=estimate(e,now-glideMs);
@@ -451,7 +463,9 @@ function checkMotion(m,p){
       if(i&&t<times[i-1]/1000)return null;pts.push([q[0],q[1]]);times.push(t*1000);}
     if(Math.abs(pts[0][0]-p.lon)>0.05||Math.abs(pts[0][1]-p.lat)>0.05||times[times.length-1]-times[0]>7800000)return null;
     const delay=validNum(m.delaySeconds)&&m.delaySeconds>=0&&m.delaySeconds<=600?Math.round(m.delaySeconds):0;
-    return {mode:'timed',pts,times,delay};
+    const jumps=[],kk=Math.cos(p.lat*Math.PI/180);
+    for(let i=1;i<pts.length;i++)if(times[i]-times[i-1]<=200&&Math.hypot((pts[i][0]-pts[i-1][0])*kk,pts[i][1]-pts[i-1][1])*111195>30)jumps.push(times[i]);
+    return {mode:'timed',pts,times,delay,jumps};
   }
   return null;
 }
