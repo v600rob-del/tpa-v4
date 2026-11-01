@@ -63,7 +63,7 @@ function anchorOf(component){return component==='bus'||component==='rail'?'trans
 function pinScale(z){return z<12.5?0.7:z<14.5?0.82:z<16.5?1:1.2;}
 function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}
   const ps=String(pinScale(state.z));if(markerLayer.style.getPropertyValue('--pin-s')!==ps)markerLayer.style.setProperty('--pin-s',ps);paint();}
-function gotoPlace(lon,lat,z,label){if(map)map.setView([lat,lon],z,{animate:false});state.lon=lon;state.lat=lat;state.z=z;selected.classList.add('hidden');state.selected=null;$('map-place').textContent=(label||'SELECTED LOCATION').toUpperCase();$('sidebar').classList.remove('open');paint();}
+function gotoPlace(lon,lat,z,label){stopFollow();if(map)map.setView([lat,lon],z,{animate:false});state.lon=lon;state.lat=lat;state.z=z;selected.classList.add('hidden');state.selected=null;$('map-place').textContent=(label||'SELECTED LOCATION').toUpperCase();$('sidebar').classList.remove('open');paint();}
 function home(){gotoPlace(HOME.lon,HOME.lat,HOME.z,'BEVERLEY, EAST YORKSHIRE');toast('Home · Beverley, East Yorkshire');}
 function fitUK(){gotoPlace(-3.0,54.55,5.5,'UNITED KINGDOM');}
 function zoom(delta){if(map)map.setZoom(clamp(map.getZoom()+delta,3,18));else{state.z=clamp(state.z+delta,3,17);paint();}}
@@ -141,7 +141,10 @@ function selectEntity(e){
   close.onclick=()=>{selected.classList.add('hidden');state.selected=null;paint();};
   // 4.4.0 (owner 1 Nov 13:42): more about this vehicle from its own engine (start, end, next stop for a bus)
   const more=document.createElement('div');more.className='vehicle-details';
-  selected.replaceChildren(h,info,more,warning,close);selected.classList.remove('hidden');
+  // 4.10.0 (owner 1 Nov 17:49): "Follow me!" - also here, for phones and tablets (no right-click)
+  const fb=document.createElement('button');fb.type='button';fb.className='follow-button';
+  fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};
+  selected.replaceChildren(h,info,more,fb,warning,close);if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
   $('map-place').textContent=e.label.toUpperCase();paint();
   loadDetails(e,more);
 }
@@ -313,14 +316,18 @@ function markers(){
   // 4.1.8 (owner 31 Oct 13:50: after moving the map, moving icons jumped back to their old spot
   // on the screen and glided across): if the view changed since the icons were last placed,
   // place every icon instantly this time; gliding is only ever for the vehicle's own movement.
-  let viewMoved=false;
-  if(map){const ll=map.getCenter(),c=map.latLngToContainerPoint(ll);paintRef={ll,z:map.getZoom(),x:c.x,y:c.y};markerLayer.style.transform='';
+  let viewMoved=false,ox=0,oy=0;
+  // 4.10.0: while following a vehicle the map slides under it every frame. Icons then stay put on the icon
+  // layer (which slides with the map), so they keep gliding instead of being re-placed each second.
+  if(map&&follow&&paintRef&&paintRef.z===map.getZoom()){const p=map.latLngToContainerPoint(paintRef.ll);ox=p.x-paintRef.x;oy=p.y-paintRef.y;
+    markerLayer.style.transform=Math.abs(ox)+Math.abs(oy)>0.05?`translate(${ox.toFixed(1)}px,${oy.toFixed(1)}px)`:'';}
+  else if(map){const ll=map.getCenter(),c=map.latLngToContainerPoint(ll);paintRef={ll,z:map.getZoom(),x:c.x,y:c.y};markerLayer.style.transform='';
     const r=map.latLngToContainerPoint([54,-2]),sig=map.getZoom()+'|'+r.x.toFixed(1)+'|'+r.y.toFixed(1);viewMoved=sig!==viewSig;viewSig=sig;}
   lastFull=performance.now();lastDrawAt=lastFull;
   const d=dims(),now=Date.now(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
   // Which vehicles may glide this second: the nearest to the middle of the screen, up to the budget.
   {const cx=d.w/2,cy=d.h/2,list=[];
-   for(const [k,p] of pins)if(p.tf&&p.e&&state.live[p.e.component]&&(p.e.motion||blends.has(k))){const m=p.tf.match(/translate\(([-0-9.]+)px,([-0-9.]+)px\)/);if(m)list.push([(m[1]-cx)**2+(m[2]-cy)**2,k]);}
+   for(const [k,p] of pins)if(p.tf&&p.e&&state.live[p.e.component]&&(p.e.motion||blends.has(k))){const m=p.tf.match(/translate\(([-0-9.]+)px,([-0-9.]+)px\)/);if(m)list.push([k===follow?.key?-1:(m[1]-cx)**2+(m[2]-cy)**2,k]);}
    // 4.1.5: a vehicle that is already gliding keeps gliding (no "taking turns"); free places go
    // to the vehicles nearest the middle of the screen.
    list.sort((a,b)=>a[0]-b[0]);
@@ -335,7 +342,7 @@ function markers(){
     shown.set(k,{lon:pos.lon,lat:pos.lat});
     const [x,y]=pixel(pos.lon,pos.lat);
     if(x<-M||y<-M||x>d.w+M||y>d.h+M)continue;
-    items.push({e,k,pos,x,y});
+    items.push({e,k,pos,x:x-ox,y:y-oy});
   }
   // 4.8.0 (owner 1 Nov 13:40, York at zoom 13: a pile of buses on top of each other): icons that would sit
   // on top of each other are shown as one "N buses" badge, which splits as you zoom in.
@@ -368,12 +375,13 @@ function markers(){
     if(pos.hop&&canGlide&&!pos.jump){
       // reappear one update back along its way and glide on at once, in step with everything else
       // (no standing still until the next update)
-      const back=estimate(e,now-glideMs);
-      if(back){const [bx,by]=pixel(back.lon,back.lat);
+      const back=estimate(e,now-glideMs);let from=null;
+      if(back){const [bx0,by0]=pixel(back.lon,back.lat),bx=bx0-ox,by=by0-oy;from=[bx,by];
         b.style.transform=`translate(${bx.toFixed(1)}px,${by.toFixed(1)}px) ${anchorOf(e.component)}${active?' scale(1.17)':''}`;
         void b.offsetWidth;b.classList.add('glide');}
       b.style.transform=tf;pin.tf=tf;
-    }else if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;}
+      if(follow?.key===k)followTo(x,y,!!from,from);
+    }else if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;if(follow?.key===k)followTo(x,y,glide,null);}
     b.onclick=()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
   }
   for(const [k,pin] of pins)if(!keep.has(k)){pin.b.remove();pins.delete(k);}
@@ -454,6 +462,72 @@ function zoomToStack(st){
   const b=L.latLngBounds(st.members);
   map.fitBounds(b.pad(0.2),{maxZoom:GROUP_BELOW_ZOOM,padding:[60,60]});
 }
+// 4.10.0 (owner 1 Nov 17:49: "right clicking would bring up 'follow me!' and lock that icon to the centre of
+// the map with the map moving around it ... clicking the icon again to deselect also stops the follow").
+// Generic: any vehicle on any layer. HQ already knows where it is drawing the icon at every moment (it glides
+// in a straight line from where it was to its new place, over glideMs), so each frame the map is slid by the
+// tiny gap between that point and the middle of the map. Grabbing the map, choosing another vehicle, closing
+// its box (or Escape) or the vehicle leaving the map stops following. Zooming keeps it in the middle.
+let follow=null,followPanning=false,followMenu=null;
+function isFollowing(e){return !!follow&&follow.comp===e.component&&follow.id===e.id;}
+function followAt(now){if(!follow?.to)return null;const f=follow.dur>0?Math.min(1,(now-follow.t0)/follow.dur):1;
+  return [follow.from[0]+(follow.to[0]-follow.from[0])*f,follow.from[1]+(follow.to[1]-follow.from[1])*f];}
+function followTo(x,y,glide,from){if(!follow)return;const now=performance.now(),cur=from||followAt(now)||[x,y];
+  follow.from=glide?cur:[x,y];follow.to=[x,y];follow.t0=now;follow.dur=glide?glideMs:0;}
+function startFollow(e){
+  if(!map||!e.position)return;closeFollowMenu();
+  if(!state.selected||state.selected.id!==e.id||state.selected.component!==e.component)selectEntity(e);
+  const k=keyOf(e),p=pins.get(k),m=p?.tf?.match(/translate\(([-0-9.]+)px,([-0-9.]+)px\)/);
+  follow={key:k,comp:e.component,id:e.id,from:null,to:null,t0:0,dur:0,started:performance.now(),lastAsk:0};
+  if(m){follow.from=follow.to=[+m[1],+m[2]];}
+  map.options.scrollWheelZoom='center';map.options.touchZoom='center';map.options.doubleClickZoom='center';
+  updateFollowUI();paint();
+}
+function stopFollow(){
+  if(!follow)return;follow=null;
+  if(map){map.options.scrollWheelZoom=true;map.options.touchZoom=true;map.options.doubleClickZoom=true;}
+  updateFollowUI();paint();refetchLiveView();
+}
+function updateFollowUI(){
+  const fb=selected.querySelector('.follow-button');
+  if(fb){const on=!!follow&&!!state.selected&&isFollowing(state.selected);fb.textContent=on?'■ Stop following':'📍 Follow me!';
+    fb.setAttribute('aria-pressed',String(on));fb.hidden=!map;}
+  root.classList.toggle('following',!!follow);
+}
+function followFrame(now){
+  if(!follow||!map||zoomAnim)return;
+  const sel=state.selected;
+  if(!sel||sel.id!==follow.id||sel.component!==follow.comp||selected.classList.contains('hidden')||!pins.has(follow.key)){stopFollow();return;}
+  const p=followAt(now);if(!p)return;
+  let ox=0,oy=0;if(paintRef&&paintRef.z===map.getZoom()){const q=map.latLngToContainerPoint(paintRef.ll);ox=q.x-paintRef.x;oy=q.y-paintRef.y;}
+  const size=map.getSize(),dx=p[0]+ox-size.x/2,dy=p[1]+oy-size.y/2;
+  if(Math.abs(dx)+Math.abs(dy)<0.2)return;
+  const f=now-follow.started<900?0.12:1;          // glide in when following starts, then stay locked on
+  followPanning=true;try{map.panBy([dx*f,dy*f],{animate:false});}finally{followPanning=false;}
+  if(now-follow.lastAsk>1000){follow.lastAsk=now;refetchLiveView();}   // vehicles for the new area, about once a second
+}
+function closeFollowMenu(){if(followMenu){followMenu.remove();followMenu=null;}}
+function openFollowMenu(e,x,y){
+  closeFollowMenu();
+  const menu=document.createElement('div');menu.className='follow-menu';menu.setAttribute('role','menu');
+  const item=document.createElement('button');item.type='button';item.setAttribute('role','menuitem');
+  item.textContent=isFollowing(e)?'■ Stop following':'📍 Follow me!';
+  item.onclick=ev=>{ev.stopPropagation();if(isFollowing(e))stopFollow();else startFollow(e);closeFollowMenu();};
+  menu.append(item);document.body.append(menu);followMenu=menu;
+  const r=menu.getBoundingClientRect();
+  menu.style.left=Math.max(4,Math.min(x,innerWidth-r.width-4))+'px';menu.style.top=Math.max(4,Math.min(y,innerHeight-r.height-4))+'px';
+  item.focus();
+}
+document.addEventListener('pointerdown',ev=>{if(followMenu&&!followMenu.contains(ev.target))closeFollowMenu();},true);
+document.addEventListener('keydown',ev=>{if(ev.key==='Escape')closeFollowMenu();});
+markerLayer.addEventListener('contextmenu',ev=>{
+  const b=ev.target.closest('.review-pin');if(!b||!map)return;
+  let hit=null;for(const p of pins.values())if(p.b===b){hit=p.e;break;}
+  if(!hit)return;
+  ev.preventDefault();
+  if(!state.selected||state.selected.id!==hit.id||state.selected.component!==hit.component)selectEntity(hit);
+  openFollowMenu(hit,ev.clientX,ev.clientY);
+});
 function pin0(k){const p=pins.get(k);return p&&p.tf?p:null;}
 function currentEntity(sel){const f=state.frames[sel.component];return f?.entities.find(x=>x.id===sel.id)||null;}
 function updateSelectedInfo(now){
@@ -471,6 +545,7 @@ let lastRaf=0;
 function notDrawing(){return document.visibilityState!=='visible'||(lastDrawAt>0&&performance.now()-lastDrawAt>Math.max(3000,glideMs*2.5));}
 function motionLoop(ts){
   requestAnimationFrame(motionLoop);
+  if(follow)followFrame(performance.now());
   {const was=lastRaf;lastRaf=performance.now();if(was&&lastRaf-was>1500)resumeDrawing();}
   if(document.visibilityState==='visible'&&(moving||blends.size)&&notDrawing())resumeDrawing();
   if(document.visibilityState!=='visible'||!moving&&!blends.size)return;
@@ -874,13 +949,14 @@ try{
   });
   map.on('zoom zoomend',()=>syncView());
   map.on('zoomanim',zoomAnimStart);
-  map.on('movestart',()=>{SPEED.mapFrom=performance.now();});
+  map.on('movestart',()=>{if(!followPanning)SPEED.mapFrom=performance.now();});
   map.on('zoomend',zoomAnimEnd);
   map.on('zoomend',applyOverlayOpacity);
-  map.on('moveend',refetchLiveView);
+  map.on('moveend',()=>{if(!followPanning)refetchLiveView();});
+  map.on('dragstart',()=>{if(follow)stopFollow();});   // 4.10.0: grabbing the map stops following
   // 4.1.2: while the map moves, markers follow it instantly (no gliding lag).
-  if(typeof map.on==='function')map.on('movestart zoomstart',()=>{mapMoving=true;for(const p of pins.values())p.b.classList.remove('glide');});
-  if(typeof map.on==='function')map.on('moveend zoomend',()=>{mapMoving=false;paint();});
+  if(typeof map.on==='function')map.on('movestart zoomstart',()=>{if(followPanning)return;mapMoving=true;for(const p of pins.values())p.b.classList.remove('glide');});
+  if(typeof map.on==='function')map.on('moveend zoomend',()=>{if(followPanning)return;mapMoving=false;paint();});
   // 4.1.2: the mouse wheel and click-and-drag work over vehicle icons too (owner, 30 Oct):
   // they are handed to the map underneath. A plain click still opens the icon's details.
   const mapBox=typeof map.getContainer==='function'?map.getContainer():null;

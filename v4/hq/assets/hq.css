@@ -240,3 +240,10 @@ body.vector-ready .vector-map{z-index:4}
 .marker-layer .review-pin.bus:focus-visible::after,.marker-layer .review-pin.rail:focus-visible::after{content:'';position:absolute;pointer-events:none;
   inset:-8px;border:3px solid #ffdf35;border-radius:14px;z-index:1}
 .marker-layer .review-pin.bus .review-route,.marker-layer .review-pin.rail .review-route{z-index:2}
+/* 4.10.0: "Follow me!" (owner 1 Nov 17:49) - right-click menu on a vehicle, and a button in its box */
+.follow-menu{position:fixed;z-index:60;background:#0e2037f5;border:1px solid #365e72;border-radius:10px;padding:4px;box-shadow:0 6px 22px #0009}
+.follow-menu button{display:block;border:0;background:transparent;color:#fff;font:700 14px/1.2 system-ui,sans-serif;padding:9px 14px;border-radius:7px;cursor:pointer;white-space:nowrap}
+.follow-menu button:hover,.follow-menu button:focus-visible{background:#ffdf3526;outline:none}
+.map-selection button.follow-button{position:static;width:auto;height:auto;align-self:flex-start;font:700 13px/1.2 system-ui,sans-serif;padding:7px 12px;border:1px solid #ffdf3580;border-radius:999px;color:#ffe76a;background:#ffdf3514}
+.map-selection button.follow-button[aria-pressed="true"]{background:#ffdf35;color:#14202e}
+.map-selection button.follow-button[hidden]{display:none}
