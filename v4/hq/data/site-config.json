@@ -11,9 +11,9 @@
       {
         "heading": "What to expect",
         "items": [
-          "Buses follow their real routes, shown about 1½ minutes behind real time, so every move you see is one the bus really made.",
-          "Tap any bus to see where it started, where it's heading and its next stop.",
-          "Trains move along the railway from the places they last reported; planes appear where they last reported.",
+          "Every bus, train and plane is drawn from real, official location reports, and placed as accurately as the data allows.",
+          "Buses follow their actual routes, stop by stop.",
+          "Tap any bus to see where it's come from, where it's heading and its next stop.",
           "Zoom in on a street to see where the traffic is held up."
         ]
       }
