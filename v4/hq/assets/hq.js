@@ -854,7 +854,11 @@ function makeDialog(id,title){
   back.addEventListener('click',e=>{if(e.target===back)closeDialog(back);});
   return {back,card};
 }
-function openDialog(back){lastFocus=document.activeElement;back.classList.remove('hidden');back.querySelector('.tpa-primary,button,a')?.focus();}
+function openDialog(back){lastFocus=document.activeElement;back.classList.remove('hidden');
+  const enter=back._enter,wait=Number(back.dataset.enterAfter||0);
+  if(enter&&wait>0){clearTimeout(back._enterTimer);enter.classList.add('waiting');enter.disabled=true;enter.setAttribute('aria-hidden','true');
+    back._enterTimer=setTimeout(()=>{enter.classList.remove('waiting');enter.disabled=false;enter.removeAttribute('aria-hidden');enter.focus();},wait*1000);}
+  back.querySelector('.tpa-primary:not(.waiting),button:not([disabled]),a')?.focus();}
 function closeDialog(back){back.classList.add('hidden');if(back.id==='tpa-welcome'){try{localStorage.setItem(WELCOME_KEY,'1');}catch(_){}}lastFocus?.focus?.();}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.tpa-dialog-back:not(.hidden)').forEach(closeDialog);});
 function buildCredits(list){
@@ -884,10 +888,20 @@ function buildWelcome(w,tip,credits){
     const box=el('div','welcome-section');box.append(el('h3','',head));const ul=el('ul','');
     for(const t of items)ul.append(el('li','',t));box.append(ul);card.append(box);}
   const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
-  card.append(enter);
-  const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Getting your map ready'),makeReadyList());card.append(ready);   // 4.6.0
+  // 4.7.0 (owner 1 Nov 15:22: "imperative the welcome screen says Let's go! with that part appearing when the 5
+  // seconds are up"): the streams tick in a row of icons that pulse and turn green; the button replaces them
+  // after enterAfterSeconds (5), counted from when the welcome screen opens.
+  const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Preparing streams'),makeReadyList());
+  const wait=Number.isFinite(w?.enterAfterSeconds)?clamp(w.enterAfterSeconds,0,10):0;
+  if(wait>0){enter.classList.add('waiting');enter.disabled=true;enter.setAttribute('aria-hidden','true');back.dataset.enterAfter=String(wait);}
+  back._enter=enter;
+  card.append(ready,enter);
   const tipBtn=tipControl(tip);
-  if(tipBtn){const tipBox=el('div','tip-box');const said=str(tip?.text,240);if(said)tipBox.append(el('p','tip-text',said));
+  if(tipBtn){const tipBox=el('div','tip-box');
+    // 4.7.0 (owner 1 Nov 15:22): a photo of Geoff, Rob's cat, beside the coffee/treats line (same-origin file only)
+    const pic=typeof tip?.picture==='string'&&/^\/assets\/[a-z0-9-]{1,40}\.(?:jpg|png)$/.test(tip.picture)?tip.picture:'';
+    if(pic){const img=el('img','tip-picture');img.src=pic;img.alt=str(tip?.pictureAlt,80)||'';img.width=96;img.height=96;img.loading='eager';tipBox.append(img);}
+    const said=str(tip?.text,240);if(said)tipBox.append(el('p','tip-text',said));
     tipBox.append(tipBtn);const note=str(tip?.note,160);if(note)tipBox.append(el('small','',note));card.append(tipBox);}
   const small=(Array.isArray(w?.smallPrint)?w.smallPrint.slice(0,6):[]).map(t=>str(t,300)).filter(Boolean);
   if(small.length){const sp=el('div','welcome-small');for(const t of small)sp.append(el('p','',t));card.append(sp);}
@@ -918,6 +932,7 @@ async function loadSiteConfig(){
   about.append(...[title,tipControl(cfg.tip),creditsBtn,welcomeBtn].filter(Boolean));
   $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
   let seen=false;try{seen=localStorage.getItem(WELCOME_KEY)==='1';}catch(_){}
+  if(cfg.welcome?.everyVisit===true)seen=false;      // 4.7.0 (owner 1 Nov 15:22): the welcome screen every visit
   if(welcome&&cfg.welcome?.enabled===true&&!seen)openDialog(welcome);
   startPreparing(!(welcome&&cfg.welcome?.enabled===true&&!seen));   // 4.6.0: returning visitors get the short panel
 }

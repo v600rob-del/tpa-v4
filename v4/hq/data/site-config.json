@@ -24,14 +24,18 @@
       "Built from open data: Department for Transport (bus locations, timetables and stops), Network Rail, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
       "Test version: anything marked MOCK is a pretend example · © 2026 Rob Burnett"
     ],
-    "enterLabel": "Let's go"
+    "enterLabel": "Let's go!",
+    "enterAfterSeconds": 5,
+    "everyVisit": true
   },
   "tip": {
-    "label": "Buy me a coffee",
-    "text": "Enjoying TPA? It's free and always will be. If you'd like to say thanks, you can buy Rob a coffee.",
+    "label": "Buy Rob a coffee or Geoff some treats",
+    "text": "If you enjoy this, please consider buying Rob, the creator of TPA, a coffee, or Geoff his cat some treats.",
     "note": "Completely optional. TPA stays free either way.",
     "url": "",
-    "preview": true
+    "preview": true,
+    "picture": "/assets/geoff.jpg",
+    "pictureAlt": "Geoff, Rob's black and white cat"
   },
   "credits": [
     {
