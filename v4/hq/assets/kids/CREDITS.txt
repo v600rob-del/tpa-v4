@@ -1,0 +1,17 @@
+TPA Kids mode - recorded sounds (HQ 4.11.1)
+==========================================
+Taken from the AltSFX sound set for OpenTTD by ALEXbr (https://github.com/ALEX11BR/AltSFX), licensed
+CC BY 3.0 as a whole. Each file below was trimmed, faded and levelled for TPA (changes made by TPA).
+
+bus-horn.mp3       from AltSFX 26.wav: "school bus truck horn honk 50m away" by kyles, freesound.org - CC0
+bus-horn2.mp3      from AltSFX 62.wav: "horn" by UncleSigmund, freesound.org - CC0
+bus-engine.mp3     from AltSFX 25.wav: "Truck engine" by Joseph SARDIN, bigsoundbank.com - CC0
+train-chuff.mp3    from AltSFX 05.wav: "steam1" by gadzooks, freesound.org - CC BY 3.0
+train-whistle.mp3  from AltSFX 04.wav: "steam train horn 01" by eliasheuninck, freesound.org - CC BY 3.0
+train-horn.mp3     from AltSFX 10.wav: "rocky_mtns_train_horn_moving" by polymorpheva, freesound.org - CC0
+train-track.mp3    from AltSFX 71.wav: "train trip loud 1" by Yoyodaman234, freesound.org - CC0
+plane-flyby.mp3    from AltSFX 59.wav: "Jet Plane Flyby" by qubodup, freesound.org - CC0
+plane-takeoff.mp3  from AltSFX 09.wav: "Takeoff 1 (Distant)" by cliftonmcarlson, freesound.org - CC0
+
+CC BY 3.0: https://creativecommons.org/licenses/by/3.0/   CC0: https://creativecommons.org/publicdomain/zero/1.0/
+All other Kids mode sounds are made by the browser (assets/kids-sounds.js).

@@ -77,6 +77,11 @@
       "text": "Coming soon.",
       "url": "",
       "status": "Coming soon"
+    },
+    {
+      "layer": "Kids sounds",
+      "text": "Recorded sounds in Kids mode come from the AltSFX sound set by ALEXbr (CC BY 3.0), made from freesound.org and bigsoundbank.com recordings by kyles, UncleSigmund, Joseph Sardin, gadzooks (CC BY 3.0), eliasheuninck (CC BY 3.0), polymorpheva, Yoyodaman234, qubodup and cliftonmcarlson (the rest CC0). Trimmed and levelled for TPA. Full list: /assets/kids/CREDITS.txt",
+      "url": "https://github.com/ALEX11BR/AltSFX"
     }
   ]
 }

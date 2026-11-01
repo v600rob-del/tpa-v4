@@ -1135,55 +1135,69 @@ function liveCredit(){const box=$('map-credit');if(!box)return;
 // ---- 4.11.0 Kids mode ------------------------------------------------------------------------------------
 const KID_WORD={bus:['bus','buses'],rail:['train','trains'],air:['plane','planes']};
 let kidsMuted=false;try{kidsMuted=localStorage.getItem('tpa-kids-muted')==='1';}catch(_){}
-function kidsSentence(e,sound){
-  const lead=(sound||{bus:'Beep beep',rail:'Choo choo',air:'Whoosh'}[e.component]||'Hello')+'!';
+// 4.11.1 (owner 1 Nov 19:10: "it only needs to say 'I'm going to Beverley!' or something"): the sound's own word
+// in big letters, then one short line. Only the short line is read out, after the sound has finished.
+function kidsLine(e){
   const label=String(e.label||'');
-  if(!state.live[e.component])return lead+" I'm a pretend one, just for practice.";
+  if(!state.live[e.component])return "I'm a pretend one!";
   if(e.component==='bus'){
     const to=(label.match(/ to (.+)$/)||[])[1];
-    return lead+" I'm the number "+(e.badge||'')+' bus'+(to?'. I\'m going to '+to.replace(/\s*\(.*\)$/,'')+'!':'!');
+    return to?"I'm going to "+to.replace(/\s*\(.*\)$/,'').trim()+'!':(e.badge?"I'm the number "+e.badge+' bus!':"I'm a bus!");
   }
   if(e.component==='rail'){
-    const next=(label.match(/next: ([^·]+)/)||[])[1],at=(label.match(/(?:arrived at|passed|terminated at) ([^·]+)/)||[])[1],left=(label.match(/departed ([^·]+)/)||[])[1];
-    const who=" I'm train "+(e.badge||'')+'.';
-    if(/cancelled/.test(label))return lead+who+" I'm having a rest today.";
-    if(next)return lead+who+' Next stop: '+next.trim()+'!';
-    if(left)return lead+who+" I've just left "+left.trim()+'!';
-    if(at)return lead+who+" I'm at "+at.trim()+'!';
-    return lead+who;
+    if(/cancelled/.test(label))return "I'm having a rest today.";
+    const next=(label.match(/next: ([^·]+)/)||[])[1],left=(label.match(/departed ([^·]+)/)||[])[1],at=(label.match(/(?:arrived at|passed|terminated at) ([^·]+)/)||[])[1];
+    if(next)return "I'm going to "+next.trim()+'!';
+    if(left)return "I've just left "+left.trim()+'!';
+    if(at)return "I'm at "+at.trim()+'!';
+    return "I'm a train!";
   }
   if(e.component==='air'){
-    if(/on the ground/.test(label))return lead+" I'm on the ground at the airport.";
+    if(/on the ground/.test(label))return "I'm at the airport!";
     const ft=Number(((label.match(/([\d,]+) ft/)||[])[1]||'').replace(/,/g,''));
-    if(!ft)return lead+" I'm flying in the sky!";
-    if(ft<3000)return lead+" I'm flying low. Maybe I'm coming in to land!";
-    if(ft<15000)return lead+" I'm flying high, up in the clouds!";
-    return lead+" I'm flying way up high, above the clouds!";
+    if(!ft)return "I'm flying in the sky!";
+    if(ft<3000)return "I'm coming in to land!";
+    if(ft<15000)return "I'm up in the clouds!";
+    return "I'm way above the clouds!";
   }
-  return lead;
+  return 'Hello!';
 }
-function kidsSay(text){
-  if(kidsMuted||!window.speechSynthesis||typeof SpeechSynthesisUtterance!=='function')return;
-  try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);u.lang='en-GB';u.rate=0.95;u.pitch=1.15;speechSynthesis.speak(u);}catch(_){}
+// 4.11.1 (owner 1 Nov 19:10: "Not sure on the computer voice though"): use the most natural British voice the
+// device has (Edge's "Natural" voices, Maisie being a child's voice; Chrome's Google UK English; Apple's UK
+// voices), and a separate button turns the voice off while keeping the sounds.
+let kidsVoiceOff=false;try{kidsVoiceOff=localStorage.getItem('tpa-kids-voice')==='off';}catch(_){}
+const VOICE_LIKE=[/Maisie.*Natural/i,/Libby.*Natural/i,/Sonia.*Natural/i,/en-GB.*Natural|Natural.*en-GB/i,/Google UK English Female/i,/Serena|Kate|Stephanie|Martha/i,/Google UK English/i,/Daniel/i];
+function kidsVoice(){
+  try{const all=speechSynthesis.getVoices()||[];
+    for(const re of VOICE_LIKE){const v=all.find(x=>re.test(x.name)&&/^en/i.test(x.lang||'en'));if(v)return v;}
+    return all.find(x=>/^en-GB/i.test(x.lang))||all.find(x=>/^en/i.test(x.lang))||null;}catch(_){return null;}
+}
+let kidsSayTimer=0;
+function kidsSay(text,afterSeconds){
+  clearTimeout(kidsSayTimer);
+  if(kidsMuted||kidsVoiceOff||!window.speechSynthesis||typeof SpeechSynthesisUtterance!=='function')return;
+  kidsSayTimer=setTimeout(()=>{try{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(text);const v=kidsVoice();if(v)u.voice=v;
+    u.lang=v?.lang||'en-GB';u.rate=0.95;u.pitch=1.1;speechSynthesis.speak(u);}catch(_){}},Math.round(Math.min(2.6,Math.max(0,afterSeconds||0))*1000));
 }
 function kidsBubble(e,sound){
   state.selected=e;
-  const text=el('p','kids-say',kidsSentence(e,sound));
+  const lead=el('p','kids-lead',(sound||{bus:'Beep beep',rail:'Choo choo',air:'Whoosh'}[e.component]||'Hello')+'!');
+  const text=el('p','kids-say',kidsLine(e));
   const again=el('button','kids-again','🔊 Again!');again.type='button';
-  again.onclick=()=>{const name=window.TPAKidsSounds?.play(e.component,kidsMuted);const t=kidsSentence(e,name);text.textContent=t;kidsSay(t);};
+  again.onclick=()=>{const name=window.TPAKidsSounds?.play(e.component,kidsMuted);if(name)lead.textContent=name+'!';text.textContent=kidsLine(e);kidsSay(text.textContent,window.TPAKidsSounds?.last?.seconds);};
   const fb=document.createElement('button');fb.type='button';fb.className='follow-button';
   fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};
   const close=document.createElement('button');close.type='button';close.textContent='×';close.setAttribute('aria-label','Close');
   close.onclick=()=>{selected.classList.add('hidden');state.selected=null;stopFollow();paint();};
   const row=el('div','kids-buttons');row.append(again,fb);
-  selected.classList.add('kids-bubble');selected.replaceChildren(text,row,close);selected.classList.remove('hidden');
+  selected.classList.add('kids-bubble');selected.replaceChildren(lead,text,row,close);selected.classList.remove('hidden');
   if(!isFollowing(e))stopFollow();updateFollowUI();paint();
   return text.textContent;
 }
 function kidsTap(e,b){
   const name=window.TPAKidsSounds?.play(e.component,kidsMuted)||null;
   b.classList.remove('kid-boing');void b.offsetWidth;b.classList.add('kid-boing');
-  kidsSay(kidsBubble(e,name));
+  kidsSay(kidsBubble(e,name),window.TPAKidsSounds?.last?.seconds);
 }
 function kidsCountText(){
   const parts=[];
@@ -1204,6 +1218,10 @@ function buildKidsBar(){
   const syncMute=()=>{mute.textContent=kidsMuted?'🔇':'🔊';mute.setAttribute('aria-label',kidsMuted?'Sound off':'Sound on');mute.setAttribute('aria-pressed',String(!kidsMuted));};
   mute.onclick=()=>{kidsMuted=!kidsMuted;try{localStorage.setItem('tpa-kids-muted',kidsMuted?'1':'0');}catch(_){}if(kidsMuted)try{speechSynthesis.cancel();}catch(_){}syncMute();};
   syncMute();bar.append(mute);
+  const voice=el('button','kids-toggle kids-voice','🗣️');voice.type='button';
+  const syncVoice=()=>{voice.setAttribute('aria-label',kidsVoiceOff?'Talking off':'Talking on');voice.title=voice.getAttribute('aria-label');voice.setAttribute('aria-pressed',String(!kidsVoiceOff));};
+  voice.onclick=()=>{kidsVoiceOff=!kidsVoiceOff;try{localStorage.setItem('tpa-kids-voice',kidsVoiceOff?'off':'on');}catch(_){}if(kidsVoiceOff)try{speechSynthesis.cancel();}catch(_){}syncVoice();};
+  syncVoice();bar.append(voice);
   const count=el('div','kids-count');count.setAttribute('role','status');count.id='kids-count';
   // grown-ups: hold for 3 seconds to leave (little fingers won't do it by accident)
   const grown=el('button','kids-grownups','');grown.type='button';grown.id='kids-grownups';
@@ -1216,7 +1234,7 @@ function buildKidsBar(){
   root.append(bar,count,grown);
   setInterval(()=>{const t=kidsCountText();if(count.textContent!==t)count.textContent=t;},1000);
 }
-function buildKidsWelcome(w){
+function buildKidsWelcome(w,credits){
   const {back,card}=makeDialog('tpa-kids-welcome','TPA Kids');
   card.classList.add('kids-welcome');
   const pics=el('div','kids-welcome-pics');
@@ -1226,6 +1244,7 @@ function buildKidsWelcome(w){
   go.onclick=()=>{window.TPAKidsSounds?.unlock();window.TPAKidsSounds?.play('bus',kidsMuted);closeDialog(back);};
   const small=el('p','kids-small','For grown-ups: these are real buses, trains and planes, shown as closely as the open data allows. '+
     'For fun only - not for planning journeys or safety. Nothing about you is collected: no cookies, adverts or tracking.');
+  if(credits){const cb=el('button','kids-credits','Sounds & data credits');cb.type='button';cb.onclick=()=>{closeDialog(back);openDialog(credits);};small.append(' ',cb);}
   card.append(pics,hello,go,small);
   return back;
 }
@@ -1247,7 +1266,7 @@ async function loadSiteConfig(){
   $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
   let seen=false;try{seen=localStorage.getItem(WELCOME_KEY)==='1';}catch(_){}
   if(cfg.welcome?.everyVisit===true)seen=false;      // 4.7.0 (owner 1 Nov 15:22): the welcome screen every visit
-  if(KIDS){try{openDialog(buildKidsWelcome(cfg.welcome));}catch(_){}return;}
+  if(KIDS){try{openDialog(buildKidsWelcome(cfg.welcome,credits));}catch(_){}return;}
   if(welcome&&cfg.welcome?.enabled===true&&!seen)openDialog(welcome);
   startPreparing(!(welcome&&cfg.welcome?.enabled===true&&!seen));   // 4.6.0: returning visitors get the short panel
 }
