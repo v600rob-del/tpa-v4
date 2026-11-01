@@ -217,3 +217,11 @@ body.vector-ready .vector-map{z-index:4}
 .welcome-card .welcome-small{margin:10px 0 6px;padding-top:8px}
 .welcome-card .welcome-small p{font-size:10.5px;line-height:1.4;margin:0 0 4px}
 .welcome-card .tpa-link-button{font-size:12px;padding:7px}
+
+/* 4.8.0: one badge for icons stacked on top of each other ("12 buses"); splits as you zoom in */
+.marker-layer .vehicle-pin.stack-pin{width:auto;height:auto;min-width:calc(40px*var(--pin-s,1));padding:calc(4px*var(--pin-s,1)) calc(9px*var(--pin-s,1));border-radius:999px;display:flex;align-items:baseline;gap:4px;justify-content:center;white-space:nowrap;font:600 calc(11px*var(--pin-s,1))/1.1 system-ui,sans-serif;color:#fff;box-shadow:0 0 0 calc(4px*var(--pin-s,1)) #ffffff40,0 2px 8px #1238;z-index:2}
+.marker-layer .vehicle-pin.stack-pin b{font-size:calc(17px*var(--pin-s,1));font-weight:800}
+.marker-layer .vehicle-pin.stack-pin.bus{background:#1f805b;border-color:#d9fff0}
+.marker-layer .vehicle-pin.stack-pin.rail{background:#6d4a91}
+.marker-layer .vehicle-pin.stack-pin.air{background:#1d667b}
+.marker-layer .vehicle-pin.stack-pin:hover{filter:brightness(1.12)}

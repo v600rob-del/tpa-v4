@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.0'
+ENGINE_VERSION = '0.8.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -688,7 +688,9 @@ def snapshot(view) -> dict:
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
              'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else '')
              + (' · bus routes: BODS timetables, Department for Transport (OGL)' if REPLAY_SECONDS and TIMETABLE['tt'] is not None else ''),
-             'entities': []}
+             'entities': [],
+             # 0.8.1 (owner 1 Nov 13:40): HQ shows buses stacked on top of each other as one "N buses" badge
+             'groupStacks': True}
     if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame['notice'] = 'Zoom in to see buses'
         return frame

@@ -294,6 +294,11 @@ function zoomAnimStart(e){
     const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) ${anchorOf(p.e?.component)}${p.active?' scale(1.17)':''}`;
     p.b.style.transform=tf;p.tf=tf;
   }
+  for(const st of stacks.values()){
+    const q=map.project([st.lat,st.lon],e.zoom),x=q.x-c.x+size.x/2,y=q.y-c.y+size.y/2;
+    st.b.classList.remove('glide');
+    const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) ${anchorOf(st.component)}`;st.b.style.transform=tf;st.tf=tf;
+  }
 }
 function zoomAnimEnd(){if(!zoomAnim)return;zoomAnim=false;markerLayer.classList.remove('zoom-anim');paint();}
 function markers(){
@@ -315,6 +320,7 @@ function markers(){
    const next=new Set();for(const [,k] of list)if(glideOK.has(k)&&next.size<glideBudget)next.add(k);
    for(const [,k] of list){if(next.size>=glideBudget)break;next.add(k);}
    glideOK=next;glideCount=glideOK.size;}
+  const items=[];
   for(const e of listEntities()){
     if(!e.position)continue;
     const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;
@@ -322,6 +328,13 @@ function markers(){
     shown.set(k,{lon:pos.lon,lat:pos.lat});
     const [x,y]=pixel(pos.lon,pos.lat);
     if(x<-M||y<-M||x>d.w+M||y>d.h+M)continue;
+    items.push({e,k,pos,x,y});
+  }
+  // 4.8.0 (owner 1 Nov 13:40, York at zoom 13: a pile of buses on top of each other): icons that would sit
+  // on top of each other are shown as one "N buses" badge, which splits as you zoom in.
+  const grouped=groupStacks(items);
+  for(const {e,k,pos,x,y} of items){
+    if(grouped.has(k))continue;
     if((perLayer[e.component]=(perLayer[e.component]||0)+1)>cap)continue;
     keep.add(k);
     const active=!!state.selected&&state.selected.id===e.id&&state.selected.component===e.component;
@@ -357,8 +370,82 @@ function markers(){
     b.onclick=()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
   }
   for(const [k,pin] of pins)if(!keep.has(k)){pin.b.remove();pins.delete(k);}
+  drawStacks(viewMoved);
   if(shown.size>keep.size*4+4000)for(const k of shown.keys())if(!keep.has(k))shown.delete(k);
   updateSelectedInfo(now);
+}
+// 4.8.0: grouping stacked icons. Generic: any layer whose engine sends groupStacks: true, by how close the
+// icons are on the screen.
+// - only below GROUP_BELOW_ZOOM (from there on every vehicle is drawn on its own);
+// - at least GROUP_MIN icons closer than about one icon's width; the selected vehicle is never grouped;
+// - a vehicle stays in its group until it is clearly away from it (join/leave distances differ), and a group
+//   keeps its id while its first member stays in it, so badges don't flicker or jump between frames.
+const GROUP_BELOW_ZOOM=16,GROUP_MIN=3,GROUP_JOIN=32,GROUP_LEAVE=44;
+const stacks=new Map();          // group id -> {b, component, n, lat, lon, x, y, members, tf}
+let stackOf=new Map(),stackNow=[];  // vehicle key -> group id (last paint); groups to draw this paint
+function groupStacks(items){
+  const out=new Set();stackNow=[];
+  const z=map?map.getZoom():state.z;
+  if(!map||z>=GROUP_BELOW_ZOOM){stackOf=new Map();return out;}
+  const s=pinScale(z),join=GROUP_JOIN*s,leave=GROUP_LEAVE*s,sel=state.selected;
+  const byLayer=new Map();
+  for(const it of items){
+    if(state.frames[it.e.component]?.groupStacks!==true)continue;   // each engine switches it on (bus first)
+    if(sel&&sel.id===it.e.id&&sel.component===it.e.component)continue;
+    let l=byLayer.get(it.e.component);if(!l)byLayer.set(it.e.component,l=[]);l.push(it);
+  }
+  const next=new Map();
+  for(const [component,list] of byLayer){
+    // last paint's group leaders go first, so groups keep their place; then left to right (stable order)
+    list.sort((a,b)=>((stackOf.get(b.k)===b.k)-(stackOf.get(a.k)===a.k))||(a.x-b.x)||(a.y-b.y)||(a.k<b.k?-1:1));
+    const seeds=[],cell=leave,grid=new Map(),key=(cx,cy)=>cx+','+cy;
+    for(const it of list){
+      const cx=Math.floor(it.x/cell),cy=Math.floor(it.y/cell),prev=stackOf.get(it.k);let best=null,bd=Infinity;
+      for(let i=-1;i<=1;i++)for(let j=-1;j<=1;j++)for(const sd of grid.get(key(cx+i,cy+j))||[]){
+        const dd=Math.hypot(sd.x-it.x,sd.y-it.y),r=prev===sd.k?leave:join;
+        if(dd<=r&&dd<bd){bd=dd;best=sd;}
+      }
+      if(best){best.members.push(it);continue;}
+      const sd={k:it.k,x:it.x,y:it.y,members:[it]};seeds.push(sd);
+      const g=key(cx,cy);let c=grid.get(g);if(!c)grid.set(g,c=[]);c.push(sd);
+    }
+    for(const sd of seeds){
+      if(sd.members.length<GROUP_MIN)continue;
+      let x=0,y=0,lat=0,lon=0;
+      for(const m of sd.members){x+=m.x;y+=m.y;lat+=m.pos.lat;lon+=m.pos.lon;out.add(m.k);next.set(m.k,sd.k);}
+      const n=sd.members.length;
+      stackNow.push({id:component+'|'+sd.k,component,n,x:x/n,y:y/n,lat:lat/n,lon:lon/n,
+        members:sd.members.map(m=>[m.pos.lat,m.pos.lon])});
+    }
+  }
+  stackOf=next;return out;
+}
+function drawStacks(viewMoved){
+  const keepIds=new Set();
+  for(const g of stackNow){
+    keepIds.add(g.id);
+    let st=stacks.get(g.id);
+    if(!st){const b=document.createElement('button');b.type='button';st={b,tf:'',label:''};stacks.set(g.id,st);markerLayer.append(b);}
+    const b=st.b,isNew=!st.tf;Object.assign(st,g);
+    const label=g.n+' '+layerName(g.component);
+    if(st.label!==label){
+      const num=document.createElement('b');num.textContent=String(g.n);
+      const word=document.createElement('span');word.textContent=layerName(g.component);
+      b.replaceChildren(num,' ',word);st.label=label;
+      b.title=label+' here · click to zoom in';b.setAttribute('aria-label',label+' here, zoom in to see each one');
+    }
+    const cls=`vehicle-pin stack-pin ${g.component}${!isNew&&!viewMoved&&!REDUCED&&!mapMoving?' glide':''}`;
+    if(b.className!==cls)b.className=cls;
+    const tf=`translate(${g.x.toFixed(1)}px,${g.y.toFixed(1)}px) ${anchorOf(g.component)}`;
+    if(st.tf!==tf){b.style.transform=tf;st.tf=tf;}
+    b.onclick=()=>zoomToStack(st);
+  }
+  for(const [id,st] of stacks)if(!keepIds.has(id)){st.b.remove();stacks.delete(id);}
+}
+function zoomToStack(st){
+  if(!map)return;
+  const b=L.latLngBounds(st.members);
+  map.fitBounds(b.pad(0.2),{maxZoom:GROUP_BELOW_ZOOM,padding:[60,60]});
 }
 function pin0(k){const p=pins.get(k);return p&&p.tf?p:null;}
 function currentEntity(sel){const f=state.frames[sel.component];return f?.entities.find(x=>x.id===sel.id)||null;}
@@ -525,7 +612,7 @@ if(o&&typeof o==='object'&&o.type==='raster'&&o.tiles===`/api/v4/components/${id
       {from:o.hideFromZoom,tol:validNum(o.hideTolerance)?clamp(o.hideTolerance,0,120):40,
        rgb:o.hideColours.filter(c=>typeof c==='string'&&/^#[0-9a-fA-F]{6}$/.test(c)).slice(0,12).map(c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16)))}:null};
 const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,5000,120000):30000;
-return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs};}
+return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs,groupStacks:f.groupStacks===true};}
 // 4.1.0 optional motion hint from an engine. HQ only does generic arithmetic with it
 // (straight-line "carry on at this speed" or "head for this point by this time");
 // anything malformed is ignored and the vehicle simply stays at its reported position.
