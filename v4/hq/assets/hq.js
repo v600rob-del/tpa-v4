@@ -436,6 +436,7 @@ function speedMark(name){if(!(name in SPEED.first))SPEED.first[name]=performance
 const PREP_MAX_MS=5000;
 const PREP_ITEMS=[['map','🗺','Map'],['road','≋','Traffic'],['bus','🚌','Buses'],['rail','🚂','Trains'],['air','✈','Planes']];
 const prepLists=new Set();
+let layersKnown=false;    // 4.7.1: set once HQ's list of layers (the manifest) has arrived
 function prepWanted(id){
   if(id==='map')return true;
   if(!state.live[id]||state.parked[id]||!state.visible[id])return false;
@@ -467,11 +468,14 @@ function startPreparing(showPanel){
   const t0=performance.now();let panel=null;
   if(showPanel){panel=el('div','prep-panel');panel.setAttribute('role','status');
     panel.append(el('strong','prep-title','Preparing streams…'),makeReadyList());document.body.append(panel);}
+  // 4.7.1 (owner 1 Nov 15:42: the streams "part doesnt work on the welcome screen"): 4.7.0 stopped updating as soon
+  // as everything it knew about was ready - often just the map, before HQ had learnt which layers exist. Now
+  // "all ready" only counts once the layer list has arrived, and the row keeps updating for 30 s.
   const timer=setInterval(()=>{
-    const done=updatePrep(),waited=performance.now()-t0;
+    const done=updatePrep()&&layersKnown,waited=performance.now()-t0;
     if(panel&&(done||waited>PREP_MAX_MS)){const p=panel;panel=null;if(done)p.querySelector('.prep-title').textContent='All set';
       p.classList.add('fading');setTimeout(()=>p.remove(),done?700:400);}
-    if((done&&!panel)||waited>30000)clearInterval(timer);
+    if(waited>30000)clearInterval(timer);
   },200);
 }
 window.TPA_HQ_SPEED_MARK=speedMark;
@@ -731,9 +735,10 @@ async function discover(){
         state.status[id]='not_installed';delete state.frames[id];deselectComponent(id);
       }
     }
-    paint();
+    paint();layersKnown=true;
     await Promise.allSettled(requests);
   }catch(_){
+    layersKnown=true;    // 4.7.1: no layer list - nothing more to wait for
     // Manifest outage: display prior frames as stale, never silently claim live.
     for(const id of IDS)if(state.status[id]==='ready'||state.status[id]==='stale'){
       state.status[id]='unavailable';deselectComponent(id);
