@@ -48,6 +48,11 @@ function pixel(lon,lat){if(map){let p=map.latLngToContainerPoint([lat,lon]);retu
 const d=dims(),p=merc(lon,lat,state.z),c=merc(state.lon,state.lat,state.z);return [p[0]-c[0]+d.w/2,p[1]-c[1]+d.h/2];}
 // 4.1.12 (owner 31 Oct 22:11: "Icons could be smaller for buses and trains ... a zoom in to max or nearly
 // max zoom could have larger icons"): bus and train icons are sized by zoom level.
+// 4.1.16 (owner 1 Nov 00:28: "knowing which part of the icon should be central to the road/track it is
+// on ... the middle/bottom of the numberboard under the bus/train"): for buses and trains the exact map
+// position is the bottom-middle of the number board, with the icon standing above it like a pin.
+// Other icons stay centred. (Board top 30 px + board 16 px, scaled, + 8 px of fixed borders; measured.)
+function anchorOf(component){return component==='bus'||component==='rail'?'translate(-50%,calc(var(--pin-s,1) * -46px - 8px))':'translate(-50%,-50%)';}
 function pinScale(z){return z<12.5?0.7:z<14.5?0.82:z<16.5?1:1.2;}
 function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}
   const ps=String(pinScale(state.z));if(markerLayer.style.getPropertyValue('--pin-s')!==ps)markerLayer.style.setProperty('--pin-s',ps);paint();}
@@ -238,7 +243,7 @@ function zoomAnimStart(e){
     if(p.lat==null)continue;
     const q=map.project([p.lat,p.lon],e.zoom),x=q.x-c.x+size.x/2,y=q.y-c.y+size.y/2;
     p.b.classList.remove('glide');
-    const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(-50%,-50%)${p.active?' scale(1.17)':''}`;
+    const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) ${anchorOf(p.e?.component)}${p.active?' scale(1.17)':''}`;
     p.b.style.transform=tf;p.tf=tf;
   }
 }
@@ -291,13 +296,13 @@ function markers(){
     if(b.title!==title){b.title=title;b.setAttribute('aria-label',prefix+e.label+' '+(pos.est?'estimated position':e.quality)+(active?' selected':''));}
     if(b.getAttribute('aria-pressed')!==String(active))b.setAttribute('aria-pressed',String(active));
     // Moved with a transform (no page re-layout), which phones handle on the graphics chip.
-    const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) translate(-50%,-50%)${active?' scale(1.17)':''}`;
+    const tf=`translate(${x.toFixed(1)}px,${y.toFixed(1)}px) ${anchorOf(e.component)}${active?' scale(1.17)':''}`;
     if(pos.hop&&canGlide){
       // reappear one update back along its way and glide on at once, in step with everything else
       // (no standing still until the next update)
       const back=estimate(e,now-glideMs);
       if(back){const [bx,by]=pixel(back.lon,back.lat);
-        b.style.transform=`translate(${bx.toFixed(1)}px,${by.toFixed(1)}px) translate(-50%,-50%)${active?' scale(1.17)':''}`;
+        b.style.transform=`translate(${bx.toFixed(1)}px,${by.toFixed(1)}px) ${anchorOf(e.component)}${active?' scale(1.17)':''}`;
         void b.offsetWidth;b.classList.add('glide');}
       b.style.transform=tf;pin.tf=tf;
     }else if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;}

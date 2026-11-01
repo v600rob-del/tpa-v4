@@ -130,3 +130,7 @@ body.vector-ready .vector-map{z-index:4}
 /* 4.1.15: the credit line also names the live data sources, so it may wrap onto two lines. */
 .map-bottom>.map-credit{white-space:normal;max-width:min(62vw,760px);text-align:right;line-height:1.35}
 @media(max-width:760px){.map-bottom>.map-credit{max-width:92vw}}
+
+/* 4.1.16: buses and trains stand on the bottom-middle of their number board; when selected they grow
+   around that point, so it stays on the road/track. */
+.marker-layer .review-pin.bus,.marker-layer .review-pin.rail{transform-origin:50% calc(var(--pin-s,1) * 46px + 8px)}
