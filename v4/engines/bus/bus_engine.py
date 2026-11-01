@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.2'
+ENGINE_VERSION = '0.8.3'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -69,7 +69,10 @@ ALWAYS_ON = os.environ.get('TPA_BUS_ALWAYS_ON', '0').strip() == '1'
 IDLE_POLL_SECONDS = max(POLL_SECONDS, int(os.environ.get('TPA_BUS_IDLE_POLL_SECONDS', '60') or 60))
 DEMAND_WINDOW = max(5, int(os.environ.get('TPA_BUS_DEMAND_SECONDS', '180') or 180))  # fetch only while viewed recently
 STALE_AFTER = 5 * 60         # report older than this -> marked stale
-DROP_AFTER = 30 * 60         # report older than this -> not shown
+DROP_AFTER = 30 * 60         # report older than this -> forgotten
+# 0.8.3 (owner 1 Nov 20:25-20:26): a bus not heard from for over 10 minutes has almost always finished or
+# switched its tracker off, so it is no longer drawn (it is still remembered, and drawn again if it reports)
+SHOW_FOR = 10 * 60
 FRAME_TTL = 90               # HQ treats a frame as stale after this
 MAX_DOWNLOAD = 32_000_000    # same safety size as v3
 MAX_XML_BYTES = 600_000_000
@@ -711,7 +714,7 @@ def snapshot(view) -> dict:
     recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
     for v in vehicles:
         age = now - v['recorded']
-        if age > DROP_AFTER:
+        if age > SHOW_FOR:
             continue
         if not (south <= v['lat'] <= north and west <= v['lon'] <= east):
             if not (REPLAY_SECONDS and age <= STALE_AFTER and south - near_lat <= v['lat'] <= north + near_lat
@@ -1279,7 +1282,7 @@ def trace(entity_id: str) -> dict:
         out['state'] = 'not in the latest reports (finished, or not reporting for over 30 minutes)'
         return out
     age = now - v['recorded']
-    out['state'] = 'dropped (no report for over 30 min)' if age > DROP_AFTER else 'stale (no report for over 5 min): shown standing' if age > STALE_AFTER else 'reporting'
+    out['state'] = 'dropped (no report for over 30 min)' if age > DROP_AFTER else 'not drawn (no report for over 10 min)' if age > SHOW_FOR else 'stale (no report for over 5 min): shown standing' if age > STALE_AFTER else 'reporting'
     out['latest'] = {k: v.get(k) for k in ('route', 'destination', 'lat', 'lon', 'speed', 'bearing', 'origin', 'dep', 'dest', 'jd')}
     out['latest']['reportedAt'] = iso(v['recorded']); out['latest']['ageSeconds'] = round(age)
     out['reports'] = [{'at': iso(t), 'agoSeconds': round(now - t), 'lat': la, 'lon': lo} for t, la, lo in hist[-12:]]
