@@ -36,7 +36,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.13'
+VERSION = '4.13.1'
 DEFAULT_STEPS = [10, 25, 50, 100, 250, 500, 1000]
 CITIES = [('York', 53.959, -1.082), ('Hull', 53.744, -0.333), ('Leeds', 53.797, -1.547), ('Manchester', 53.479, -2.244),
           ('London', 51.507, -0.128), ('Birmingham', 52.480, -1.899), ('Nottingham', 52.954, -1.150), ('Newcastle', 54.973, -1.613),
@@ -317,8 +317,14 @@ def verdict(step, use):
     return why
 
 
-def estimate(healthy, uses):
-    """From the biggest healthy step: what one viewer costs, and what bigger crowds would need."""
+def total_cpu(use):
+    return sum(u['cpu'] or 0 for u in use['units'].values()) if use else 0.0
+
+
+def estimate(healthy, uses, base=None):
+    """From the biggest healthy step: what one viewer costs, and what bigger crowds would need.
+    4.13.1 (1 Nov 21:20): the server's own background work with nobody watching (``base``, measured before the
+    first step) is taken off first - before, it was counted as if viewers caused it, making per-viewer cost too high."""
     lines = []
     if not healthy:
         return ['No step was healthy, so there is nothing to estimate from: the server struggles even at the first step.']
@@ -326,19 +332,22 @@ def estimate(healthy, uses):
     use = uses.get(best['n'])
     lines.append(f"Biggest healthy step: {best['n']} viewers, {best['rate']:.1f} requests a second, typical answer {fmt_s(best['p50']).strip()}.")
     if use:
-        cpu = sum(u['cpu'] or 0 for u in use['units'].values())
+        cpu = total_cpu(use)
+        idle = total_cpu(base) if base else 0.0
         try:
             cores = float(use['cpus'])
         except ValueError:
             cores = 1.0
-        per = cpu / best['n']
+        per = max(0.0, cpu - idle) / best['n']
+        if base:
+            lines.append(f"With nobody watching the server already uses {idle:.2f} cores (following every bus, train and plane).")
         lines.append(f"Server processor in use: {cpu:.2f} of {cores:.0f} cores ({cpu / cores:.0%}); about {per * 1000:.1f} thousandths of a core per viewer.")
         if per > 0:
-            cap = int(cores * 0.8 / per)
+            cap = int(max(0.0, cores * 0.8 - idle) / per)
             lines.append(f"Estimate: this server tops out around {cap} viewers (80% of its processor) - the real limit may be lower.")
             for big in (1000, 10000, 100000, 1000000):
                 if big > cap:
-                    lines.append(f"  {big:>9,} viewers would need about {big * per / 0.8:,.0f} cores of the same speed, if nothing changed.")
+                    lines.append(f"  {big:>9,} viewers at once would need about {(big * per + idle) / 0.8:,.0f} cores of the same speed, if nothing changed.")
         busiest = max(use['units'].items(), key=lambda kv: kv[1]['cpu'] or 0)
         lines.append(f"Busiest part: {busiest[0]} ({(busiest[1]['cpu'] or 0):.2f} cores).")
     lines.append('Big crowds are reached by sharing work, not more cores: ready-made answers per map area ("chunks"),')
@@ -349,6 +358,10 @@ def estimate(healthy, uses):
 async def main_async(args, base, layers):
     rnd = random.Random(args.seed)
     healthy, uses = [], {}
+    idle_use = None
+    if args.server_stats:            # 4.13.1: the server's own work with nobody watching, first
+        print('Measuring the server with nobody watching (30 s)...', flush=True)
+        b0 = server_stats(True); await asyncio.sleep(30); idle_use = server_use(b0, server_stats(True))
     print(f"TPA load test {VERSION} · {args.host or args.url} · steps {', '.join(map(str, args.steps))} · {args.seconds:.0f} s each")
     print(f"{'viewers':>8} {'req/s':>7} {'typical':>8} {'1 in 20':>8} {'failed':>7}  {'bus':>6} {'rail':>6} {'air':>6} {'traffic':>7}  server")
     for n in args.steps:
@@ -376,7 +389,7 @@ async def main_async(args, base, layers):
     else:
         print(f"All steps healthy up to {args.steps[-1]} viewers.")
     print()
-    for line in estimate(healthy, uses):
+    for line in estimate(healthy, uses, idle_use):
         print(line)
     return 0 if healthy else 1
 
