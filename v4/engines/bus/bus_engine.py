@@ -51,7 +51,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.5.7'
+ENGINE_VERSION = '0.5.8'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -132,6 +132,12 @@ FETCHING = threading.Event()
 BUILDER = {'proc': None}
 TIMING = {'fetch': None, 'pathMs': None}
 VIEWS: list = []             # (time, view) recently looked at closely enough for roads (0.4.2)
+# 0.5.8 (owner 1 Nov 01:21: after an update buses took ~2 minutes to move again, "instead of waiting"):
+# recent reports and each bus's movement history are kept on disk and reloaded at start, like the
+# train engine does. Saved when the engine is stopped (every update restarts it) and every few minutes.
+MEMORY_FILE = DATA_DIR / 'buses-last-reports.json'
+SAVE_EVERY = max(1, int(os.environ.get('TPA_BUS_SAVE_SECONDS', '300') or 300))
+SAVED = {'at': 0.0}
 VIEW_MEMORY = 180
 
 
@@ -318,6 +324,63 @@ def fetch_once(area) -> None:
         TIMING['fetch'] = round(time.time() - started, 1)
         prepare_paths()
         PATH_WAKE.set()
+        save_memory()
+
+
+def save_memory(force: bool = False) -> bool:
+    """0.5.8: keep the last reports (up to 30 minutes old) and movement history on disk."""
+    now = time.time()
+    if not force and now - SAVED['at'] < SAVE_EVERY:
+        return False
+    with LOCK:
+        if not STATE['fetchedAt']:
+            return False
+        vehicles = [v for v in STATE['vehicles'] if now - v['recorded'] <= DROP_AFTER]
+        live = {v['key'] for v in vehicles}
+        history = {k: [list(r) for r in h] for k, h in HISTORY.items() if k in live}
+        body = {'savedAt': now, 'engineVersion': ENGINE_VERSION, 'mode': MODE, 'fetchedAt': STATE['fetchedAt'],
+                'coverage': STATE['coverage'], 'vehicles': vehicles, 'history': history}
+    SAVED['at'] = now
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = MEMORY_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps(body, separators=(',', ':')), encoding='utf-8')
+        tmp.replace(MEMORY_FILE)
+        return True
+    except OSError as exc:
+        print('Could not save bus memory:', type(exc).__name__, flush=True)
+        return False
+
+
+def load_memory() -> int:
+    """0.5.8: reload the last reports at start; buses still recent enough are shown and keep moving."""
+    try:
+        saved = json.loads(MEMORY_FILE.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return 0
+    now = time.time()
+    if not isinstance(saved, dict) or saved.get('mode') != MODE or not isinstance(saved.get('vehicles'), list):
+        return 0
+    keep = [v for v in saved['vehicles'] if isinstance(v, dict) and isinstance(v.get('recorded'), (int, float))
+            and now - v['recorded'] <= DROP_AFTER and isinstance(v.get('key'), str)]
+    if not keep:
+        return 0
+    live = {v['key'] for v in keep}
+    with LOCK:
+        STATE.update(vehicles=keep, fetchedAt=float(saved.get('fetchedAt') or 0),
+                     coverage=tuple(saved['coverage']) if saved.get('coverage') else None)
+        HISTORY.clear()
+        for k, h in (saved.get('history') or {}).items():
+            if k in live and isinstance(h, list):
+                HISTORY[k] = [tuple(r) for r in h if isinstance(r, list) and len(r) == 3][-HISTORY_KEEP:]
+        STATE['busesWithSpeed'] = sum(1 for v in keep if v.get('speed'))
+    print(f'Bus memory reloaded: {len(keep)} buses from {round(now - saved.get("savedAt", now))} s ago', flush=True)
+    return len(keep)
+
+
+def _stop(signum, frame):
+    save_memory(force=True)
+    raise SystemExit(0)
 
 
 def prepare_paths() -> None:
@@ -819,6 +882,9 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     port = int(os.environ.get('TPA_BUS_ENGINE_PORT', '8781'))
+    load_memory()
+    signal.signal(signal.SIGTERM, _stop)
+    signal.signal(signal.SIGINT, _stop)
     threading.Thread(target=poller, daemon=True).start()
     threading.Thread(target=road_keeper, daemon=True).start()
     threading.Thread(target=path_worker, daemon=True).start()
