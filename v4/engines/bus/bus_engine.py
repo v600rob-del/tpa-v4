@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.10'
+ENGINE_VERSION = '0.8.11'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -233,6 +233,20 @@ class GuardedStream(io.RawIOBase):
         return len(data)
 
 
+def merge_twins(buses: list) -> list:
+    """0.8.11 (owner 3 Nov, north Hull): some companies send each bus twice - as "SCEM-80296" and "80296" for operator
+    SCEM. They are one bus: keep only its newest report, under the plain number."""
+    best = {}
+    for v in buses:
+        op, _, veh = v['key'].partition(':')
+        if veh.startswith(op + '-') and len(veh) > len(op) + 1:
+            v = dict(v, key=f'{op}:{veh[len(op) + 1:]}')
+        k = v['key']
+        if k not in best or v['recorded'] > best[k]['recorded']:
+            best[k] = v
+    return list(best.values()) if len(best) < len(buses) else buses
+
+
 def parse_siri_xml(stream) -> list[dict]:
     """Stream-parse SIRI-VM XML without loading the whole file into memory (the careful reader; until 0.8.6 the
     only one - now kept as the reference the fast reader is tested against)."""
@@ -273,7 +287,7 @@ def parse_siri_xml(stream) -> list[dict]:
                     'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
                     'origin': clean(vals.get('OriginRef', ''), 20), 'dep': clean(vals.get('OriginAimedDepartureTime', ''), 32),
                     'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)})
-    return out
+    return merge_twins(out)
 
 
 # 0.8.6 (owner 3 Nov 13:57, processor meter: reading the national bus file every 30 s was two-thirds of this
@@ -393,7 +407,7 @@ def parse_siri(stream) -> list[dict]:
     if not any_xml:
         raise ValueError('bad-xml')
     _LAST_READ = _THIS_READ               # only buses in this file are kept for next time
-    return out
+    return merge_twins(out)
 
 
 def context():
@@ -1326,6 +1340,9 @@ def _leg(v: dict, a, b, before):
     return way
 
 
+STAND_IN: set = set()       # 0.8.11: buses whose road track this moment stops short of their newest report
+
+
 def road_legs(v: dict, now: float, deadline: float | None):
     """The legs between this bus's reports that the replay can still show; computes missing ones while
     time allows (deadline None = no limit). None if any is still missing."""
@@ -1346,6 +1363,8 @@ def road_legs(v: dict, now: float, deadline: float | None):
         got = known.get(a[0])
         if got is None or got[0] != b[0]:
             if deadline is not None and (time.monotonic() >= deadline or FETCHING.is_set()):
+                if legs:
+                    STAND_IN.add(v['key'])
                 return legs or None      # 0.8.9: carry on along the legs already worked out (the newest comes later)
             got = known[a[0]] = (b[0], _leg(v, a, b, hist[i - 1] if i > 0 else None))
         legs.append((a[0], b[0], got[1]))
@@ -1372,6 +1391,9 @@ def road_replay_for(v: dict, now: float, deadline: float | None):
     r = replay.track(sh, placed, now, REPLAY_SECONDS, KEEP_LEFT_M, jumps)
     if r is not None:
         r['road'] = True
+        if v['key'] in STAND_IN:
+            r['standIn'] = True
+    STAND_IN.discard(v['key'])
     return r
 
 
@@ -1514,6 +1536,8 @@ def replay_for(v: dict, now: float, deadline: float):
         STATE['replayMemoHits'] = STATE.get('replayMemoHits', 0) + 1
         return replay.from_now(m[2], now)
     r = _replay_for(v, now, deadline)
+    if r is not None and r.pop('standIn', False):
+        return r                     # 0.8.11: a stand-in is not kept, so the next answer carries the new report
     if r is not None:
         if len(REPLAY_MEMO) > 40000:
             REPLAY_MEMO.clear()
@@ -1542,7 +1566,10 @@ def _replay_for(v: dict, now: float, deadline: float):
         with JOURNEY_LOCK:
             sh = SHAPES.get(f[0])
     if sh is not None:
-        return replay.track(sh, f[1], now, REPLAY_SECONDS, KEEP_LEFT_M)
+        r = replay.track(sh, f[1], now, REPLAY_SECONDS, KEEP_LEFT_M)
+        if r is not None and not fresh:
+            r['standIn'] = True      # 0.8.11: up to an older report only - never remembered (see replay_for)
+        return r
     known = TRIPS.get(v['key'])
     if v.get('origin') and v.get('dep') and (known is None or known[0] != journey_sig(v)):
         return None                  # not worked out yet: may still match its timetable
