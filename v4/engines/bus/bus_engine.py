@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.4'
+ENGINE_VERSION = '0.8.5'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1552,6 +1552,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'timetableMatch': STATE.get('timetableMatch'), 'replaySeconds': REPLAY_SECONDS,
                                         'journeyRound': STATE.get('journeyRound'),
                                         'replayMemo': {'made': STATE.get('replayMemoMade', 0), 'reused': STATE.get('replayMemoHits', 0)},
+                                        'cpuSeconds': meter_summary(),
                                         'lastView': STATE.get('lastView')})
         if split.path == '/details':
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
@@ -1568,6 +1569,42 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt, *args):
         pass
+
+
+# 0.8.5 (owner 3 Nov 13:16: load test still ~25 viewers after 0.8.4 - measure, don't guess): processor seconds
+# spent in each part of this engine since it started, shown in /status and tpa-status. Parts can sit inside
+# others ("answers" includes "routes", "routes" includes "road routes" and "matching now"), so they do not add up.
+METER: dict = {}
+METER_STARTED = time.process_time()
+
+
+def _metered(name, fn):
+    def wrapped(*a, **k):
+        t0 = time.thread_time()
+        try:
+            return fn(*a, **k)
+        finally:
+            METER[name] = METER.get(name, 0.0) + time.thread_time() - t0
+    wrapped.__name__ = getattr(fn, '__name__', name)
+    return wrapped
+
+
+snapshot = _metered('answers', snapshot)
+_replay_for = _metered('routes', _replay_for)
+road_replay_for = _metered('road routes', road_replay_for)
+_follow_bus = _metered('matching', _follow_bus)
+fetch_once = _metered('download', fetch_once)
+save_memory = _metered('saving', save_memory)
+motion_for = _metered('old-style moves', motion_for)
+placed_for = _metered('placing on roads', placed_for)
+details = _metered('bus boxes', details)
+Handler.reply = _metered('packaging', Handler.reply)
+
+
+def meter_summary() -> dict:
+    out = {k: round(v, 1) for k, v in sorted(METER.items(), key=lambda kv: -kv[1])}
+    out['engine total'] = round(time.process_time() - METER_STARTED, 1)
+    return out
 
 
 def main() -> None:
