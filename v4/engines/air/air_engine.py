@@ -32,7 +32,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.3.0'
+ENGINE_VERSION = '0.4.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -55,6 +55,10 @@ IDLE_POLL_SECONDS = max(20, int(os.environ.get('TPA_AIR_IDLE_POLL_SECONDS', '30'
 HOME_VIEW = (50.0, -5.7, 55.8, 1.8)   # south, west, north, east: England, Wales and southern Scotland
 MAX_VIEW_SPAN = 9.0          # degrees of latitude; wider views ask the user to zoom in
 COOLDOWN_SECONDS = 300       # after 401/403/429/451, as in v3
+# 0.4.0 (3 Nov load tests: ADSB.lol answered 429 "slow down" while pretend viewers watched twelve cities): on the server
+# (always on) the engine asks for the whole UK in two fixed circles each round and serves every viewer from them, so the
+# number of requests no longer depends on how many places are watched: 2 per round, at most 6 a minute.
+NATIONAL = ((52.3, -2.2, 250), (56.8, -4.0, 250))   # England, Wales and the south / Scotland and Northern Ireland
 
 KEY = (os.environ.get('TPA_ADSBLOL_API_KEY') or '').strip()
 _test = os.environ.get('TPA_AIR_TEST_URL', '').strip()
@@ -103,6 +107,8 @@ def circle_for(view):
 def circle_covers(circle, view) -> bool:
     if not circle:
         return False
+    if circle == 'national':
+        return True
     clat, clon, r = circle
     s, w, n, e = view
     return all(nm_between(clat, clon, la, lo) <= r for la, lo in ((s, w), (s, e), (n, w), (n, e)))
@@ -143,6 +149,51 @@ def context():
         return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     except ImportError:
         return ssl.create_default_context()
+
+
+def fetch_national() -> None:
+    """0.4.0: both UK circles, merged (aircraft seen in both kept once, freshest report)."""
+    got, started, size = {}, time.time(), 0
+    for circle in NATIONAL:
+        part = fetch_part(circle)
+        if part is None:
+            return                   # failed (already recorded): keep the last good copy
+        raw_len, aircraft = part
+        size += raw_len
+        for a in aircraft:
+            if a['hex'] not in got or a['reported'] > got[a['hex']]['reported']:
+                got[a['hex']] = a
+    with LOCK:
+        STATE.update(aircraft=list(got.values()), fetchedAt=started, circle='national', lastError='', consecutiveErrors=0,
+                     downloadBytes=size)
+        STATE['downloadsThisRun'] += 1
+    print(f'ADSB.lol OK: {len(got)} aircraft over the UK, {size//1024} KB', flush=True)
+
+
+def fetch_part(circle):
+    """One circle; (bytes, aircraft) or None after recording the failure."""
+    clat, clon, radius = circle
+    url = POINT_URL.format(lat=clat, lon=clon, radius=radius)
+    headers = {'User-Agent': f'TPA-Air-Engine/{ENGINE_VERSION} (+mailto:tpaprojectuk@gmail.com)', 'Accept': 'application/json'}
+    if KEY:
+        headers['api-auth'] = KEY
+    started = time.time()
+    try:
+        with urlopen(Request(url, headers=headers), timeout=20, context=context()) as res:
+            raw = res.read(MAX_DOWNLOAD + 1)
+        if len(raw) > MAX_DOWNLOAD:
+            raise ValueError('too-large')
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError('not-an-object')
+        return len(raw), parse(payload, started)
+    except HTTPError as exc:
+        _fail(f'adsblol-http-{exc.code}', exc.code in (401, 403, 429, 451))
+    except (URLError, TimeoutError, OSError) as exc:
+        _fail('network-' + type(exc).__name__, False)
+    except ValueError as exc:
+        _fail('bad-data-' + str(exc)[:30], False)
+    return None
 
 
 def fetch_once(circle) -> None:
@@ -188,6 +239,17 @@ def poller() -> None:
         WAKE.wait(timeout=5)
         WAKE.clear()
         now = time.time()
+        if ALWAYS_ON:                          # 0.4.0: the whole UK, at a fixed pace
+            with LOCK:
+                viewed = now - STATE['lastDemandAt'] < DEMAND_WINDOW
+                cooling = now < STATE['cooldownUntil']
+                wait = POLL_SECONDS * min(6, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else POLL_SECONDS
+                go = not cooling and now - STATE['lastAttemptAt'] >= (wait if viewed else max(wait, IDLE_POLL_SECONDS))
+                if go:
+                    STATE['lastAttemptAt'] = now
+            if go:
+                fetch_national()
+            continue
         with LOCK:
             viewed = now - STATE['lastDemandAt'] < DEMAND_WINDOW
             wanted = STATE['wanted'] if (viewed and STATE['wanted'] is not None) or not ALWAYS_ON else HOME_VIEW
