@@ -32,15 +32,16 @@ import time
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
-HQ_VERSION = '4.13.0'
+HQ_VERSION = '4.13.1'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
+# 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
 # HQ relays data only (JSON frames, PNG overlay tiles); it contains no supplier
 # logic, keys or transport-specific code. An engine failing affects only its socket.
 ENGINES = {}
 for _pair in os.environ.get('TPA_HQ_ENGINES', '').split(','):
     _name, _, _url = _pair.strip().partition('=')
-    if _name in ('air', 'sea', 'rail', 'bus', 'road') and re.fullmatch(r'http://127\.0\.0\.1:\d{2,5}', _url.strip()):
+    if _name in ('air', 'sea', 'rail', 'bus', 'road') and re.fullmatch(r'http://(127\.0\.0\.1|10(\.\d{1,3}){3}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|192\.168(\.\d{1,3}){2}):\d{2,5}', _url.strip()):
         ENGINES[_name] = _url.strip()
 # 4.0.9: owner decision 30 Oct 2026. A component can be "parked" by server
 # setting (e.g. TPA_HQ_PARKED=sea). HQ code is unchanged per component: the
