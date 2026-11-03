@@ -94,11 +94,23 @@ function listEntities(){return IDS.flatMap(id=>{
 const ICON_PATHS=Object.freeze({
   air:['M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z',''],
   sea:['M3 19h26l-3.4 7.3a1.8 1.8 0 0 1-1.6 1.1H8a1.8 1.8 0 0 1-1.6-1.1ZM7 12.5h17V18H7ZM9 14.2h2.6v2H9ZM13 14.2h2.6v2H13ZM17 14.2h2.6v2H17ZM10 8.5h8V12h-8ZM20.2 5.5h3.6V12h-3.6Z','M20.2 7.2h3.6v1.6h-3.6Z'],
-  rail:['M11 3h10c3.2 0 5.3 2.1 5.8 5.2l1.6 13.6c.4 3.1-1.6 5.2-4.7 5.2H8.3c-3.1 0-5.1-2.1-4.7-5.2L5.2 8.2C5.7 5.1 7.8 3 11 3ZM8.2 9h15.6l1.3 7.6H6.9ZM7.6 20.2h3.6v2.2H7.6ZM20.8 20.2h3.6v2.2h-3.6ZM8.2 27h4.2l-1 3.2H7.1ZM19.6 27h4.2l1.1 3.2h-4.3Z','M13 4.8h6v2.4h-6Z'],
+  rail:['M3 11h18.5c3.6 0 6.2 1.6 7.7 4.6l.9 1.8c.6 1.3-.3 2.6-1.7 2.6H3ZM5 13.2h3v3H5ZM10 13.2h3v3h-3ZM15 13.2h3v3h-3ZM21 13.2h2.6c1.5 0 2.8.8 3.5 2.2l.4.8H21ZM5.4 21.2a1.7 1.7 0 1 0 3.4 0ZM9.8 21.2a1.7 1.7 0 1 0 3.4 0ZM19.4 21.2a1.7 1.7 0 1 0 3.4 0ZM23.8 21.2a1.7 1.7 0 1 0 3.4 0ZM2 23.4h28v1.3H2Z','M3.6 17.4h24.6v1.1H3.6Z'],   // 4.15.1 (owner 21:56): side-on, so trains and buses differ at a glance
   bus:['M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z','M9.7 5.7h12.6v1.6H9.7Z']
 });
 const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
 function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋'}[id]||'•';}
+// 4.15.1 (owner 3 Nov 22:01: "get the whole site glittered", all in house): the side menu, the vehicle box, the welcome
+// tiles and the logo use TPA's own drawings too. The map picture is ours as well; traffic keeps its plain wave sign.
+const UI_PATHS=Object.freeze({map:['M3.5 7.2 11 4l10 3.2L28.5 4v21L21 28.2 11 25l-7.5 3.2ZM10.4 5.6v18.9h1.2V5.6ZM20.4 8.3v18.9h1.2V8.3Z','']});
+function ownIcon(id){const pair=ICON_PATHS[id]||UI_PATHS[id];if(!pair)return document.createTextNode(iconFor(id));
+  const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 0 32 32');svg.setAttribute('focusable','false');
+  svg.setAttribute('aria-hidden','true');svg.setAttribute('class','own-icon');
+  const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',pair[0]);path.setAttribute('fill-rule','evenodd');svg.append(path);
+  if(pair[1]){const acc=document.createElementNS('http://www.w3.org/2000/svg','path');acc.setAttribute('d',pair[1]);acc.setAttribute('class','acc');svg.append(acc);}
+  return svg;}
+function ownIconsInPage(){for(const t of document.querySelectorAll('.layer-toggle[data-component]')){const id=t.dataset.component,box=t.querySelector('.layer-icon');
+    if(box&&ICON_PATHS[id]){box.replaceChildren(ownIcon(id));}}
+  const logo=document.querySelector('.brand-plane');if(logo)logo.replaceChildren(ownIcon('air'));}
 // 4.11.0: the kids pictures (our own drawings, with friendly faces). Fixed text, no data inside.
 const KID_ART={
   bus:'<svg viewBox="0 0 64 48" focusable="false"><rect x="4" y="5" width="56" height="32" rx="9" fill="#ffc531" stroke="#b77f00" stroke-width="2"/><rect x="9" y="10" width="31" height="12" rx="3" fill="#bfe9ff"/><rect x="44" y="10" width="12" height="15" rx="3" fill="#bfe9ff"/><rect x="5" y="26" width="54" height="3" fill="#e5533d"/><circle cx="47.5" cy="16" r="2.6" fill="#fff"/><circle cx="53" cy="16" r="2.6" fill="#fff"/><circle cx="48" cy="16.4" r="1.4" fill="#222"/><circle cx="53.5" cy="16.4" r="1.4" fill="#222"/><path d="M46 32 q4.5 3.5 9 0" stroke="#7a3b00" stroke-width="2" fill="none" stroke-linecap="round"/><circle cx="17" cy="38" r="6" fill="#333"/><circle cx="17" cy="38" r="2.4" fill="#ccc"/><circle cx="47" cy="38" r="6" fill="#333"/><circle cx="47" cy="38" r="2.4" fill="#ccc"/></svg>',
@@ -153,7 +165,7 @@ async function loadDetails(e,box){
 function selectEntity(e){
   if(KIDS)return kidsBubble(e);
   state.selected=e;
-  const h=document.createElement('strong');h.textContent=iconFor(e.component)+' '+e.label;
+  const h=document.createElement('strong');h.className='box-title';h.append(ownIcon(e.component),document.createTextNode(' '+e.label));
   const live=!!state.live[e.component];
   const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
   const info=document.createElement('small');info.textContent=infoText(e,!!whereNow(e,serverNow())?.est);void seen;
@@ -169,7 +181,7 @@ function selectEntity(e){
   // 4.10.0 (owner 1 Nov 17:49): "Follow me!" - also here, for phones and tablets (no right-click)
   const fb=document.createElement('button');fb.type='button';fb.className='follow-button';
   fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};
-  const rb=REPORT_ON?el('button','report-button','📋 Report this'):null;
+  const rb=REPORT_ON?el('button','report-button','Report this'):null;
   if(rb){rb.type='button';rb.onclick=()=>copyReport(e);}
   selected.replaceChildren(...[h,info,more,fb,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
   $('map-place').textContent=e.label.toUpperCase();paint();
@@ -525,7 +537,7 @@ function stopFollow(){
 }
 function updateFollowUI(){
   const fb=selected.querySelector('.follow-button');
-  if(fb){const on=!!follow&&!!state.selected&&isFollowing(state.selected);fb.textContent=KIDS?(on?'⏹ Stop riding':'🚀 Ride along!'):on?'■ Stop following':'📍 Follow me!';
+  if(fb){const on=!!follow&&!!state.selected&&isFollowing(state.selected);fb.textContent=KIDS?(on?'⏹ Stop riding':'🚀 Ride along!'):on?'■ Stop following':'Follow me!';
     fb.setAttribute('aria-pressed',String(on));fb.hidden=!map;}
   root.classList.toggle('following',!!follow);
 }
@@ -560,7 +572,7 @@ function openFollowMenu(e,x,y){
   closeFollowMenu();
   const menu=document.createElement('div');menu.className='follow-menu';menu.setAttribute('role','menu');
   const item=document.createElement('button');item.type='button';item.setAttribute('role','menuitem');
-  item.textContent=isFollowing(e)?'■ Stop following':'📍 Follow me!';
+  item.textContent=isFollowing(e)?'■ Stop following':'Follow me!';
   item.onclick=ev=>{ev.stopPropagation();if(isFollowing(e))stopFollow();else startFollow(e);closeFollowMenu();};
   menu.append(item);document.body.append(menu);followMenu=menu;
   const r=menu.getBoundingClientRect();
@@ -703,7 +715,7 @@ function prepReady(id){
 function makeReadyList(){
   const box=el('div','prep-list');box.setAttribute('aria-live','polite');
   const items={};for(const [id,icon,name] of PREP_ITEMS){const row=el('span','prep-item');row.dataset.id=id;
-    row.append(el('span','prep-icon',icon),el('span','prep-name',name),el('span','prep-tick','…'));items[id]=row;box.append(row);}
+    const pic=el('span','prep-icon',(ICON_PATHS[id]||UI_PATHS[id])?'':icon);if(ICON_PATHS[id]||UI_PATHS[id])pic.append(ownIcon(id));row.append(pic,el('span','prep-name',name),el('span','prep-tick','…'));items[id]=row;box.append(row);}
   prepLists.add({box,items,t0:performance.now()});updatePrep();return box;
 }
 function updatePrep(){
@@ -1322,6 +1334,7 @@ async function loadSiteConfig(){
   if(welcome&&cfg.welcome?.enabled===true&&!seen)openDialog(welcome);
   startPreparing(!(welcome&&cfg.welcome?.enabled===true&&!seen));   // 4.6.0: returning visitors get the short panel
 }
+if(!KIDS)ownIconsInPage();
 paint();discover();beginMap();setInterval(discover,30000);
 // 4.0.11: also check every 10 s, but only while a live layer is still connecting.
 setInterval(()=>{if(IDS.some(id=>state.live[id]&&!state.parked[id]&&state.status[id]!=='ready'))discover();},10000);

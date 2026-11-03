@@ -85,3 +85,17 @@ h1 em{color:var(--amber)}
 .review-pin:not(.bus):not(.rail):not(.sea):not(.road){background:#0f2a3d;border-color:#6fd3ff}
 .review-pin.sea{background:#3a2410;border-color:#ffb36a;color:#f2f7fb}
 .review-pin.rail{color:#f2f7fb}
+
+/* 4.15.1 (owner 21:56: buses and trains alike when bunched): trains ROUND and PURPLE (the Trains colour in the side menu),
+   seen side-on with a purple headcode board; buses stay square, green, front-on, with the amber destination blind */
+.review-pin.rail,.marker-layer .review-pin.rail{background:#3b2355;border-color:#c89cff;border-radius:50%}
+.marker-layer .review-pin.rail .review-route,.review-pin.rail .review-route{background:#2a1640;color:#f2e8ff;border-color:#c89cff}
+/* TPA's own drawings everywhere else too */
+.own-icon{width:1.15em;height:1.15em;display:inline-block;vertical-align:-0.18em;fill:currentColor}
+.own-icon .acc{fill:var(--amber)}
+.layer-icon .own-icon{width:24px;height:24px}
+.layer-icon.aircraft{background:#0f2a3d;color:#e8f6ff}.layer-icon.shipping{background:#3a2410;color:#fff3e6}
+.layer-icon.rail{background:#3b2355;color:#f4ecff;border-color:#c89cff;border-radius:50%}.layer-icon.buses{background:#0b3d2c;color:#ecfff7}
+.brand-plane .own-icon{width:30px;height:30px;transform:rotate(35deg);fill:var(--amber)}
+.box-title .own-icon{margin-right:2px;color:var(--amber)}
+.prep-icon .own-icon{width:26px;height:26px}
