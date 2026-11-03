@@ -67,7 +67,8 @@ const d=dims(),p=merc(lon,lat,state.z),c=merc(state.lon,state.lat,state.z);retur
 // position is the bottom-middle of the number board, with the icon standing above it like a pin.
 // Other icons stay centred. (Board top 30 px + board 16 px, scaled, + 8 px of fixed borders; measured.)
 function anchorOf(component){return component==='bus'||component==='rail'?'translate(-50%,calc(var(--pin-s,1) * -46px - 8px))':'translate(-50%,-50%)';}
-function pinScale(z){return (KIDS?1.6:1)*(z<12.5?0.7:z<14.5?0.82:z<16.5?1:1.2);}
+// 4.14.0 (owner 3 Nov 20:35: smaller icons, "smaller when zoomed out"): small at town level, today's size close in
+function pinScale(z){return (KIDS?1.6:1)*(z<11.5?0.5:z<12.5?0.56:z<13.5?0.64:z<14.5?0.74:z<15.5?0.86:z<16.5?1:1.1);}
 function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}
   const ps=String(pinScale(state.z));if(markerLayer.style.getPropertyValue('--pin-s')!==ps)markerLayer.style.setProperty('--pin-s',ps);paint();}
 function gotoPlace(lon,lat,z,label){stopFollow();if(map)map.setView([lat,lon],z,{animate:false});state.lon=lon;state.lat=lat;state.z=z;selected.classList.add('hidden');state.selected=null;$('map-place').textContent=(label||'SELECTED LOCATION').toUpperCase();$('sidebar').classList.remove('open');paint();}

@@ -1,0 +1,80 @@
+/* TPA look 1.0 (owner 3 Nov 20:35-20:37: "more professional ... smaller icons and changes to fonts", control-room dark,
+   "its own look" - not Flightradar, not Citymapper). A British transport control room: departure-board amber and
+   signal teal on deep navy-black, signage type (Barlow, SIL Open Font Licence - assets/fonts/OFL.txt), route numbers
+   like a bus's destination blind. Frame only: maps, data and movement are untouched. Loaded after hq.css. */
+@font-face{font-family:'TPA Sans';src:url(/assets/fonts/Barlow-Regular.woff) format('woff');font-weight:400;font-display:swap}
+@font-face{font-family:'TPA Sans';src:url(/assets/fonts/Barlow-Medium.woff) format('woff');font-weight:500;font-display:swap}
+@font-face{font-family:'TPA Sans';src:url(/assets/fonts/Barlow-SemiBold.woff) format('woff');font-weight:600 900;font-display:swap}
+@font-face{font-family:'TPA Sign';src:url(/assets/fonts/BarlowSemiCondensed-SemiBold.woff) format('woff');font-weight:400 600;font-display:swap}
+@font-face{font-family:'TPA Sign';src:url(/assets/fonts/BarlowSemiCondensed-Bold.woff) format('woff');font-weight:700 900;font-display:swap}
+
+:root{--bg:#05080e;--panel:#0a111c;--panel-2:#0e1826;--line:#1c2a3b;--line-2:#2a3c52;--soft:#8597ad;--white:#edf3f9;
+  --amber:#ffb21e;--amber-dim:#c98a12;--teal:#2fc7b5;--cyan:#52cdf1;--orange:#ffad65;--green:#3fd39a;--accent:#ffb21e;
+  --tpa-glass:rgba(8,13,22,.90);--tpa-r:7px;--tpa-sign:'TPA Sign','TPA Sans',Inter,system-ui,sans-serif}
+body{font-family:'TPA Sans',Inter,ui-sans-serif,system-ui,-apple-system,'Segoe UI',Arial,sans-serif;font-feature-settings:'lnum' 1}
+
+/* ---- side menu ---- */
+.sidebar{background:linear-gradient(180deg,#0a111c,#06090f 70%);border-right:1px solid var(--line)}
+.brand{border-bottom:1px solid var(--line)}
+.brand-mark{border-color:var(--line-2);background:radial-gradient(circle at center,#12233a 0,#070d17 72%);box-shadow:none}
+.rings,.rings:after{border-color:#22405a}
+.brand-plane{color:var(--amber);text-shadow:none}
+h1{font-family:var(--tpa-sign);font-weight:700;letter-spacing:.02em}
+h1 em{color:var(--amber)}
+.eyebrow,.section-title h2,.micro,.stat-label,.onair{font-family:var(--tpa-sign);letter-spacing:.14em}
+.eyebrow{color:var(--teal)}
+.onair{color:var(--amber)}
+.onair #localclock{font-variant-numeric:tabular-nums;color:var(--soft);font-family:var(--tpa-sign);letter-spacing:.08em}
+.pulse,.dot-green{background:var(--teal);box-shadow:0 0 0 3px #2fc7b51f}
+.panel{border-bottom:1px solid var(--line)}
+.layer-toggle{background:transparent;border:1px solid var(--line);border-radius:var(--tpa-r);min-height:54px;padding:8px 9px}
+.layer-toggle:hover{background:#ffffff06;border-color:var(--line-2)}
+.layer-icon{border-radius:6px;width:34px;height:34px}
+.layer-copy strong{font-weight:600;letter-spacing:.01em}
+.switch{border-color:var(--line-2);background:#101a28}
+.layer-toggle input:checked+.switch{background:#0f5a52;border-color:var(--teal)}
+.layer-toggle input:checked+.switch:before{background:#dffcf7}
+.stats-grid>div{background:var(--panel-2);border:1px solid var(--line);border-radius:var(--tpa-r)}
+.stat-num{font-family:var(--tpa-sign);font-weight:700;color:var(--amber)!important;font-variant-numeric:tabular-nums}
+.search-wrap{border-color:var(--line-2);background:#070c15;border-radius:var(--tpa-r)}
+
+/* ---- on the map: one family of quiet, square-shouldered panels ---- */
+.crumb,.control-button,.glass-chip,.map-bottom>*,.map-selection,.toast{background:var(--tpa-glass);border:1px solid var(--line-2);
+  box-shadow:0 1px 0 #ffffff0a inset,0 6px 18px #0006;-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+.crumb{border-radius:var(--tpa-r);padding:10px 13px;font-family:var(--tpa-sign);font-weight:600;letter-spacing:.12em;font-size:11px}
+.crumb strong{font-size:11px;font-weight:700;color:var(--white)}
+.control-button{border-radius:var(--tpa-r);padding:10px 13px;font-family:var(--tpa-sign);font-weight:700;letter-spacing:.1em;font-size:11px}
+.control-button:hover{background:#13202f;border-color:var(--amber-dim)}
+.map-chips{gap:6px}
+.glass-chip{border-radius:4px;padding:6px 10px 6px 8px;font-family:var(--tpa-sign);font-weight:600;letter-spacing:.12em;font-size:10.5px;color:var(--soft);
+  border-left:3px solid var(--line-2)}
+.glass-chip strong{font-size:10.5px;font-weight:700;color:var(--white)}
+.chip-dot{width:6px;height:6px;border-radius:1px}
+.map-bottom>*{border-radius:5px;font-family:var(--tpa-sign);font-weight:600;letter-spacing:.1em;font-size:10px;color:#b9c8d8}
+#zoom-level{font-variant-numeric:tabular-nums;color:var(--amber)}
+.preview-stamp{color:var(--amber)}
+.map-controls button,.leaflet-control-zoom a{background:var(--tpa-glass)!important;color:var(--white)!important;border-color:var(--line-2)!important}
+
+/* ---- the vehicle box ---- */
+.map-selection{border-radius:9px;padding:14px 16px;border-top:2px solid var(--amber)}
+.map-selection strong{font-family:var(--tpa-sign);font-weight:700;font-size:16px;letter-spacing:.02em}
+.map-selection small{color:var(--soft);font-size:11px;line-height:1.45}
+.vehicle-details{font-variant-numeric:tabular-nums}
+.tpa-link-button{border-radius:6px!important;font-family:var(--tpa-sign);font-weight:700;letter-spacing:.06em}
+
+/* ---- vehicle icons: smaller, crisper; route numbers like a destination blind ---- */
+.review-pin{border-radius:8px;box-shadow:0 1px 4px #02060ccc}
+.review-pin.bus{background:#0b3d2c;border-color:#49d6a0}
+.review-pin.rail{background:#14213f;border-color:#8fb2ff}
+.review-pin.bus .review-route,.review-pin .review-route{font-family:var(--tpa-sign);font-weight:700;letter-spacing:.04em;
+  background:#120c02;color:var(--amber);border:2px solid #6b4a0c;border-radius:3px;box-shadow:0 1px 3px #000a}
+.review-pin.selected-pin,.review-pin:focus-visible{outline:2px solid var(--amber);outline-offset:3px;box-shadow:0 0 0 6px #ffb21e2e,0 3px 8px #000a;color:inherit}
+.review-pin.selected-pin::after{border-color:var(--amber);border-width:1.5px;inset:-8px;border-radius:12px}
+
+/* ---- welcome screen ---- */
+.welcome-card{border-radius:10px;border-color:var(--line-2)}
+.tpa-primary{border-radius:6px!important;font-family:var(--tpa-sign);font-weight:700;letter-spacing:.08em}
+/* route numbers stay readable however small the icon gets */
+.review-pin.bus .review-route,.marker-layer .review-pin.rail .review-route{font-size:max(10px,calc(11px*var(--pin-s,1)));
+  line-height:max(13px,calc(15px*var(--pin-s,1)));padding:0 max(3px,calc(5px*var(--pin-s,1)));
+  top:calc(46px*var(--pin-s,1) - max(13px,calc(15px*var(--pin-s,1))))}   /* the board's foot stays exactly on the place (see anchorOf) */
