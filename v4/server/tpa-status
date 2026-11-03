@@ -12,9 +12,9 @@ REMOTE_BUS="$(sed -n 's/^TPA_REMOTE_BUS=//p' /etc/tpa/remote.env 2>/dev/null | h
 ok=1
 PARTS=(tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web)
 [[ "$ROLE" == bus ]] && PARTS=(tpa-bus)
-[[ "$ROLE" != bus && "$BUS_HOST" != 127.0.0.1 ]] && PARTS=(tpa-road tpa-air tpa-rail tpa-hq tpa-web)
+[[ "$ROLE" != bus && "$REMOTE_BUS" =~ ^[0-9.]+$ ]] && PARTS=(tpa-road tpa-air tpa-rail tpa-hq tpa-web)
 printf '%-32s %-9s %s\n' "Part" "State" "Memory"
-[[ "$ROLE" != bus && "$BUS_HOST" != 127.0.0.1 ]] && printf '%-32s %-9s %s\n' "tpa-bus" "elsewhere" "on its own server ($BUS_HOST)"
+[[ "$ROLE" != bus && "$REMOTE_BUS" =~ ^[0-9.]+$ ]] && printf '%-32s %-9s %s\n' "tpa-bus" "elsewhere" "on its own server ($BUS_HOST)"
 for s in "${PARTS[@]}"; do
     st="$(systemctl is-active "$s" 2>/dev/null || true)"
     [[ "$st" == active ]] || ok=0
