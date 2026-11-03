@@ -25,13 +25,14 @@ import re
 import socket
 import ssl
 import tempfile
+import math
 import threading
 import time
 
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
-HQ_VERSION = '4.12.0'
+HQ_VERSION = '4.13.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # HQ relays data only (JSON frames, PNG overlay tiles); it contains no supplier
@@ -192,6 +193,70 @@ def bbox_query(query):
         if k in ('west', 'south', 'east', 'north') and re.fullmatch(r'-?\d{1,3}(\.\d{1,7})?', v):
             values[k] = v
     return '?' + '&'.join(f'{k}={values[k]}' for k in ('west', 'south', 'east', 'north')) if len(values) == 4 else ''
+
+
+# 4.13.0 (owner 1 Nov 21:00 load test: 25 viewers fine, 50 too many; 3 Nov "lets go" on shared areas):
+# viewers looking at roughly the same place share one answer. Each request's area is widened to a fixed grid
+# (cells about a quarter of the view, so nearby viewers land on the same area), and an engine's answer for
+# that area is kept for SHARE_SECONDS and handed to everyone who asks for it; if several ask at once, the
+# engine is asked once and the others wait for that answer. Generic: HQ knows nothing about any transport.
+SHARE_SECONDS = 4.0
+SHARED: dict = {}
+INFLIGHT: dict = {}
+SHARED_LOCK = threading.Lock()
+SHARE_STATS = {'asked': 0, 'shared': 0}
+
+
+def area_query(query):
+    """The request's view widened to the shared grid; '' if it has no proper view."""
+    q = bbox_query(query)
+    if not q:
+        return ''
+    v = dict(part.split('=') for part in q[1:].split('&'))
+    w, s, e, n = (float(v[k]) for k in ('west', 'south', 'east', 'north'))
+    if not (s < n and w < e):
+        return q
+    g = min(4.0, max(1 / 1024, 2.0 ** math.floor(math.log2(max(n - s, 1e-4) / 4))))
+    gl = g * 2                                    # a degree of longitude is about half as long here
+    s2, n2 = max(-85.0, math.floor(s / g) * g), min(85.0, math.ceil(n / g) * g)
+    w2, e2 = max(-180.0, math.floor(w / gl) * gl), min(180.0, math.ceil(e / gl) * gl)
+    return f'?west={w2:.4f}&south={s2:.4f}&east={e2:.4f}&north={n2:.4f}'
+
+
+def shared_snapshot(comp, query, fetch):
+    """One engine answer per (layer, area) every SHARE_SECONDS, shared by everyone asking for it."""
+    key = (comp, area_query(query))
+    with SHARED_LOCK:
+        SHARE_STATS['asked'] += 1
+        hit = SHARED.get(key)
+        if hit and hit[0] > time.monotonic():
+            SHARE_STATS['shared'] += 1
+            return hit[1]
+        ev = INFLIGHT.get(key)
+        owner = ev is None
+        if owner:
+            ev = INFLIGHT[key] = threading.Event()
+    if not owner:
+        ev.wait(7)
+        with SHARED_LOCK:
+            hit = SHARED.get(key)
+            if hit:
+                SHARE_STATS['shared'] += 1
+                return hit[1]
+        raise RuntimeError('shared-answer-missing')
+    try:
+        raw = fetch(key[1])
+        with SHARED_LOCK:
+            now = time.monotonic()
+            SHARED[key] = (now + SHARE_SECONDS, raw)
+            if len(SHARED) > 600:
+                for k in [k for k, (t, _) in SHARED.items() if t <= now] or list(SHARED)[:200]:
+                    SHARED.pop(k, None)
+        return raw
+    finally:
+        with SHARED_LOCK:
+            INFLIGHT.pop(key, None)
+        ev.set()
 
 
 def sanitized_error(exc):
@@ -446,11 +511,14 @@ class HQHandler(SimpleHTTPRequestHandler):
                 if comp in PARKED:
                     return self.json_reply(503,{'component':comp,'health':'unavailable','parked':True,'message':'Coming soon; parked by owner; no data'})
                 if comp in ENGINES and parts[5]=='snapshot':
-                    try:
-                        raw,_=engine_get(comp,'/snapshot'+bbox_query(split.query),1_200_000,6)
+                    def fetch(area,comp=comp):
+                        raw,_=engine_get(comp,'/snapshot'+area,1_200_000,6)
                         frame=json.loads(raw)
                         if not isinstance(frame,dict) or frame.get('component')!=comp or frame.get('contractVersion')!='1.0':
                             raise ValueError('engine-contract')
+                        return raw
+                    try:
+                        raw=shared_snapshot(comp,split.query,fetch)      # 4.13.0: one answer per area, shared
                         return self.reply(200,raw,'application/json; charset=utf-8')
                     except Exception:
                         return self.json_reply(503,{'component':comp,'health':'unavailable','message':'Engine not running or not responding'})
