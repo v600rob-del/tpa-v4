@@ -35,6 +35,7 @@ import json
 import math
 import os
 import random
+import html
 import re
 import signal
 import ssl
@@ -53,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.5'
+ENGINE_VERSION = '0.8.6'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -193,8 +194,13 @@ def parse_time(text: str) -> float | None:
         return None
 
 
+_CTRL = re.compile(r'[\x00-\x1f\x7f]+')
+
+
 def clean(text: str, limit: int) -> str:
-    return re.sub(r'[\x00-\x1f\x7f]+', ' ', text or '').strip()[:limit]
+    if not text:
+        return ''
+    return (text if text.isprintable() else _CTRL.sub(' ', text)).strip()[:limit]
 
 
 FIELDS = ('Latitude', 'Longitude', 'LineRef', 'PublishedLineName', 'VehicleRef', 'OperatorRef',
@@ -226,8 +232,9 @@ class GuardedStream(io.RawIOBase):
         return len(data)
 
 
-def parse_siri(stream) -> list[dict]:
-    """Stream-parse SIRI-VM XML without loading the whole file into memory."""
+def parse_siri_xml(stream) -> list[dict]:
+    """Stream-parse SIRI-VM XML without loading the whole file into memory (the careful reader; until 0.8.6 the
+    only one - now kept as the reference the fast reader is tested against)."""
     out, seen = [], set()
     for _event, elem in iterparse(io.BufferedReader(GuardedStream(stream)), events=('end',)):
         if elem.tag.rsplit('}', 1)[-1] != 'VehicleActivity':
@@ -265,6 +272,126 @@ def parse_siri(stream) -> list[dict]:
                     'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
                     'origin': clean(vals.get('OriginRef', ''), 20), 'dep': clean(vals.get('OriginAimedDepartureTime', ''), 32),
                     'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)})
+    return out
+
+
+# 0.8.6 (owner 3 Nov 13:57, processor meter: reading the national bus file every 30 s was two-thirds of this
+# engine's work): a lean reader that scans the text for the 14 fields used, instead of building every XML element.
+# Same results as parse_siri_xml (tested side by side), same protection against DOCTYPE/ENTITY tricks (GuardedStream),
+# read in 1 MB pieces so memory stays small.
+_ACT_END = re.compile(rb'</(?:[A-Za-z_][\w.-]*:)?VehicleActivity\s*>')
+_ACT_START = re.compile(rb'<(?:[A-Za-z_][\w.-]*:)?VehicleActivity(?=[\s>/])')
+_FIELD = re.compile(rb'<(?:[A-Za-z_][\w.-]*:)?(' + b'|'.join(f.encode() for f in FIELDS) + rb')(?=[\s>])[^>]*(?<!/)>([^<]*)<')
+
+
+_FIELD_TAGS: dict = {}
+
+
+def _field_tags(prefix: bytes):
+    tags = _FIELD_TAGS.get(prefix)
+    if tags is None:
+        tags = _FIELD_TAGS[prefix] = [(f, b'<' + prefix + f.encode() + b'>', b'<' + prefix + f.encode()) for f in FIELDS]
+    return tags
+
+
+def _raw_field(block: bytes, tag: bytes) -> bytes:
+    i = block.find(tag)
+    if i < 0:
+        return b''
+    j = i + len(tag)
+    return block[j:block.find(b'<', j)]
+
+
+_LAST_READ: dict = {}         # (operator, vehicle, time) as written in the file -> the bus as read last time
+_THIS_READ: dict = {}
+
+
+def _activity(block: bytes, out: list, seen: set, prefix: bytes = b'') -> None:
+    # unchanged since the last download (same bus, same report time): the bus as read last time
+    p = b'<' + prefix
+    same = (_raw_field(block, p + b'OperatorRef>'), _raw_field(block, p + b'VehicleRef>'), _raw_field(block, p + b'RecordedAtTime>'))
+    if same[1] and same[2]:
+        prev = _LAST_READ.get(same)
+        if prev is not None:
+            _THIS_READ[same] = prev
+            if prev['key'] not in seen:
+                seen.add(prev['key'])
+                out.append(dict(prev))
+            return
+    vals = {}
+    for name, tag, opener in _field_tags(prefix):
+        i = block.find(tag)
+        if i >= 0:
+            j = i + len(tag)
+            text = block[j:block.find(b'<', j)].strip()
+        else:
+            if block.find(opener) < 0:
+                continue                      # not in this bus's report
+            m = next((m for m in _FIELD.finditer(block) if m.group(1).decode() == name), None)   # a tag with attributes (rare)
+            if m is None:
+                continue
+            text = m.group(2).strip()
+        if text:
+            vals[name] = html.unescape(text.decode('utf-8', 'replace')) if b'&' in text else text.decode('utf-8', 'replace')
+    try:
+        lat, lon = float(vals.get('Latitude', 'nan')), float(vals.get('Longitude', 'nan'))
+    except ValueError:
+        return
+    if not (GB[0] <= lat <= GB[2] and GB[1] <= lon <= GB[3]):
+        return
+    when = parse_time(vals.get('RecordedAtTime', ''))
+    operator, vehicle = clean(vals.get('OperatorRef', ''), 30), clean(vals.get('VehicleRef', ''), 60)
+    if when is None or not vehicle:
+        return
+    key = f'{operator}:{vehicle}'
+    if key in seen:
+        return
+    seen.add(key)
+    bearing = None
+    try:
+        b = float(vals.get('Bearing', ''))
+        if math.isfinite(b) and 0 <= b <= 360:
+            bearing = round(b, 1)
+    except ValueError:
+        pass
+    v = {'key': key, 'lat': round(lat, 6), 'lon': round(lon, 6), 'bearing': bearing,
+         'route': clean(vals.get('PublishedLineName') or vals.get('LineRef') or '', 12),
+         'destination': clean(vals.get('DestinationName', ''), 80).replace('_', ' '), 'recorded': when,
+         'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
+         'origin': clean(vals.get('OriginRef', ''), 20), 'dep': clean(vals.get('OriginAimedDepartureTime', ''), 32),
+         'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)}
+    out.append(v)
+    if same[1] and same[2]:
+        _THIS_READ[same] = dict(v)
+
+
+def parse_siri(stream) -> list[dict]:
+    """The bus file, read the lean way (0.8.6). Malformed files give what can be read, like a cut-short download."""
+    global _LAST_READ, _THIS_READ
+    reader = io.BufferedReader(GuardedStream(stream))
+    out, seen, rest, any_xml = [], set(), b'', False
+    _THIS_READ = {}
+    while True:
+        chunk = reader.read(1 << 20)
+        data = rest + chunk
+        any_xml = any_xml or b'<' in data
+        parts = _ACT_END.split(data)
+        rest = parts.pop()                    # not finished yet: carried on to the next piece
+        for part in parts:
+            k = part.rfind(b'VehicleActivity')
+            if k < 1:
+                continue
+            m = _ACT_START.match(part, part.rfind(b'<', 0, k))
+            if m:
+                lt = m.start() + 1
+                _activity(part[m.end():], out, seen, part[lt:k])
+        if not chunk:
+            break
+        if len(rest) > 8 << 20:              # no VehicleActivity end for 8 MB: not a bus file
+            raise ValueError('bad-xml')
+    if not any_xml:
+        raise ValueError('bad-xml')
+    _LAST_READ = _THIS_READ               # only buses in this file are kept for next time
     return out
 
 
@@ -580,9 +707,13 @@ def _fetch_once(area) -> None:
         # (the national file holds ~16,000 of them on a Sunday morning: memory for nothing).
         in_file = len(vehicles)
         vehicles = [v for v in vehicles if started - v['recorded'] <= DROP_AFTER]
+        # 0.8.6: worked out BEFORE taking the lock - it takes seconds on the server, and every viewer's answer
+        # waits for the lock (the 6 s bus answers in the 3 Nov load tests)
         with LOCK:
-            add_motion(vehicles, STATE['vehicles'])
-            measure_guesses(vehicles, STATE['vehicles'])
+            old = STATE['vehicles']
+        add_motion(vehicles, old)
+        measure_guesses(vehicles, old)
+        with LOCK:
             STATE['busesInFile'] = in_file
             live = {v['key'] for v in vehicles}
             for k in [k for k in PATHS if k not in live]:
