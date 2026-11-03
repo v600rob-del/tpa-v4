@@ -202,3 +202,22 @@ def track(shape, placed, now, delay, keep_left=0.0, jumps=frozenset()):
     for k in range(1, len(times)):              # never backwards in time after rounding
         times[k] = max(times[k], times[k - 1])
     return {'position': pts[0], 'points': pts, 'times': times, 'waiting': False}
+
+
+def from_now(r, now):
+    """0.8.4 (owner 3 Nov 12:32: load test, the bus engine was half the server's work): a track worked out a few
+    seconds ago, cut to start at `now` - the same as working it out again, for a fraction of the cost. The track's
+    clock times do not change; only the part already driven is dropped and the start point is moved along."""
+    if r is None:
+        return None
+    pts, times = r['points'], r['times']
+    if len(times) < 2 or now <= times[0]:
+        return r
+    if now >= times[-1]:
+        return dict(r, position=pts[-1], points=[pts[-1]], times=[round(now, 1)], waiting=True)
+    i = next(k for k in range(1, len(times)) if times[k] > now)
+    t0, t1 = times[i - 1], times[i]
+    f = 1.0 if t1 <= t0 else (now - t0) / (t1 - t0)
+    (x0, y0), (x1, y1) = pts[i - 1], pts[i]
+    p = (x0 + (x1 - x0) * f, y0 + (y1 - y0) * f)
+    return dict(r, position=p, points=[p] + list(pts[i:]), times=[round(now, 1)] + list(times[i:]), waiting=False)

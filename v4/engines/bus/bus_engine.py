@@ -53,7 +53,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.3'
+ENGINE_VERSION = '0.8.4'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1351,8 +1351,31 @@ def details(entity_id: str) -> dict:
     return out
 
 
+# 0.8.4 (owner 3 Nov 12:32, load test: this engine was half the server's work): a bus's replayed track only
+# changes when it sends a new report (about once a minute), so it is worked out once and, for up to
+# REPLAY_MEMO_SECONDS or until the next report, handed to every viewer cut to the current moment.
+REPLAY_MEMO: dict = {}
+REPLAY_MEMO_SECONDS = 15.0
+
+
 def replay_for(v: dict, now: float, deadline: float):
     """The replayed track for this bus, or None (moved the ordinary way)."""
+    if not REPLAY_SECONDS:
+        return None
+    m = REPLAY_MEMO.get(v['key'])
+    if m and m[0] == v['recorded'] and 0 <= now - m[1] < REPLAY_MEMO_SECONDS:
+        STATE['replayMemoHits'] = STATE.get('replayMemoHits', 0) + 1
+        return replay.from_now(m[2], now)
+    r = _replay_for(v, now, deadline)
+    if r is not None:
+        if len(REPLAY_MEMO) > 40000:
+            REPLAY_MEMO.clear()
+        REPLAY_MEMO[v['key']] = (v['recorded'], now, r)
+        STATE['replayMemoMade'] = STATE.get('replayMemoMade', 0) + 1
+    return r
+
+
+def _replay_for(v: dict, now: float, deadline: float):
     if not REPLAY_SECONDS:
         return None
     if TIMETABLE['tt'] is None:
@@ -1528,6 +1551,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'timetableUpdate': STATE.get('timetableUpdate'), 'timetableError': STATE.get('timetableError'),
                                         'timetableMatch': STATE.get('timetableMatch'), 'replaySeconds': REPLAY_SECONDS,
                                         'journeyRound': STATE.get('journeyRound'),
+                                        'replayMemo': {'made': STATE.get('replayMemoMade', 0), 'reused': STATE.get('replayMemoHits', 0)},
                                         'lastView': STATE.get('lastView')})
         if split.path == '/details':
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
