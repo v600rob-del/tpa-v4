@@ -149,7 +149,7 @@ function selectEntity(e){
   const h=document.createElement('strong');h.textContent=iconFor(e.component)+' '+e.label;
   const live=!!state.live[e.component];
   const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
-  const info=document.createElement('small');info.textContent=infoText(e,!!whereNow(e,Date.now())?.est);void seen;
+  const info=document.createElement('small');info.textContent=infoText(e,!!whereNow(e,serverNow())?.est);void seen;
   // 4.4.1 (owner 1 Nov 13:59: the data-source lines "look busy and cluttered. Simple experience for the end
   // user"): live vehicles' sources stay in the map's credit line and "Data sources & credits", not here.
   // Pretend vehicles keep their warning.
@@ -200,6 +200,14 @@ function watchFrames(ts){
 requestAnimationFrame(watchFrames);
 window.TPA_HQ_GLIDE_STATUS=()=>({budget:glideBudget,gliding:glideCount,frameMs:Math.round(frameAvg*10)/10});
 function keyOf(e){return e.component+':'+e.id;}
+// 4.13.3 (owner 3 Nov 19:11: "Your clock is 6.5 seconds behind"): vehicles are moved by the SERVER's time. Each answer
+// carries it; the difference from this device's clock is taken from the quickest recent answers (least delay).
+const CLOCK={off:0,samples:[]};
+function noteServerTime(h,sent,got){const s=Number(h);if(!(s>1e12)||got<sent)return;
+  CLOCK.samples.push([got-sent,s-(sent+got)/2]);if(CLOCK.samples.length>12)CLOCK.samples.shift();
+  const best=[...CLOCK.samples].sort((a,b)=>a[0]-b[0]).slice(0,5).map(x=>x[1]).sort((a,b)=>a-b);CLOCK.off=best[best.length>>1];}
+function serverNow(){return Date.now()+CLOCK.off;}
+window.TPA_HQ_CLOCK=()=>({offsetMs:Math.round(CLOCK.off),samples:CLOCK.samples.length});
 function estimate(e,now){
   const p=e.position,m=state.live[e.component]?e.motion:null;
   if(!p)return null;
@@ -344,7 +352,7 @@ function markers(){
   else if(map){const ll=map.getCenter(),c=map.latLngToContainerPoint(ll);paintRef={ll,z:map.getZoom(),x:c.x,y:c.y};markerLayer.style.transform='';
     const r=map.latLngToContainerPoint([54,-2]),sig=map.getZoom()+'|'+r.x.toFixed(1)+'|'+r.y.toFixed(1);viewMoved=sig!==viewSig;viewSig=sig;}
   lastFull=performance.now();lastDrawAt=lastFull;
-  const d=dims(),now=Date.now(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
+  const d=dims(),now=serverNow(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
   // Which vehicles may glide this second: the nearest to the middle of the screen, up to the budget.
   {const cx=d.w/2,cy=d.h/2,list=[];
    for(const [k,p] of pins)if(p.tf&&p.e&&state.live[p.e.component]&&(p.e.motion||blends.has(k))){const m=p.tf.match(/translate\(([-0-9.]+)px,([-0-9.]+)px\)/);if(m)list.push([k===follow?.key?-1:(m[1]-cx)**2+(m[2]-cy)**2,k]);}
@@ -576,7 +584,7 @@ function noteVanish(k,pin,present,d){
 // what that vehicle did, to paste to Claude. The server command is generic: the server kit knows the layers.
 let REPORT_ON=false;
 function reportText(e){
-  const now=new Date(),pos=whereNow(e,Date.now())||e.position,k=keyOf(e);
+  const now=new Date(),pos=whereNow(e,serverNow())||e.position,k=keyOf(e);
   const t=x=>x.toLocaleTimeString('en-GB',{hour12:false});
   const v=VANISH.byKey.get(k)||0;
   return ['TPA report · '+($('zoom-level')?.closest('.map-bottom')?.querySelector('.preview-stamp')?.textContent||'HQ').replace(' · TEST VERSION','')+' · '+now.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short',year:'numeric'})+' '+t(now),
@@ -763,7 +771,7 @@ if(o&&typeof o==='object'&&o.type==='raster'&&o.tiles===`/api/v4/components/${id
       {from:o.hideFromZoom,tol:validNum(o.hideTolerance)?clamp(o.hideTolerance,0,120):40,
        rgb:o.hideColours.filter(c=>typeof c==='string'&&/^#[0-9a-fA-F]{6}$/.test(c)).slice(0,12).map(c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16)))}:null};
 const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,5000,120000):30000;
-return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<Date.now()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs,groupStacks:f.groupStacks===true};}
+return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<serverNow()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs,groupStacks:f.groupStacks===true};}
 // 4.1.0 optional motion hint from an engine. HQ only does generic arithmetic with it
 // (straight-line "carry on at this speed" or "head for this point by this time");
 // anything malformed is ignored and the vehicle simply stays at its reported position.
@@ -806,7 +814,8 @@ function checkMotion(m,p){
 async function requestBounded(url,maxBytes,timeoutMs){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{
-    const response=await fetch(url,{cache:'no-store',signal:ctl.signal});
+    const sent=Date.now(),response=await fetch(url,{cache:'no-store',signal:ctl.signal});
+    noteServerTime(response.headers.get('x-tpa-now'),sent,Date.now());
     if(!response.ok || Number(response.headers.get('content-length'))>maxBytes)throw Error('unavailable');
     const body=await response.text();
     if(new TextEncoder().encode(body).byteLength>maxBytes)throw Error('oversize');
@@ -922,7 +931,7 @@ async function getComponent(id){
     seqDone[id]=seq;
     fetchedBox[id]=box?{...box,complete:!f.notice}:null;
     if(state.live[id])schedulePoll(id,f.pollMs);
-    noteNewFrame(f,Date.now(),freshStart[id]);freshStart[id]=false;
+    noteNewFrame(f,serverNow(),freshStart[id]);freshStart[id]=false;
     // Once a new manifest has removed a component, ignore late responses.
     if(state.status[id]==='not_installed'||state.parked[id])return;
     if(f.health==='not_installed'){delete state.frames[id];deselectComponent(id);}
