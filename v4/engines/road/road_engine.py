@@ -20,6 +20,7 @@ Safety
 """
 from __future__ import annotations
 
+import calendar
 import json
 import math
 import os
@@ -36,7 +37,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.3.2'
+ENGINE_VERSION = '0.3.3'
 COMPONENT = 'road'
 CONTRACT = '1.0'
 TOMTOM_TILE = 'https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/{z}/{x}/{y}'
@@ -58,7 +59,10 @@ TILE_SIZE = 256 if os.environ.get('TPA_ROAD_TILE_SIZE', '512').strip() == '256' 
 Z_SHIFT = 1 if TILE_SIZE == 512 else 0
 CACHE_MAX_SECONDS = 600   # 0.2.0: up to 10 minutes, if TomTom's own max-age allows
 MEMORY_TILES = 600
-MONTHLY_CAP = max(0, int(os.environ.get('TPA_ROAD_MONTHLY_CAP', '12000') or 12000))
+# 0.3.3 (owner 3 Nov 22:46, TomTom dashboard: 200,000 free traffic pictures a month): our own safety cap 150,000 (was 12,000),
+# leaving 50,000 spare, and each day may use only its fair share of what is left (TPA_ROAD_DAILY_SHARE=0 switches that off)
+MONTHLY_CAP = max(0, int(os.environ.get('TPA_ROAD_MONTHLY_CAP', '150000') or 150000))
+DAILY_SHARE = os.environ.get('TPA_ROAD_DAILY_SHARE', '1').strip() != '0'
 UK = (49.8, -8.7, 61.0, 2.0)  # south, west, north, east
 ATTRIBUTION = 'Traffic flow © TomTom'
 
@@ -99,11 +103,30 @@ def load_usage() -> dict:
 USAGE = load_usage()
 
 
+def today() -> str:
+    return time.strftime('%Y-%m-%d', time.gmtime())
+
+
+def daily_share(cap: int, used_before_today: int, now: float) -> int:
+    """0.3.3: today's fair share of what is left this month (the rest split evenly over the days left, today included)."""
+    t = time.gmtime(now)
+    days_in_month = calendar.monthrange(t.tm_year, t.tm_mon)[1]
+    left = max(0, cap - used_before_today)
+    return -(-left // (days_in_month - t.tm_mday + 1))
+
+
+def share_used_up() -> bool:
+    return DAILY_SHARE and USAGE.get('day') == today() and \
+        USAGE['requests'] - USAGE.get('dayStart', 0) >= daily_share(MONTHLY_CAP, USAGE.get('dayStart', 0), time.time())
+
+
 def take_request() -> bool:
-    """Count one TomTom request against the monthly safety cap (survives restarts)."""
+    """Count one TomTom request against the monthly safety cap and today's share (survives restarts)."""
     if USAGE['month'] != month():
         USAGE.update(month=month(), requests=0)
-    if USAGE['requests'] >= MONTHLY_CAP:
+    if USAGE.get('day') != today():
+        USAGE.update(day=today(), dayStart=USAGE['requests'])
+    if USAGE['requests'] >= MONTHLY_CAP or share_used_up():
         return False
     USAGE['requests'] += 1
     try:
@@ -224,6 +247,8 @@ def health() -> tuple[str, str]:
         return 'unavailable', 'TomTom key not set up on this PC'
     if USAGE['month'] == month() and USAGE['requests'] >= MONTHLY_CAP:
         return 'unavailable', 'Paused: monthly free-use safety limit reached'
+    if share_used_up():
+        return 'stale', "Today's share of the free traffic allowance used: showing the last pictures"
     if STATS['consecutiveErrors'] >= 5:
         code = STATS['lastError']
         if code in ('tomtom-http-401', 'tomtom-http-403'):
