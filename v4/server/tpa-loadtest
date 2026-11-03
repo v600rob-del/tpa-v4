@@ -10,7 +10,7 @@ processor):
     python3 tpa-loadtest
 It asks for the test-site password itself (hidden as you type - never put it in a chat). Each pretend viewer
 behaves like the real page: it looks at a part of a UK city, asks for buses, trains and aircraft as often as
-those layers say (about every 15-30 s), fetches traffic pictures, and every 20-40 s pans or zooms. Read-only:
+those layers say (about every 15-30 s), fetches traffic pictures only with --traffic (TomTom's free allowance is 12,000 a month), and every 20-40 s pans or zooms. Read-only:
 nothing on the server is changed. Between steps it reads the server's memory and processor use over SSH
 (systemctl show - no admin rights needed).
 
@@ -36,7 +36,10 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.13.1'
+VERSION = '4.13.2'
+# 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
+# TomTom allowance (7,122 of 12,000 by 3 Nov)
+TRAFFIC = False
 DEFAULT_STEPS = [10, 25, 50, 100, 250, 500, 1000]
 CITIES = [('York', 53.959, -1.082), ('Hull', 53.744, -0.333), ('Leeds', 53.797, -1.547), ('Manchester', 53.479, -2.244),
           ('London', 51.507, -0.128), ('Birmingham', 52.480, -1.899), ('Nottingham', 52.954, -1.150), ('Newcastle', 54.973, -1.613),
@@ -140,7 +143,11 @@ async def viewer(i, base, stats, stop, rnd, layers):
     now = time.monotonic()
     due = {l: now + rnd.uniform(0, 3) for l in layers}       # a page opens: asks straight away
     pan_at = now + rnd.uniform(20, 40)
+    first_pictures = TRAFFIC and 'road' in layers_all(layers)      # a page opening shows the traffic straight away
     try:
+        if first_pictures:
+            for tz, tx, ty in tiles_for(lat, lon, min(z, 15)):
+                await fetch(conn, f'/api/v4/components/road/tiles/{tz}/{tx}/{ty}.png', 'traffic', stats)
         while not stop.is_set():
             now = time.monotonic()
             if now >= pan_at:                                   # pans or zooms, then asks again for the new area
@@ -150,7 +157,7 @@ async def viewer(i, base, stats, stop, rnd, layers):
                 pan_at = now + rnd.uniform(20, 40)
                 for l in layers:
                     due[l] = min(due[l], now + 0.3)
-                if 'road' in layers_all(layers):
+                if TRAFFIC and 'road' in layers_all(layers):     # 4.13.2: only with --traffic (TomTom's monthly allowance)
                     for tz, tx, ty in tiles_for(lat, lon, min(z, 15)):
                         await fetch(conn, f'/api/v4/components/road/tiles/{tz}/{tx}/{ty}.png', 'traffic', stats)
             layer = min(due, key=due.get)
@@ -404,7 +411,11 @@ def main():
     p.add_argument('--seed', type=int, default=None, help=argparse.SUPPRESS)
     p.add_argument('--no-server-stats', dest='server_stats', action='store_false')
     p.add_argument('--yes', action='store_true')
+    p.add_argument('--traffic', action='store_true',
+                   help='also fetch traffic pictures (uses the TomTom monthly allowance: 12,000 pictures)')
     args = p.parse_args()
+    global TRAFFIC
+    TRAFFIC = args.traffic
     args.steps = [int(x) for x in args.steps.split(',') if x.strip()]
     if args.url:
         u = urllib.parse.urlsplit(args.url)

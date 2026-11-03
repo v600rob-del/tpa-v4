@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.3.1'
+ENGINE_VERSION = '0.3.2'
 COMPONENT = 'road'
 CONTRACT = '1.0'
 TOMTOM_TILE = 'https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/{z}/{x}/{y}'
@@ -152,6 +152,17 @@ def fetch_tile(z: int, x: int, y: int) -> tuple[bytes, int]:
     return raw, ttl
 
 
+REFRESH_SECONDS = 600       # the page asks for new pictures every 10 minutes (owner 31 Oct 22:29)
+
+
+def keep_until(now: float, ttl: int) -> float:
+    """0.3.2 (owner 3 Nov 19:54: 7,122 of the month's 12,000 TomTom pictures used by 3 Nov): keep a picture to the end of
+    the page's 10-minute refresh period - it would not show a newer one before then. TomTom's "do not keep" still wins."""
+    if ttl <= 0:
+        return now + 30
+    return max(now + 30, (now // REFRESH_SECONDS + 1) * REFRESH_SECONDS)
+
+
 def get_tile(z: int, x: int, y: int) -> bytes | None:
     """Cached tile, or one shared TomTom request. None = nothing to show (not an error page)."""
     key = (z, x, y)
@@ -179,7 +190,7 @@ def get_tile(z: int, x: int, y: int) -> bytes | None:
         STATS['tomtomRequests'] += 1
         raw, ttl = fetch_tile(z, x, y)
         with LOCK:
-            CACHE[key] = (raw, time.time() + max(ttl, 30))
+            CACHE[key] = (raw, keep_until(time.time(), ttl))
             CACHE.move_to_end(key)
             while len(CACHE) > MEMORY_TILES:
                 CACHE.popitem(last=False)
@@ -228,7 +239,7 @@ def snapshot() -> dict:
              'observedAt': iso(now), 'receivedAt': iso(now), 'expiresAt': iso(now + 300),
              'nextPollAfterMs': 60000, 'attribution': ATTRIBUTION, 'entities': [],
              'overlay': {'type': 'raster', 'tiles': f'/api/v4/components/{COMPONENT}/tiles/{{z}}/{{x}}/{{y}}.png',
-                         'minZoom': MIN_ZOOM, 'maxZoom': MAX_ZOOM, 'opacity': 0.85, 'refreshSeconds': 600,   # owner 31 Oct 22:29: every 10 minutes is plenty
+                         'minZoom': MIN_ZOOM, 'maxZoom': MAX_ZOOM, 'opacity': 0.85, 'refreshSeconds': REFRESH_SECONDS,   # owner 31 Oct 22:29: every 10 minutes is plenty
                          'tileSize': TILE_SIZE,
                          'opacityByZoom': [[0, 0.85], [CITY_ZOOM, 0.6], [STREET_ZOOM, 0.5], [STREET_ZOOM + 1, 0.4]],
                          'hideColours': FREE_FLOW.get(STYLE, []), 'hideFromZoom': STREET_ZOOM, 'hideTolerance': 40}}

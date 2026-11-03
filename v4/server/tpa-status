@@ -45,6 +45,10 @@ if tparts:   # bus 0.6.0: timetables and stops
     print(" " * 9 + ", ".join(tparts))
 if isinstance(d.get("timetableMatch"), dict):
     print(" " * 9 + "timetableMatch: " + ", ".join(f"{k}={v}" for k, v in d["timetableMatch"].items() if v is not None))
+if d.get("monthlySafetyCap"):   # kit 4.14.4 (owner 3 Nov 19:54): the TomTom allowance, so it cannot creep up unseen
+    used, cap = d.get("tomtomRequestsThisMonth") or 0, d["monthlySafetyCap"]
+    pct = round(100 * used / cap)
+    print(" " * 9 + f"TomTom pictures this month: {used:,} of {cap:,} ({pct}%)" + ("   WARNING: traffic pauses at 100% until next month" if pct >= 80 else ""))
 if isinstance(d.get("measure"), dict):   # bus 0.5.9: accuracy figures
     print(" " * 9 + "measure: " + ", ".join(f"{k}={v}" for k, v in d["measure"].items() if v is not None))
 ' "$1" || { printf '%-8s status unreadable\n' "$1"; ok=0; }

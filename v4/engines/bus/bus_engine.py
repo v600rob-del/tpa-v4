@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.11'
+ENGINE_VERSION = '0.8.12'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -62,6 +62,8 @@ BODS_BULK_URL = 'https://data.bus-data.dft.gov.uk/avl/download/bulk_archive'
 ATTRIBUTION = "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS)"
 
 MODE = 'bulk' if os.environ.get('TPA_BUS_MODE', 'area').strip().lower() == 'bulk' else 'area'
+# 0.8.12 (owner 3 Nov 19:56): the page asks every 10 s (5 s since 0.8.10; the 18:50 recording showed every track lasting
+# 23 s or more after each answer once the viewer-clock problem was fixed in HQ 4.13.3)
 # 0.8.10 (owner 3 Nov 17:14): every 15 s (was 30) - replayed tracks were running out before the next report arrived
 POLL_SECONDS = max(10, int(os.environ.get('TPA_BUS_POLL_SECONDS', '15') or 15))
 # 0.5.5 (owner 31 Oct 23:47: "waiting a long time for the bus level to even load, and then longer for
@@ -852,7 +854,7 @@ def snapshot(view) -> dict:
     received = fetched or now
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
-             'nextPollAfterMs': 5000, 'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else '')
+             'nextPollAfterMs': 10000, 'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else '')
              + (' · bus routes: BODS timetables, Department for Transport (OGL)' if REPLAY_SECONDS and TIMETABLE['tt'] is not None else ''),
              'entities': [],
              # 0.8.1 (owner 1 Nov 13:40): HQ shows buses stacked on top of each other as one "N buses" badge
