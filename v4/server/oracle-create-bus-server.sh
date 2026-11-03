@@ -50,8 +50,8 @@ ocij() {
     printf '%s\n' "$out"
 }
 
-[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || stop "Usage: bash oracle-create-bus-server.sh <40-character code version> [--connect|--disconnect]"
-[[ "$STEP" == create || "$STEP" == --connect || "$STEP" == --disconnect ]] || stop "Unknown step: $STEP"
+[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || stop "Usage: bash oracle-create-bus-server.sh <40-character code version> [--connect|--disconnect|--whole-site]"
+[[ "$STEP" == create || "$STEP" == --connect || "$STEP" == --disconnect || "$STEP" == --whole-site ]] || stop "Unknown step: $STEP"
 command -v oci >/dev/null || stop "This must be run inside Oracle Cloud Shell (the oci tool is missing)."
 T="${OCI_TENANCY:-}"
 [[ "$T" == ocid1.tenancy.* ]] || stop "Cannot find your Oracle account id (OCI_TENANCY). Are you in Oracle Cloud Shell?"
@@ -84,6 +84,38 @@ if [[ "$STEP" == --disconnect ]]; then
     say "Switching the main server back to its own bus engine"
     "${MAIN_SSH[@]}" "sudo rm -f /etc/tpa/remote.env && sudo tpa-update $COMMIT" || stop "The main server did not switch back."
     say "Done: the main server runs its own bus engine again (it needs a few minutes to warm up). The bus server was not touched."
+    exit 0
+fi
+
+if [[ "$STEP" == --whole-site ]]; then
+    # kit 4.15 (owner 3 Nov 23:18: "I'd sooner get the ampere stuff done"): the WHOLE v4 test site on the Ampere server
+    # (far stronger than the free micro). Its frozen bus engine is kept and still answers the micro, which stays a
+    # working standby: switching back is pointing test.tpalive.co.uk at the micro again. Nothing on v3 is touched.
+    [[ -n "$BUS_ID" ]] || stop "There is no Ampere server '$NAME'."
+    BUS_PUBLIC="$(vnic "$BUS_ID" public-ip)"; BUS_SUBNET="$(vnic "$BUS_ID" subnet-id)"
+    [[ -n "$BUS_PUBLIC" ]] || stop "The Ampere server has no public address."
+    BUS_SSH=(ssh "${SSHO[@]}" "ubuntu@$BUS_PUBLIC")
+    VCN="$(ocij network subnet get --subnet-id "$BUS_SUBNET" | js 'print(d["data"]["vcn-id"])')"
+    NSG="$(ocij network nsg list -c "$T" --vcn-id "$VCN" --all | js "print(next((n['id'] for n in d['data'] if n['display-name']=='$NSG_NAME' and n['lifecycle-state']=='AVAILABLE'), ''))")"
+    [[ -n "$NSG" ]] || stop "Cannot find the rule set '$NSG_NAME'."
+    say "2  Letting web visitors in (ports 80 and 443) on the rule set $NSG_NAME"
+    have="$(ocij network nsg rules list --nsg-id "$NSG" --all | js "print(' '.join(str(r.get('tcp-options',{}).get('destination-port-range',{}).get('min','')) for r in d['data'] if r.get('direction')=='INGRESS'))")"
+    add=""
+    for port in 80 443; do
+        [[ " $have " == *" $port "* ]] && continue
+        add="${add:+$add,}{\"direction\":\"INGRESS\",\"protocol\":\"6\",\"source\":\"0.0.0.0/0\",\"sourceType\":\"CIDR_BLOCK\",\"description\":\"TPA website\",\"tcpOptions\":{\"destinationPortRange\":{\"min\":$port,\"max\":$port}}}"
+    done
+    if [[ -n "$add" ]]; then ocij network nsg rules add --nsg-id "$NSG" --security-rules "[$add]" >/dev/null; ok "ports 80 and 443 open"; else ok "ports 80 and 443 already open"; fi
+    say "3  Copying the keys, logins and test password from the main server (inside a pipe - never shown)"
+    "${MAIN_SSH[@]}" "sudo sh -c 'cd /etc/tpa && tar -cf - \$(ls road.env rail.env web.env hq.env 2>/dev/null)'" \
+        | "${BUS_SSH[@]}" "sudo tar -C /etc/tpa --no-same-owner -xf - && sudo chmod 600 /etc/tpa/*.env" || stop "The keys could not be copied."
+    ok "keys copied"
+    say "4  Installing the whole site on the Ampere server (buses stay frozen; 5-15 minutes)"
+    "${BUS_SSH[@]}" "echo all | sudo tee /etc/tpa/role >/dev/null && sudo tpa-update $COMMIT" || stop "The install on the Ampere server did not finish (see above)."
+    say "Finished. The whole test site now runs on the Ampere server too; visitors still go to the micro until one change:"
+    echo "  Where tpalive.co.uk's addresses are managed, change the record  test.tpalive.co.uk  to:  $BUS_PUBLIC"
+    echo "  (the micro is $MAIN_PUBLIC - changing it back is the way back). The certificate is fetched by itself."
+    echo "  Health of the Ampere server:  ssh -i $KEY ubuntu@$BUS_PUBLIC sudo tpa-status"
     exit 0
 fi
 

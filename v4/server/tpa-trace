@@ -11,7 +11,7 @@ ROLE="$(cat /etc/tpa/role 2>/dev/null || echo all)"
 BUS_HOST=127.0.0.1
 REMOTE_BUS="$(sed -n 's/^TPA_REMOTE_BUS=//p' /etc/tpa/remote.env 2>/dev/null | head -n1)"
 [[ "$REMOTE_BUS" =~ ^[0-9.]+$ ]] && BUS_HOST="$REMOTE_BUS"
-[[ "$ROLE" == bus ]] && BUS_HOST="$(cat /etc/tpa/bus-bind 2>/dev/null || echo 127.0.0.1)"
+[[ ! "$REMOTE_BUS" =~ ^[0-9.]+$ && -s /etc/tpa/bus-bind ]] && BUS_HOST="$(cat /etc/tpa/bus-bind)"   # kit 4.15: bus server, or the whole site on it
 host=127.0.0.1
 case "${id%%:*}" in
     bus) port=8781; host="$BUS_HOST";; rail) port=8784;; air) port=8783;; road) port=8782;;

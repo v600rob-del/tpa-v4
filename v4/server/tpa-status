@@ -8,7 +8,7 @@ ROLE="$(cat /etc/tpa/role 2>/dev/null || echo all)"
 BUS_HOST=127.0.0.1
 REMOTE_BUS="$(sed -n 's/^TPA_REMOTE_BUS=//p' /etc/tpa/remote.env 2>/dev/null | head -n1)"
 [[ "$REMOTE_BUS" =~ ^[0-9.]+$ ]] && BUS_HOST="$REMOTE_BUS"
-[[ "$ROLE" == bus ]] && BUS_HOST="$(cat /etc/tpa/bus-bind 2>/dev/null || echo 127.0.0.1)"
+[[ ! "$REMOTE_BUS" =~ ^[0-9.]+$ && -s /etc/tpa/bus-bind ]] && BUS_HOST="$(cat /etc/tpa/bus-bind)"   # kit 4.15: bus server, or the whole site on it
 ok=1
 PARTS=(tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web)
 [[ "$ROLE" == bus ]] && PARTS=(tpa-bus)

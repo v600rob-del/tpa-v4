@@ -25,6 +25,12 @@ CADDY_VERSION=2.11.7
 CADDY_SHA512=a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7
 ENGINES=(road bus air rail hq)
 say() { echo "[tpa-install] $*"; }
+caddy_expected_sha() {  # arch checksums-file -> that arch's sha512, only if the file holds our pinned amd64 one
+    grep -qx "$CADDY_SHA512  caddy_${CADDY_VERSION}_linux_amd64.tar.gz" "$2" || return 1
+    local h; h="$(awk -v f="caddy_${CADDY_VERSION}_linux_$1.tar.gz" '$2==f{print $1}' "$2")"
+    [[ "$h" =~ ^[0-9a-f]{128}$ ]] || return 1
+    echo "$h"
+}
 # Kit 4.14 (owner 3 Nov 14:41: "yes" to moving the bus engine onto the free Ampere server):
 #  - /etc/tpa/role = bus      this machine runs ONLY the bus engine (set up by oracle-create-bus-server.sh); it listens
 #                             on this machine's private address (/etc/tpa/bus-bind) for the main server only (/etc/tpa/bus-allow)
@@ -39,6 +45,11 @@ if [[ $ROLE == bus ]]; then
     ENGINES=(bus)
     BUS_BIND="$(cat /etc/tpa/bus-bind 2>/dev/null)"; BUS_ALLOW="$(cat /etc/tpa/bus-allow 2>/dev/null)"
     [[ "$BUS_BIND" =~ $PRIVATE_IP && "$BUS_ALLOW" =~ $PRIVATE_IP ]] || { echo "bus-only server: /etc/tpa/bus-bind and /etc/tpa/bus-allow must hold private addresses" >&2; exit 2; }
+    REMOTE_BUS=""
+elif [[ -s /etc/tpa/bus-bind && -s /etc/tpa/bus-allow ]]; then
+    # kit 4.15: the former bus server now runs the whole site; its bus engine still answers the other (standby) server
+    BUS_BIND="$(cat /etc/tpa/bus-bind)"; BUS_ALLOW="$(cat /etc/tpa/bus-allow)"
+    [[ "$BUS_BIND" =~ $PRIVATE_IP && "$BUS_ALLOW" =~ $PRIVATE_IP ]] || { echo "/etc/tpa/bus-bind and /etc/tpa/bus-allow must hold private addresses" >&2; exit 2; }
     REMOTE_BUS=""
 fi
 
@@ -98,16 +109,24 @@ install -d -m 0700 -o caddy -g caddy /var/lib/caddy
 fi
 install -d -m 0755 /var/lib/tpa
 install -d -m 0700 -o root -g root /etc/tpa      # keys live here; only root (systemd) reads them
-if [[ $ROLE == bus ]]; then echo bus > /etc/tpa/role; fi
+echo "$ROLE" > /etc/tpa/role     # kit 4.15: remembered both ways (a bus server can become the whole site)
 
 # ---- Caddy (HTTPS + the test password) ---------------------------------------------
 if [[ $ROLE == all ]]; then
 if [[ "$(/usr/local/bin/caddy version 2>/dev/null | cut -d' ' -f1)" != "v$CADDY_VERSION" ]]; then
     say "downloading Caddy $CADDY_VERSION"
     tmp="$(mktemp -d)"
-    curl -fsSL --retry 3 -o "$tmp/caddy.tar.gz" \
-        "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
-    echo "$CADDY_SHA512  $tmp/caddy.tar.gz" | sha512sum -c --quiet - || { echo "Caddy download fingerprint WRONG - stopping" >&2; rm -rf "$tmp"; exit 1; }
+    arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+    base="https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION"
+    want="$CADDY_SHA512"
+    if [[ "$arch" != amd64 ]]; then
+        # kit 4.15 (owner 3 Nov 23:18: the whole site onto the Ampere server): Caddy's own fingerprint list, trusted only
+        # because it contains the amd64 fingerprint pinned above
+        curl -fsSL --retry 3 -o "$tmp/sums.txt" "$base/caddy_${CADDY_VERSION}_checksums.txt"
+        want="$(caddy_expected_sha "$arch" "$tmp/sums.txt")" || { echo "Caddy fingerprint list not trusted - stopping" >&2; rm -rf "$tmp"; exit 1; }
+    fi
+    curl -fsSL --retry 3 -o "$tmp/caddy.tar.gz" "$base/caddy_${CADDY_VERSION}_linux_${arch}.tar.gz"
+    echo "$want  $tmp/caddy.tar.gz" | sha512sum -c --quiet - || { echo "Caddy download fingerprint WRONG - stopping" >&2; rm -rf "$tmp"; exit 1; }
     tar -xzf "$tmp/caddy.tar.gz" -C "$tmp" caddy
     install -m 0755 "$tmp/caddy" /usr/local/bin/caddy
     rm -rf "$tmp"
@@ -166,15 +185,20 @@ if [[ $ROLE == bus ]]; then
 else
 unit road "road traffic engine (TomTom)" TPA_ROAD_ENGINE_PORT 8782 \
     "Environment=TPA_ROAD_DATA_DIR=/var/lib/tpa/road" 200M road.env v4/engines/road/road_engine.py
+if [[ -n "${BUS_BIND:-}" ]]; then
+unit bus "bus engine (BODS, whole-country mode), also answering the standby server" TPA_BUS_ENGINE_PORT 8781 \
+    "$BUS_ENV TPA_BUS_BIND=$BUS_BIND TPA_BUS_ALLOW=$BUS_ALLOW" 3G bus.env v4/engines/bus/bus_engine.py
+else
 unit bus "bus engine (BODS, whole-country mode)" TPA_BUS_ENGINE_PORT 8781 \
     "$BUS_ENV" 500M bus.env v4/engines/bus/bus_engine.py
+fi
 unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
     "Environment=TPA_AIR_ALWAYS_ON=1" 150M "" v4/engines/air/air_engine.py
 unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_PORT 8784 \
     "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 300M rail.env v4/engines/rail/rail_engine.py
 unit hq "HQ map page" TPA_HQ_PORT 8778 \
     "Environment=TPA_HQ_PARKED=sea TPA_HQ_LAN_TEST=0 TPA_HQ_OPEN_BROWSER=0 TPA_HQ_BASEMAP=direct TMPDIR=/var/lib/tpa/hq
-Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://${REMOTE_BUS:-127.0.0.1}:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784" \
+Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://${REMOTE_BUS:-${BUS_BIND:-127.0.0.1}}:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784" \
     200M hq.env v4/hq/serve_hq.py
 
 cat > /etc/systemd/system/tpa-web.service <<'EOF'
@@ -242,7 +266,7 @@ open_port() {  # port [from-address]
         say "opened port $1${2:+ for $2 only}"
     fi
 }
-if [[ $ROLE == bus ]]; then open_port 8781 "$BUS_ALLOW"; else open_port 80; open_port 443; fi
+if [[ $ROLE == bus ]]; then open_port 8781 "$BUS_ALLOW"; else open_port 80; open_port 443; [[ -n "${BUS_BIND:-}" ]] && open_port 8781 "$BUS_ALLOW"; fi
 if [[ -d /etc/iptables ]]; then iptables-save > /etc/iptables/rules.v4; fi
 
 echo "$COMMIT" > /var/lib/tpa/installed
