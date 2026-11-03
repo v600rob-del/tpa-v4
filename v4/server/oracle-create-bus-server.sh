@@ -5,13 +5,13 @@
 #     bash oracle-create-bus-server.sh <commit> --disconnect   undo: the main server runs its own bus engine again
 #
 # Kit 4.14 (owner, 3 Nov 2026 13:58 "Dont forget we have more processing power available"; 14:41 "yes"):
-# ONE Always Free Ampere server "tpa-v4-bus" (VM.Standard.A1.Flex, 1 OCPU, 6 GB, 47 GB disk) that runs only the bus
+# ONE Always Free Ampere server "tpa-v4-bus" (VM.Standard.A1.Flex, 1 OCPU, 6 GB, 50 GB disk (Oracle minimum)) that runs only the bus
 # engine - the hungriest part - for the main server "tpa-v4-server", over the private network.
 #
 # Money guards - it stops and changes nothing if any check fails:
 #  - only the Always Free Ampere shape, only in your home region, only 1 OCPU and 6 GB;
 #  - stops unless the free Ampere allowance (2 OCPUs + 12 GB since 15 Jun 2026) has 1 OCPU + 6 GB left;
-#  - stops if the new 47 GB disk would take block storage over the free 200 GB;
+#  - stops if the new 50 GB disk would take block storage over the free 200 GB;
 #  - asks you to type YES before creating anything.
 # It never changes, stops or deletes any existing server or disk (the live v3 site is only read). The only other
 # thing it adds is a free network rule set "tpa-v4-bus": SSH (key only) and the bus engine's port 8781 from the
@@ -30,7 +30,7 @@ MEM_GB=6
 A1_FREE_OCPU=2
 A1_FREE_GB=12
 NSG_NAME=tpa-v4-bus
-DISK_GB=47
+DISK_GB=50
 FREE_STORAGE_GB=200
 KEY="$HOME/.ssh/tpa_v4_server"
 TRIES="${TPA_CAPACITY_TRIES:-30}"
