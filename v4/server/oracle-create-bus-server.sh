@@ -108,7 +108,7 @@ if [[ "$STEP" == --whole-site ]]; then
     if [[ -n "$add" ]]; then ocij network nsg rules add --nsg-id "$NSG" --security-rules "[$add]" >/dev/null; ok "ports 80 and 443 open"; else ok "ports 80 and 443 already open"; fi
     say "3  Copying the keys, logins and test password from the main server (inside a pipe - never shown)"
     "${MAIN_SSH[@]}" "sudo sh -c 'cd /etc/tpa && tar -cf - \$(ls road.env rail.env web.env hq.env 2>/dev/null)'" \
-        | "${BUS_SSH[@]}" "sudo tar -C /etc/tpa --no-same-owner -xf - && sudo chmod 600 /etc/tpa/*.env" || stop "The keys could not be copied."
+        | "${BUS_SSH[@]}" "sudo tar -C /etc/tpa --no-same-owner -xf - && sudo sh -c 'chmod 600 /etc/tpa/*.env'" || stop "The keys could not be copied."
     ok "keys copied"
     say "4  Installing the whole site on the Ampere server (buses stay frozen; 5-15 minutes)"
     "${BUS_SSH[@]}" "echo all | sudo tee /etc/tpa/role >/dev/null && sudo tpa-update $COMMIT" || stop "The install on the Ampere server did not finish (see above)."
