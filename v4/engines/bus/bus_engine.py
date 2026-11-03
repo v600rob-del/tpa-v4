@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.6'
+ENGINE_VERSION = '0.8.7'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1749,7 +1749,12 @@ def main() -> None:
     threading.Thread(target=match_counter, daemon=True).start()
     threading.Thread(target=journey_worker, daemon=True).start()
     threading.Thread(target=path_worker, daemon=True).start()
-    with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
+    # 0.8.7 (owner 3 Nov 14:41): on its own Ampere server the engine listens on that server's PRIVATE address, so the
+    # main server can ask it (both servers' firewalls only allow the main server's private address in)
+    bind = os.environ.get('TPA_BUS_BIND', '127.0.0.1').strip() or '127.0.0.1'
+    if not re.fullmatch(r'(127\.0\.0\.1|10(\.\d{1,3}){3}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|192\.168(\.\d{1,3}){2})', bind):
+        bind = '127.0.0.1'                        # only this machine or a private network, never the internet
+    with ThreadingHTTPServer((bind, port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA BUS ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
         print('BODS key: ' + ('set for this session' if KEY else 'NOT SET - no bus data will be fetched'), flush=True)

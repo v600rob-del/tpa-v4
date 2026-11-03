@@ -21,6 +21,7 @@ server (`sudo tpa-setup`) and never committed.
 | `sudo tpa-update show` | Which version each layer is running |
 | `sudo tpa-trace '<vehicle id>'` | Everything the server knows about one vehicle (from the map's "Report this") |
 | `python3 tpa-loadtest` | Run from Oracle Cloud Shell: how many viewers the site can serve (read-only) |
+| `bash oracle-create-bus-server.sh <commit> [--connect\|--disconnect]` | Run from Oracle Cloud Shell: the bus engine on its own free Ampere server, connect it, or go back |
 
 Data credits are shown on the site. See also `v4/engines/rail/data/SOURCES.txt` for the
 train timing-point locations, which are shared under CC BY-SA 4.0 with the attributions listed there.

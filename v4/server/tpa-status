@@ -3,9 +3,19 @@
 set -uo pipefail
 # Needs admin rights to read the site settings; ask for them by itself.
 if [[ $EUID -ne 0 ]]; then exec sudo -n "$0" "$@"; fi
+# kit 4.14: where the bus engine answers - its own server (main server), this server's private address (bus server)
+ROLE="$(cat /etc/tpa/role 2>/dev/null || echo all)"
+BUS_HOST=127.0.0.1
+REMOTE_BUS="$(sed -n 's/^TPA_REMOTE_BUS=//p' /etc/tpa/remote.env 2>/dev/null | head -n1)"
+[[ "$REMOTE_BUS" =~ ^[0-9.]+$ ]] && BUS_HOST="$REMOTE_BUS"
+[[ "$ROLE" == bus ]] && BUS_HOST="$(cat /etc/tpa/bus-bind 2>/dev/null || echo 127.0.0.1)"
 ok=1
+PARTS=(tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web)
+[[ "$ROLE" == bus ]] && PARTS=(tpa-bus)
+[[ "$ROLE" != bus && "$BUS_HOST" != 127.0.0.1 ]] && PARTS=(tpa-road tpa-air tpa-rail tpa-hq tpa-web)
 printf '%-32s %-9s %s\n' "Part" "State" "Memory"
-for s in tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web; do
+[[ "$ROLE" != bus && "$BUS_HOST" != 127.0.0.1 ]] && printf '%-32s %-9s %s\n' "tpa-bus" "elsewhere" "on its own server ($BUS_HOST)"
+for s in "${PARTS[@]}"; do
     st="$(systemctl is-active "$s" 2>/dev/null || true)"
     [[ "$st" == active ]] || ok=0
     mem="$(systemctl show -p MemoryCurrent --value "$s" 2>/dev/null)"
@@ -16,9 +26,9 @@ for s in tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web; do
     printf '%-32s %-9s %s\n' "$s" "$st" "$mem"
 done
 echo
-summary() {  # name port
+summary() {  # name port [host]
     local raw
-    raw="$(curl -fsS --max-time 3 "http://127.0.0.1:$2/status" 2>/dev/null)" || { printf '%-8s no answer\n' "$1"; ok=0; return; }
+    raw="$(curl -fsS --max-time 3 "http://${3:-127.0.0.1}:$2/status" 2>/dev/null)" || { printf '%-8s no answer\n' "$1"; ok=0; return; }
     printf '%s' "$raw" | python3 -c '
 import json, sys
 name = sys.argv[1]
@@ -39,7 +49,13 @@ if isinstance(d.get("measure"), dict):   # bus 0.5.9: accuracy figures
     print(" " * 9 + "measure: " + ", ".join(f"{k}={v}" for k, v in d["measure"].items() if v is not None))
 ' "$1" || { printf '%-8s status unreadable\n' "$1"; ok=0; }
 }
-summary road 8782; summary bus 8781; summary air 8783; summary rail 8784
+if [[ "$ROLE" == bus ]]; then
+    summary bus 8781 "$BUS_HOST"
+    echo; /usr/local/sbin/tpa-update show 2>/dev/null || true; echo
+    [[ $ok == 1 ]] && echo "ALL GOOD (bus-only server)" || echo "SOMETHING NEEDS ATTENTION (see above)"
+    [[ $ok == 1 ]]; exit
+fi
+summary road 8782; summary bus 8781 "$BUS_HOST"; summary air 8783; summary rail 8784
 echo
 # server kit 4.11: which version each layer runs, and which are frozen (signed off)
 if [[ -x /usr/local/sbin/tpa-update ]]; then /usr/local/sbin/tpa-update show 2>/dev/null || true; echo; fi

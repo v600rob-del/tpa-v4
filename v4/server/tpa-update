@@ -73,6 +73,14 @@ case "${1:-show}" in
     hq|bus|rail|air|road)
         layer=$1; commit="${2:-}"
         [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || usage
+        if [[ $layer == bus && -s /etc/tpa/remote.env ]]; then      # kit 4.14
+            echo "Buses run on their own server now, so update them there:" >&2
+            echo "  ssh -i ~/.ssh/tpa_v4_server ubuntu@<bus server address> sudo tpa-update bus $commit" >&2
+            exit 1
+        fi
+        if [[ "$(cat /etc/tpa/role 2>/dev/null)" == bus && $layer != bus ]]; then
+            echo "This is the bus-only server: only the bus layer lives here." >&2; exit 1
+        fi
         if is_frozen "$layer"; then
             echo "${NAME[$layer]}: FROZEN (signed off), so nothing was changed." >&2
             echo "If you really mean to change it: sudo tpa-update unfreeze $layer   (then run this again)" >&2

@@ -25,6 +25,22 @@ CADDY_VERSION=2.11.7
 CADDY_SHA512=a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7
 ENGINES=(road bus air rail hq)
 say() { echo "[tpa-install] $*"; }
+# Kit 4.14 (owner 3 Nov 14:41: "yes" to moving the bus engine onto the free Ampere server):
+#  - /etc/tpa/role = bus      this machine runs ONLY the bus engine (set up by oracle-create-bus-server.sh); it listens
+#                             on this machine's private address (/etc/tpa/bus-bind) for the main server only (/etc/tpa/bus-allow)
+#  - /etc/tpa/remote.env      on the main server: TPA_REMOTE_BUS=<that private address> - HQ asks it for buses and the
+#                             main server's own bus engine is switched off. Remove the file and update again to undo.
+PRIVATE_IP='^(10(\.[0-9]{1,3}){3}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2}|192\.168(\.[0-9]{1,3}){2})$'
+ROLE="${TPA_ROLE:-$(cat /etc/tpa/role 2>/dev/null || echo all)}"
+[[ "$ROLE" == all || "$ROLE" == bus ]] || { echo "unknown role: $ROLE" >&2; exit 2; }
+REMOTE_BUS="$(sed -n 's/^TPA_REMOTE_BUS=//p' /etc/tpa/remote.env 2>/dev/null | head -n1 || true)"
+[[ -z "$REMOTE_BUS" || "$REMOTE_BUS" =~ $PRIVATE_IP ]] || { echo "TPA_REMOTE_BUS in /etc/tpa/remote.env is not a private address" >&2; exit 2; }
+if [[ $ROLE == bus ]]; then
+    ENGINES=(bus)
+    BUS_BIND="$(cat /etc/tpa/bus-bind 2>/dev/null)"; BUS_ALLOW="$(cat /etc/tpa/bus-allow 2>/dev/null)"
+    [[ "$BUS_BIND" =~ $PRIVATE_IP && "$BUS_ALLOW" =~ $PRIVATE_IP ]] || { echo "bus-only server: /etc/tpa/bus-bind and /etc/tpa/bus-allow must hold private addresses" >&2; exit 2; }
+    REMOTE_BUS=""
+fi
 
 # ---- swap ------------------------------------------------------------------------
 if ! swapon --show=NAME --noheadings | grep -q . && [[ ! -f /swapfile ]]; then
@@ -76,12 +92,16 @@ for e in "${ENGINES[@]}"; do
     id "tpa-$e" >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "tpa-$e"
     install -d -m 0700 -o "tpa-$e" -g "tpa-$e" "/var/lib/tpa/$e"
 done
+if [[ $ROLE == all ]]; then
 id caddy >/dev/null 2>&1 || useradd --system --no-create-home --home-dir /var/lib/caddy --shell /usr/sbin/nologin caddy
 install -d -m 0700 -o caddy -g caddy /var/lib/caddy
+fi
 install -d -m 0755 /var/lib/tpa
 install -d -m 0700 -o root -g root /etc/tpa      # keys live here; only root (systemd) reads them
+if [[ $ROLE == bus ]]; then echo bus > /etc/tpa/role; fi
 
 # ---- Caddy (HTTPS + the test password) ---------------------------------------------
+if [[ $ROLE == all ]]; then
 if [[ "$(/usr/local/bin/caddy version 2>/dev/null | cut -d' ' -f1)" != "v$CADDY_VERSION" ]]; then
     say "downloading Caddy $CADDY_VERSION"
     tmp="$(mktemp -d)"
@@ -94,6 +114,7 @@ if [[ "$(/usr/local/bin/caddy version 2>/dev/null | cut -d' ' -f1)" != "v$CADDY_
 fi
 install -d -m 0755 /etc/tpa-web    # no secrets in here; the web front door reads it
 install -m 0644 "$REL/v4/server/Caddyfile" /etc/tpa-web/Caddyfile
+fi
 
 # ---- services ----------------------------------------------------------------------
 unit() {  # name description port-env port extra-environment memory-limit keys-file
@@ -137,18 +158,23 @@ WantedBy=multi-user.target
 EOF
 }
 declare -A BEFORE
-for e in "${ENGINES[@]}"; do BEFORE[$e]="$(sha256sum "/etc/systemd/system/tpa-$e.service" 2>/dev/null | cut -d' ' -f1)"; done
+for e in "${ENGINES[@]}"; do BEFORE[$e]="$(sha256sum "/etc/systemd/system/tpa-$e.service" 2>/dev/null | cut -d' ' -f1 || true)"; done   # kit 4.14: a brand-new server has none yet
+BUS_ENV="Environment=TPA_BUS_MODE=bulk TPA_BUS_ALWAYS_ON=1 TPA_BUS_ROAD_MAP=download TPA_BUS_ROAD_SOURCE=osm TPA_BUS_TIMETABLE=download TPA_BUS_DATA_DIR=/var/lib/tpa/bus"
+if [[ $ROLE == bus ]]; then
+    unit bus "bus engine on its own Ampere server, for the main server only" TPA_BUS_ENGINE_PORT 8781 \
+        "$BUS_ENV TPA_BUS_BIND=$BUS_BIND" 3G bus.env v4/engines/bus/bus_engine.py
+else
 unit road "road traffic engine (TomTom)" TPA_ROAD_ENGINE_PORT 8782 \
     "Environment=TPA_ROAD_DATA_DIR=/var/lib/tpa/road" 200M road.env v4/engines/road/road_engine.py
 unit bus "bus engine (BODS, whole-country mode)" TPA_BUS_ENGINE_PORT 8781 \
-    "Environment=TPA_BUS_MODE=bulk TPA_BUS_ALWAYS_ON=1 TPA_BUS_ROAD_MAP=download TPA_BUS_ROAD_SOURCE=osm TPA_BUS_TIMETABLE=download TPA_BUS_DATA_DIR=/var/lib/tpa/bus" 500M bus.env v4/engines/bus/bus_engine.py
+    "$BUS_ENV" 500M bus.env v4/engines/bus/bus_engine.py
 unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
     "Environment=TPA_AIR_ALWAYS_ON=1" 150M "" v4/engines/air/air_engine.py
 unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_PORT 8784 \
     "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 300M rail.env v4/engines/rail/rail_engine.py
 unit hq "HQ map page" TPA_HQ_PORT 8778 \
     "Environment=TPA_HQ_PARKED=sea TPA_HQ_LAN_TEST=0 TPA_HQ_OPEN_BROWSER=0 TPA_HQ_BASEMAP=direct TMPDIR=/var/lib/tpa/hq
-Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784" \
+Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://${REMOTE_BUS:-127.0.0.1}:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784" \
     200M hq.env v4/hq/serve_hq.py
 
 cat > /etc/systemd/system/tpa-web.service <<'EOF'
@@ -180,31 +206,44 @@ ReadWritePaths=/var/lib/caddy
 [Install]
 WantedBy=multi-user.target
 EOF
+fi
 systemctl daemon-reload
-systemctl enable --quiet tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web
+RUN=("${ENGINES[@]}")
+if [[ $ROLE == bus ]]; then
+    systemctl enable --quiet tpa-bus
+elif [[ -n "$REMOTE_BUS" ]]; then          # buses come from their own server: this one's bus engine is switched off
+    RUN=(road air rail hq)
+    systemctl disable --now --quiet tpa-bus 2>/dev/null || true
+    systemctl enable --quiet tpa-road tpa-air tpa-rail tpa-hq tpa-web
+    say "buses come from their own server at $REMOTE_BUS (this server's bus engine is off)"
+else
+    systemctl enable --quiet tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web
+fi
 # restart every layer that moved; a frozen layer only if its service settings changed (it still runs its own code)
 restart=()
-for e in "${ENGINES[@]}"; do
+for e in "${RUN[@]}"; do
     if ! is_frozen "$e"; then restart+=("tpa-$e")
     elif [[ "${BEFORE[$e]}" != "$(sha256sum "/etc/systemd/system/tpa-$e.service" | cut -d' ' -f1)" ]]; then
         say "$e is FROZEN but its service settings changed: restarting it (its code is unchanged)"; restart+=("tpa-$e")
     fi
 done
 [[ ${#restart[@]} -gt 0 ]] && systemctl restart "${restart[@]}"
-[[ -f /etc/tpa/web.env ]] && systemctl restart tpa-web || true
+[[ $ROLE == all && -f /etc/tpa/web.env ]] && systemctl restart tpa-web || true
 
 # ---- this machine's own firewall (Oracle's Ubuntu image blocks everything but SSH) --
 # The parts talk to each other on 127.0.0.1, so loopback must always be allowed.
 iptables -C INPUT -i lo -j ACCEPT 2>/dev/null || { iptables -I INPUT 1 -i lo -j ACCEPT; say "allowed loopback"; }
-for p in 80 443; do
-    if ! iptables -C INPUT -p tcp --dport "$p" -m state --state NEW -j ACCEPT 2>/dev/null; then
+open_port() {  # port [from-address]
+    local rule=(-p tcp --dport "$1" -m state --state NEW -j ACCEPT)
+    [[ -n "${2:-}" ]] && rule=(-p tcp -s "$2" --dport "$1" -m state --state NEW -j ACCEPT)
+    if ! iptables -C INPUT "${rule[@]}" 2>/dev/null; then
         pos="$(iptables -L INPUT --line-numbers -n | awk '$2=="REJECT"{print $1; exit}')"
-        if [[ -n "$pos" ]]; then iptables -I INPUT "$pos" -p tcp --dport "$p" -m state --state NEW -j ACCEPT
-        else iptables -A INPUT -p tcp --dport "$p" -m state --state NEW -j ACCEPT; fi
-        say "opened port $p"
+        if [[ -n "$pos" ]]; then iptables -I INPUT "$pos" "${rule[@]}"; else iptables -A INPUT "${rule[@]}"; fi
+        say "opened port $1${2:+ for $2 only}"
     fi
-done
+}
+if [[ $ROLE == bus ]]; then open_port 8781 "$BUS_ALLOW"; else open_port 80; open_port 443; fi
 if [[ -d /etc/iptables ]]; then iptables-save > /etc/iptables/rules.v4; fi
 
 echo "$COMMIT" > /var/lib/tpa/installed
-if [[ -f /etc/tpa/web.env ]]; then say "done: code $COMMIT installed (keys and settings kept)"; else say "done: code $COMMIT installed. Next: sudo tpa-setup"; fi
+if [[ $ROLE == bus ]]; then say "done: bus-only server, code $COMMIT installed"; elif [[ -f /etc/tpa/web.env ]]; then say "done: code $COMMIT installed (keys and settings kept)"; else say "done: code $COMMIT installed. Next: sudo tpa-setup"; fi
