@@ -88,10 +88,14 @@ function listEntities(){return IDS.flatMap(id=>{
 // ICON REVIEW ONLY. The SVG shapes are fixed HQ artwork reproduced from the
 // legacy approved map marker paths; component JSON supplies DATA, never HTML.
 // This review build is physically separate from the working HQ 4.0.8 checkpoint.
+// 4.15.0 (owner 3 Nov 21:08: "All in house"): TPA's own drawings - a British double-decker (destination blind
+// lit amber), a modern British train front (amber headcode panel), a top-down plane (turns to its heading) and a
+// small ferry (amber funnel band). [shape, amber detail]; flat shapes so they stay crisp at 20 px and cost nothing.
 const ICON_PATHS=Object.freeze({
-  air:'M16 2c1.3 0 2 2 2 4v8l10 8v4l-10-5v6l3 2v2l-5-1.5L11 31v-2l3-2v-6l-10 5v-4l10-8V6c0-2 0.7-4 2-4Z',
-  sea:'m16 3 2 3v5h6v4l4 2v3l-4 7H8l-4-7v-3l4-2v-4h6V6l2-3Zm-7 17 2 5h10l2-5H9Zm5-6H9v3h5v-3Zm9 0h-5v3h5v-3Z',
-  rail:'M8 3h16a5 5 0 0 1 5 5v15a4 4 0 0 1-4 4l3 3h-5l-3-3h-8l-3 3H4l3-3a4 4 0 0 1-4-4V8a5 5 0 0 1 5-5Zm1 5v10h14V8H9Zm1 13a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm12 0a2 2 0 1 0 0 4 2 2 0 0 0 0-4Z'
+  air:['M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z',''],
+  sea:['M3 19h26l-3.4 7.3a1.8 1.8 0 0 1-1.6 1.1H8a1.8 1.8 0 0 1-1.6-1.1ZM7 12.5h17V18H7ZM9 14.2h2.6v2H9ZM13 14.2h2.6v2H13ZM17 14.2h2.6v2H17ZM10 8.5h8V12h-8ZM20.2 5.5h3.6V12h-3.6Z','M20.2 7.2h3.6v1.6h-3.6Z'],
+  rail:['M11 3h10c3.2 0 5.3 2.1 5.8 5.2l1.6 13.6c.4 3.1-1.6 5.2-4.7 5.2H8.3c-3.1 0-5.1-2.1-4.7-5.2L5.2 8.2C5.7 5.1 7.8 3 11 3ZM8.2 9h15.6l1.3 7.6H6.9ZM7.6 20.2h3.6v2.2H7.6ZM20.8 20.2h3.6v2.2h-3.6ZM8.2 27h4.2l-1 3.2H7.1ZM19.6 27h4.2l1.1 3.2h-4.3Z','M13 4.8h6v2.4h-6Z'],
+  bus:['M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z','M9.7 5.7h12.6v1.6H9.7Z']
 });
 const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
 function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋'}[id]||'•';}
@@ -110,11 +114,13 @@ function buildArtwork(e){
   }else if(ICON_PATHS[e.component]){
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
     svg.setAttribute('viewBox','0 0 32 32');svg.setAttribute('focusable','false');
-    const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',ICON_PATHS[e.component]);svg.append(path);
+    const [shape,detail]=ICON_PATHS[e.component];
+    const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',shape);path.setAttribute('fill-rule','evenodd');svg.append(path);
+    if(detail){const acc=document.createElementNS('http://www.w3.org/2000/svg','path');acc.setAttribute('d',detail);acc.setAttribute('class','acc');svg.append(acc);}
     // Ships always point up on-screen. Course remains as data, not an icon rotation.
     if(e.component==='air'&&e.position?.headingDeg!=null)svg.style.transform='rotate('+e.position.headingDeg+'deg)';
     icon.append(svg);
-  }else{icon.textContent=e.component==='bus'?'🚌':'≋';}
+  }else{icon.textContent='≋';}
   if(e.component==='rail'||e.component==='bus'){
     const badge=document.createElement('span');badge.className='review-route';
     // Only an alphanumeric suffix is used. Sample route/headcode is not a transport algorithm.

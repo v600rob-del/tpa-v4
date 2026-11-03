@@ -78,3 +78,10 @@ h1 em{color:var(--amber)}
 .review-pin.bus .review-route,.marker-layer .review-pin.rail .review-route{font-size:max(10px,calc(11px*var(--pin-s,1)));
   line-height:max(13px,calc(15px*var(--pin-s,1)));padding:0 max(3px,calc(5px*var(--pin-s,1)));
   top:calc(46px*var(--pin-s,1) - max(13px,calc(15px*var(--pin-s,1))))}   /* the board's foot stays exactly on the place (see anchorOf) */
+
+/* 4.15.0: TPA's own icons - white shapes on the layer's tile, one amber detail */
+.review-pin{color:#f2f7fb}
+.review-pin svg .acc{fill:var(--amber)}
+.review-pin:not(.bus):not(.rail):not(.sea):not(.road){background:#0f2a3d;border-color:#6fd3ff}
+.review-pin.sea{background:#3a2410;border-color:#ffb36a;color:#f2f7fb}
+.review-pin.rail{color:#f2f7fb}
