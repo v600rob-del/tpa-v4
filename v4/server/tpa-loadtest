@@ -28,6 +28,7 @@ import getpass
 import json
 import math
 import os
+import re
 import random
 import ssl
 import statistics
@@ -36,7 +37,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.13.3'
+VERSION = '4.13.4'
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
 TRAFFIC = False
@@ -46,7 +47,18 @@ CITIES = [('York', 53.959, -1.082), ('Hull', 53.744, -0.333), ('Leeds', 53.797, 
           ('Bristol', 51.455, -2.588), ('Glasgow', 55.861, -4.251), ('Sheffield', 53.381, -1.470), ('Liverpool', 53.408, -2.991)]
 LAYERS = ('bus', 'rail', 'air')
 UNITS = ('tpa-hq', 'tpa-bus', 'tpa-rail', 'tpa-air', 'tpa-road', 'tpa-web')
-SERVER = 'ubuntu@143.47.230.28'
+SERVER = 'ubuntu@143.47.230.28'   # replaced at start by the server the site name points to (4.13.4)
+
+
+def server_for(host, resolve=None):
+    """4.13.4 (owner 3 Nov 23:57: the site moved to the Ampere server, but the figures were read from the old micro):
+    the server measured is the one the site name points to; None if the name cannot be looked up."""
+    import socket
+    try:
+        ip = (resolve or socket.gethostbyname)(host)
+    except OSError:
+        return None
+    return 'ubuntu@' + ip if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', ip or '') else None
 KEY = os.path.expanduser('~/.ssh/tpa_v4_server')
 LIMITS = {'p50': 2.0, 'p95': 5.0, 'fail': 0.02, 'mem': 0.90}
 
@@ -416,8 +428,11 @@ def main():
     p.add_argument('--traffic', action='store_true',
                    help='also fetch traffic pictures (uses the TomTom monthly allowance: 12,000 pictures)')
     args = p.parse_args()
-    global TRAFFIC
+    global TRAFFIC, SERVER
     TRAFFIC = args.traffic
+    if args.server_stats and not args.url:
+        SERVER = server_for(args.host) or SERVER
+        print(f'Server figures from: {SERVER.split("@")[1]} (where {args.host} points)')
     args.steps = [int(x) for x in args.steps.split(',') if x.strip()]
     if args.url:
         u = urllib.parse.urlsplit(args.url)
