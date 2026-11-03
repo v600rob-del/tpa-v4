@@ -58,7 +58,7 @@ def main():
     url = (f'http://127.0.0.1:8778/api/v4/components/bus/snapshot?{q}' if via_hq
            else f'http://{bus_host()}:8781/snapshot?{q}')
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    ages, inside_seen, inside_ex = [], set(), []
+    ages, inside_seen, inside_ex, ahead = [], set(), [], []
     print('Asking', url, 'every 3 s for 60 s (read-only)...')
     prev, kinds, examples, compared, asks, slow = {}, {}, [], 0, 0, []
     for _ in range(int(__import__("os").environ.get("TPA_JC_N","20"))):
@@ -82,6 +82,7 @@ def main():
             if m.get('mode') != 'timed':
                 continue
             T, P = m['times'], m['points']
+            ahead.append(T[-1] - now)                # how long this track lasts before the bus must stand and wait
             for i in range(1, len(T)):
                 if T[i] - T[i - 1] <= 0.2 and metres(P[i - 1], P[i]) > 30 and (k, T[i]) not in inside_seen:
                     inside_seen.add((k, T[i]))
@@ -113,6 +114,11 @@ def main():
         print('Not replayed (moved the older way), answer-to-answer:', ', '.join(f'{k} {v}' for k, v in sorted(others.items())))
     for x in examples:
         print(x)
+    if ahead:
+        a = sorted(ahead)
+        pc = lambda q: a[min(len(a) - 1, int(q * len(a)))]
+        print(f'Each replayed track runs out after: shortest {a[0]:.0f} s, 10% within {pc(0.1):.0f} s, median {pc(0.5):.0f} s;'
+              f' {sum(1 for x in a if x < 20) * 100 // len(a)}% run out within 20 s (the page asks for more every 15-20 s)')
     print(f'Jumps inside the tracks sent (the page fades the bus out and in there): {len(inside_seen)}')
     for x in inside_ex:
         print(x)
