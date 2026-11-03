@@ -36,7 +36,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.13.2'
+VERSION = '4.13.3'
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
 TRAFFIC = False
@@ -379,7 +379,9 @@ async def main_async(args, base, layers):
         uses[n] = use
         lay = step['layers']
         srv = ''
-        if use:
+        if use and not use['units']:      # 4.13.3 (owner 3 Nov 20:26: crashed here at 250 viewers): figures not readable
+            srv = 'server figures not readable this step'
+        elif use:
             cpu = sum(u['cpu'] or 0 for u in use['units'].values())
             top = max(use['units'].items(), key=lambda kv: kv[1]['memf'] or 0)
             srv = f"cpu {cpu:.2f}/{use['cpus']} · load {use['load']} · fullest {top[0]} {(top[1]['memf'] or 0):.0%}"
