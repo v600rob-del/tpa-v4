@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.7'
+ENGINE_VERSION = '0.8.8'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1654,7 +1654,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_GET(self):  # noqa: N802
-        if self.client_address[0] != '127.0.0.1':
+        if not client_allowed(self.client_address[0]):
             return self.reply(403, {'error': 'local only'})
         split = urlsplit(self.path)
         if split.path == '/status':
@@ -1738,6 +1738,20 @@ def meter_summary() -> dict:
     return out
 
 
+# 0.8.8 (owner 3 Nov 15:55: the main server got 403 "local only" from the bus server): on a bus-only server the engine
+# also answers the main server's private address (TPA_BUS_ALLOW) and its own private address (tpa-status there).
+# Only private addresses count; Oracle's rule set and the server firewall also only let the main server in.
+_PRIVATE = re.compile(r'(127\.0\.0\.1|10(\.\d{1,3}){3}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|192\.168(\.\d{1,3}){2})')
+BIND = os.environ.get('TPA_BUS_BIND', '127.0.0.1').strip() or '127.0.0.1'
+if not _PRIVATE.fullmatch(BIND):
+    BIND = '127.0.0.1'                            # only this machine or a private network, never the internet
+ALLOWED_CLIENTS = {'127.0.0.1', BIND} | {a for a in os.environ.get('TPA_BUS_ALLOW', '').split() if _PRIVATE.fullmatch(a)}
+
+
+def client_allowed(ip: str) -> bool:
+    return ip in ALLOWED_CLIENTS
+
+
 def main() -> None:
     port = int(os.environ.get('TPA_BUS_ENGINE_PORT', '8781'))
     load_memory()
@@ -1751,9 +1765,7 @@ def main() -> None:
     threading.Thread(target=path_worker, daemon=True).start()
     # 0.8.7 (owner 3 Nov 14:41): on its own Ampere server the engine listens on that server's PRIVATE address, so the
     # main server can ask it (both servers' firewalls only allow the main server's private address in)
-    bind = os.environ.get('TPA_BUS_BIND', '127.0.0.1').strip() or '127.0.0.1'
-    if not re.fullmatch(r'(127\.0\.0\.1|10(\.\d{1,3}){3}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|192\.168(\.\d{1,3}){2})', bind):
-        bind = '127.0.0.1'                        # only this machine or a private network, never the internet
+    bind = BIND
     with ThreadingHTTPServer((bind, port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA BUS ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)

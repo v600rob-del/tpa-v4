@@ -162,7 +162,7 @@ for e in "${ENGINES[@]}"; do BEFORE[$e]="$(sha256sum "/etc/systemd/system/tpa-$e
 BUS_ENV="Environment=TPA_BUS_MODE=bulk TPA_BUS_ALWAYS_ON=1 TPA_BUS_ROAD_MAP=download TPA_BUS_ROAD_SOURCE=osm TPA_BUS_TIMETABLE=download TPA_BUS_DATA_DIR=/var/lib/tpa/bus"
 if [[ $ROLE == bus ]]; then
     unit bus "bus engine on its own Ampere server, for the main server only" TPA_BUS_ENGINE_PORT 8781 \
-        "$BUS_ENV TPA_BUS_BIND=$BUS_BIND" 3G bus.env v4/engines/bus/bus_engine.py
+        "$BUS_ENV TPA_BUS_BIND=$BUS_BIND TPA_BUS_ALLOW=$BUS_ALLOW" 3G bus.env v4/engines/bus/bus_engine.py
 else
 unit road "road traffic engine (TomTom)" TPA_ROAD_ENGINE_PORT 8782 \
     "Environment=TPA_ROAD_DATA_DIR=/var/lib/tpa/road" 200M road.env v4/engines/road/road_engine.py
