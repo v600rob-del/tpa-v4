@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.8'
+ENGINE_VERSION = '0.8.9'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -558,21 +558,34 @@ def measure_summary(vehicles: list, now: float) -> dict:
             'originDeparturePct': share(8), 'blockRefPct': share(16), 'timetableMatchablePct': share(2 | 8)}
 
 
-def fetch_once(area) -> None:
-    """One BODS download, with everything else in this engine paused so it gets the processor."""
+_PAUSED: list = []
+
+
+def busy_reading() -> None:
+    """0.8.9 (owner 3 Nov 16:40: all buses faded, then sped on - BODS downloads were slow and timing out): the rest
+    of the engine is paused only while a download is being READ (processor work), not while waiting for BODS to
+    answer (no processor needed). Before, a slow BODS kept the engine "busy" nearly all the time, buses' new
+    reports were not placed on their routes, and every bus fell back to the old way of moving."""
+    if FETCHING.is_set():
+        return
     FETCHING.set()
-    paused = []
     for proc in (BUILDER['proc'], BUILDER['tt']):
         if proc is not None and proc.poll() is None:
             try:
-                os.kill(proc.pid, signal.SIGSTOP); paused.append(proc)
+                os.kill(proc.pid, signal.SIGSTOP); _PAUSED.append(proc)
             except OSError:
                 pass
+
+
+def fetch_once(area) -> None:
+    """One BODS download; everything else in this engine is paused while it is read, so that gets the processor."""
+    paused = _PAUSED
     started = time.time()
     try:
         _fetch_once(area)
     finally:
-        for proc in paused:
+        while paused:
+            proc = paused.pop()
             try:
                 os.kill(proc.pid, signal.SIGCONT)
             except OSError:
@@ -690,6 +703,7 @@ def _fetch_once(area) -> None:
     try:
         if MODE == 'bulk':
             raw = download(BULK_URL + '?' + urlencode({'api_key': KEY}))
+            busy_reading()
             with zipfile.ZipFile(io.BytesIO(raw)) as zf:
                 names = [n for n in zf.namelist() if n.lower().endswith('.xml')]
                 if not names or zf.getinfo(names[0]).file_size > MAX_XML_BYTES:
@@ -700,6 +714,7 @@ def _fetch_once(area) -> None:
         else:
             s, w, n, e = area
             raw = download(AREA_URL + '?' + urlencode({'api_key': KEY, 'boundingBox': f'{w:.5f},{s:.5f},{e:.5f},{n:.5f}'}))
+            busy_reading()
             vehicles = parse_siri(io.BytesIO(raw))
             coverage = area
         ages = sorted(started - v['recorded'] for v in vehicles if v['recorded'] <= started)
@@ -1330,7 +1345,7 @@ def road_legs(v: dict, now: float, deadline: float | None):
         got = known.get(a[0])
         if got is None or got[0] != b[0]:
             if deadline is not None and (time.monotonic() >= deadline or FETCHING.is_set()):
-                return None
+                return legs or None      # 0.8.9: carry on along the legs already worked out (the newest comes later)
             got = known[a[0]] = (b[0], _leg(v, a, b, hist[i - 1] if i > 0 else None))
         legs.append((a[0], b[0], got[1]))
     for t in [t for t in known if t < hist[first][0]]:
@@ -1519,7 +1534,10 @@ def _replay_for(v: dict, now: float, deadline: float):
         f = FOLLOW.get(v['key'])
         fresh = f and f[1] and f[1][-1][0] >= v['recorded']
     sh = None
-    if fresh:
+    same_trip = f and f[1] and TRIPS.get(v['key'], (None,))[0] == sig
+    if fresh or same_trip:
+        # 0.8.9: a new report not placed yet (the engine is busy reading a download): carry on along the part of
+        # the route already placed - the moment shown is 90 s ago, so that part nearly always still covers it
         with JOURNEY_LOCK:
             sh = SHAPES.get(f[0])
     if sh is not None:
