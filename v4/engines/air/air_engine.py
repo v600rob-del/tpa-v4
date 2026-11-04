@@ -19,11 +19,15 @@ dropped (the owner's v3 rule). Ground traffic is labelled "on the ground".
 """
 from __future__ import annotations
 
+import csv
+import io
 import json
 import math
 import os
 import re
+import sqlite3
 import ssl
+import tarfile
 import threading
 import time
 from datetime import datetime, timezone
@@ -32,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.4.0'
+ENGINE_VERSION = '0.5.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -65,6 +69,20 @@ _test = os.environ.get('TPA_AIR_TEST_URL', '').strip()
 if _test and not re.match(r'^http://127\.0\.0\.1:\d+/.*\{lat\}.*\{lon\}.*\{radius\}', _test):
     raise SystemExit('TPA_AIR_TEST_URL must point at 127.0.0.1 (testing only)')
 POINT_URL = _test or ADSBLOL_POINT
+
+# 0.5.0 (owner 4 Nov 22:51, planes sign-off: "we need more plane info when clicked"): airline, flight number, usual
+# route, full aircraft name, operator, registration, year built - from Virtual Radar Server's standing data (public
+# domain, CC0; https://github.com/vradarserver/standing-data), downloaded by this engine once a month and kept on our
+# own server as a small database. Looked up only when a plane is clicked: no outside request per click, no new limits.
+_sd = os.environ.get('TPA_AIR_STANDING_URL', '').strip()
+if _sd and not _sd.startswith('http://127.0.0.1:'):
+    raise SystemExit('TPA_AIR_STANDING_URL must point at 127.0.0.1 (testing only)')
+STANDING_URL = _sd or 'https://codeload.github.com/vradarserver/standing-data/tar.gz/refs/heads/main'
+_dd = os.environ.get('TPA_AIR_DATA_DIR', '').strip()
+DATA_DIR = _dd or ('/var/lib/tpa/air' if os.path.isdir('/var/lib/tpa/air') and os.access('/var/lib/tpa/air', os.W_OK) else '')
+STANDING_MAX_AGE = 30 * 86400
+STANDING_MAX_DOWNLOAD = 120_000_000
+STANDING = {'path': '', 'builtAt': 0.0, 'error': '', 'rows': {}}
 
 LOCK = threading.Lock()
 STATE = {'aircraft': [], 'fetchedAt': 0.0, 'circle': None, 'lastAttemptAt': 0.0, 'lastError': '',
@@ -139,7 +157,12 @@ def parse(payload: dict, fetched: float) -> list[dict]:
                     'heading': round(heading % 360, 1) if heading is not None else None,
                     'flight': clean(a.get('flight'), 10), 'reg': clean(a.get('r'), 12), 'type': clean(a.get('t'), 8),
                     'ground': alt == 'ground', 'alt': int(alt) if finite(alt) is not None else None,
-                    'reported': fetched - age})
+                    'reported': fetched - age,
+                    # 0.5.0: shown only when the plane is clicked
+                    'knots': round(gs) if gs is not None and 0 <= gs < 1000 else None,
+                    'climb': finite(a.get('baro_rate', a.get('geom_rate'))),
+                    'squawk': clean(a.get('squawk'), 4), 'emergency': clean(a.get('emergency'), 20).lower(),
+                    'desc': clean(a.get('desc'), 60), 'operator': clean(a.get('ownOp'), 60), 'year': clean(a.get('year'), 4)})
     return out
 
 
@@ -292,6 +315,169 @@ def note_demand(view=None) -> None:
     WAKE.set()
 
 
+WANTED = {'airlines': 'airline', 'airports': 'airport', 'routes': 'route', 'aircraft': 'aircraft'}
+SCHEMA = """
+    CREATE TABLE airline(icao TEXT PRIMARY KEY, name TEXT, iata TEXT);
+    CREATE TABLE airport(icao TEXT PRIMARY KEY, name TEXT, iata TEXT, place TEXT, country TEXT, lat REAL, lon REAL);
+    CREATE TABLE route(callsign TEXT PRIMARY KEY, number TEXT, airline TEXT, airports TEXT);
+    CREATE TABLE aircraft(hex TEXT PRIMARY KEY, reg TEXT, model TEXT, operator TEXT, private INTEGER, year TEXT, type TEXT);"""
+
+
+def build_standing(stream, out_path: str) -> dict:
+    """Reads the standing-data archive as it downloads (never all in memory) into a small SQLite file."""
+    tmp = out_path + '.new'
+    if os.path.exists(tmp):
+        os.remove(tmp)
+    db = sqlite3.connect(tmp)
+    db.executescript(SCHEMA)
+    counts = dict.fromkeys(WANTED.values(), 0)
+    with tarfile.open(fileobj=stream, mode='r|gz') as tar:
+        for m in tar:
+            parts = m.name.split('/')
+            if not m.isfile() or not m.name.endswith('.csv') or len(parts) < 3 or parts[1] not in WANTED or parts[2] != 'schema-01':
+                continue
+            kind = WANTED[parts[1]]
+            for r in csv.DictReader(io.StringIO(tar.extractfile(m).read(8_000_000).decode('utf-8-sig', 'replace'))):   # one small file at a time
+                def g(k, n=80):
+                    return (r.get(k) or '').strip()[:n]
+                if kind == 'airline' and g('ICAO'):
+                    db.execute('INSERT OR REPLACE INTO airline VALUES (?,?,?)', (g('ICAO', 4).upper(), g('Name'), g('IATA', 3)))
+                elif kind == 'airport' and g('ICAO'):
+                    db.execute('INSERT OR REPLACE INTO airport VALUES (?,?,?,?,?,?,?)', (g('ICAO', 4).upper(), g('Name'), g('IATA', 3), g('Location'),
+                               g('CountryISO2', 2), finite(r.get('Latitude')), finite(r.get('Longitude'))))
+                elif kind == 'route' and g('Callsign'):
+                    db.execute('INSERT OR REPLACE INTO route VALUES (?,?,?,?)',
+                               (g('Callsign', 10).upper(), g('Number', 8), g('AirlineCode', 4).upper(), g('AirportCodes', 60).upper()))
+                elif kind == 'aircraft' and g('ICAO'):
+                    db.execute('INSERT OR REPLACE INTO aircraft VALUES (?,?,?,?,?,?,?)', (g('ICAO', 6).lower(), g('Registration', 12), g('ManufacturerAndModel'),
+                               g('Operator'), 1 if g('IsPrivateOperator') == '1' else 0, g('YearBuilt', 4), g('ModelICAO', 4).upper()))
+                else:
+                    continue
+                counts[kind] += 1
+    db.commit()
+    db.close()
+    if counts['airline'] < 1 or counts['airport'] < 1:
+        os.remove(tmp)
+        raise ValueError('standing data looked empty')
+    os.replace(tmp, out_path)
+    return counts
+
+
+def standing_keeper() -> None:
+    """Keeps the standing data at most a month old; tries again a day later if a download fails."""
+    path = os.path.join(DATA_DIR, 'standing.sqlite')
+    while True:
+        age = time.time() - os.path.getmtime(path) if os.path.exists(path) else None
+        if age is not None:
+            STANDING.update(path=path, builtAt=os.path.getmtime(path))
+        if age is None or age > STANDING_MAX_AGE:
+            try:
+                req = Request(STANDING_URL, headers={'User-Agent': f'TPA-Air-Engine/{ENGINE_VERSION}'})
+                with urlopen(req, timeout=120, context=None if STANDING_URL.startswith('http:') else context()) as r:
+                    if int(r.headers.get('Content-Length') or 0) > STANDING_MAX_DOWNLOAD:
+                        raise ValueError('standing data too big')
+                    counts = build_standing(r, path)
+                os.utime(path)
+                STANDING.update(path=path, builtAt=time.time(), error='', rows=counts)
+                continue
+            except Exception as exc:   # aircraft keep working without it, just with fewer details
+                STANDING['error'] = (type(exc).__name__ + ': ' + str(exc))[:120]
+                time.sleep(86400)
+                continue
+        time.sleep(min(86400, max(60, STANDING_MAX_AGE - age)))
+
+
+def lookup(sql: str, args: tuple):
+    if not STANDING['path']:
+        return None
+    try:
+        db = sqlite3.connect(f"file:{STANDING['path']}?mode=ro", uri=True, timeout=2)
+        try:
+            return db.execute(sql, args).fetchone()
+        finally:
+            db.close()
+    except sqlite3.Error:
+        return None
+
+
+def airport_name(icao: str) -> str:
+    row = lookup('SELECT name, iata, place FROM airport WHERE icao=?', (icao,))
+    if not row:
+        return icao
+    name = re.sub(r'\s+(International\s+)?Airport$', '', row[0] or icao).strip() or icao
+    if row[2] and row[2].lower() not in name.lower():
+        name = f'{row[2]} {name}'
+    return f'{name} ({row[1]})' if row[1] else name
+
+
+COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west']
+EMERGENCY = {'7700': 'General emergency (squawking 7700)', '7600': 'Radio failure (squawking 7600)',
+             '7500': 'Unlawful interference (squawking 7500)'}
+
+
+def details(entity_id: str) -> dict:
+    out = {'component': COMPONENT, 'id': entity_id, 'rows': []}
+    hexid = entity_id[4:] if entity_id.startswith('air:') else ''
+    with LOCK:
+        a = next((x for x in STATE['aircraft'] if x['hex'] == hexid), None)
+    if a is None:
+        out['note'] = 'This aircraft is no longer being picked up.'
+        return out
+    rows = out['rows']
+
+    def add(label, value):
+        if value:
+            rows.append({'label': label, 'value': str(value)[:120]})
+    sq = a.get('squawk') or ''
+    if sq in EMERGENCY:
+        add('Emergency', EMERGENCY[sq])
+    elif a.get('emergency') and a['emergency'] != 'none':
+        add('Emergency', 'Declared (' + a['emergency'] + ')')
+    call = (a.get('flight') or '').upper()
+    route = lookup('SELECT number, airline, airports FROM route WHERE callsign=?', (call,)) if call else None
+    code = (route[1] if route and route[1] else call[:3]) if re.match(r'^[A-Z]{3}\d', call) else ''
+    airline = lookup('SELECT name, iata FROM airline WHERE icao=?', (code,)) if code else None
+    if airline:
+        add('Airline', airline[0])
+        number = route[0] if route and route[0] else call[3:]
+        add('Flight', f'{airline[1]} {number} ({call})' if airline[1] and re.match(r'^\d', number) else call)
+    elif call:
+        add('Flight', call)
+    shown_route = False
+    if route and route[2] and route[2] != 'UNKNOWN':
+        stops = [x for x in route[2].split('-') if re.fullmatch(r'[A-Z0-9]{3,4}', x)][:5]
+        if len(stops) >= 2:
+            add('From', airport_name(stops[0]))
+            if len(stops) > 2:
+                add('Via', ', '.join(airport_name(x) for x in stops[1:-1]))
+            add('To', airport_name(stops[-1]))
+            shown_route = True
+    known = lookup('SELECT reg, model, operator, private, year, type FROM aircraft WHERE hex=?', (a['hex'],)) or ('', '', '', 0, '', '')
+    if a['type'] and known[5] and known[5] != a['type'].upper():
+        known = ('', '', '', 0, '', '')            # out of date: the plane says it is something else
+    # ADSB.lol's name is in capitals ("BOEING 777-300ER"): "Boeing 777-300ER", model numbers left alone
+    desc = ' '.join(w.capitalize() if w.isalpha() and w.isupper() and len(w) > 2 else w for w in (a.get('desc') or '').split())
+    add('Aircraft', desc or known[1] or a['type'])
+    operator = a.get('operator') or ('Private' if known[3] else known[2])
+    if operator and not (airline and operator.lower() == airline[0].lower()):
+        add('Operator', operator)
+    add('Registration', a['reg'] or known[0])
+    add('Built', a.get('year') or known[4])
+    if a['ground']:
+        add('Height', 'On the ground')
+    elif a['alt'] is not None:
+        climb = a.get('climb')
+        how = 'level' if climb is None or abs(climb) < 300 else (f'climbing {abs(climb):,.0f} ft/min' if climb > 0 else f'descending {abs(climb):,.0f} ft/min')
+        add('Height', f"{a['alt']:,} ft · {how}")
+    if a.get('knots') is not None and not a['ground']:
+        add('Speed', f"{round(a['knots'] * 1.15078):,} mph")
+    if a['heading'] is not None and not a['ground']:
+        add('Heading', f"{COMPASS[int((a['heading'] + 22.5) % 360 // 45)]} ({round(a['heading']) % 360}°)")
+    if shown_route:
+        out['note'] = 'Route: the one this flight number usually flies (Virtual Radar Server data).'
+    return out
+
+
 def label_for(a) -> str:
     name = a['flight'] or a['reg'] or a['hex'].upper()
     parts = [name]
@@ -387,9 +573,13 @@ class Handler(BaseHTTPRequestHandler):
                                         'keyConfigured': bool(KEY), 'lastError': STATE['lastError'],
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'aircraftInLastDownload': len(STATE['aircraft']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
-                                        'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON})
+                                        'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
+                                        'standingData': {'ready': bool(STANDING['path']), 'builtAt': iso(STANDING['builtAt']) if STANDING['builtAt'] else None,
+                                                         'error': STANDING['error'], 'rows': STANDING['rows']}})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
+        if split.path == '/details':
+            return self.reply(200, details((parse_qs(split.query).get('id') or [''])[0][:140]))
         return self.reply(404, {'error': 'not found'})
 
     def do_POST(self):  # noqa: N802
@@ -402,6 +592,8 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     port = int(os.environ.get('TPA_AIR_ENGINE_PORT', '8783'))
     threading.Thread(target=poller, daemon=True).start()
+    if DATA_DIR:
+        threading.Thread(target=standing_keeper, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA AIRCRAFT ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
