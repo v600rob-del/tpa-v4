@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.1'
+ENGINE_VERSION = '0.5.2'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -539,11 +539,15 @@ def snapshot(view) -> dict:
         # 0.2.0: speed + track let the map carry the aircraft forward smoothly between
         # reports (shown as "estimated"), for at most a minute after the real report.
         if a['heading'] is not None and a.get('speed') and a['speed'] >= 5:
-            if near_ground(a):
+            if a['ground']:
                 # 0.5.1 (owner 4 Nov 23:21, Newcastle: after landing it "reversed a bit up the runway"): a plane landing
                 # brakes hard, so carrying it on at its last speed put it too far down the runway, then pulled it back.
-                # Near the ground: ease to a stop over 12 s - it falls a little behind and catches up forwards instead.
-                entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': 12, 'slowToStop': True}
+                # On the runway (25 m/s or more): eased to a stop about where a braking plane stops. Taxiing: steady, easing
+                # off only near the end. A plane that is really further on is caught up forwards; one behind is waited for.
+                # 0.5.2 (owner 23:28: "it keeps stopping for a couple of seconds under 1000ft"): planes still in the air
+                # are carried on at their speed as before - only the ground roll is eased.
+                hold = max(6.0, min(25.0, round(0.3 * a['speed'], 1))) if a['speed'] >= 25 else 25.0
+                entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': hold, 'slowToStop': True}
             else:
                 entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': 60}
         frame['entities'].append(entity)
