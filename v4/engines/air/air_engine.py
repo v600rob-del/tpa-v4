@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.2'
+ENGINE_VERSION = '0.5.3'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -410,6 +410,36 @@ def airport_name(icao: str) -> str:
     return f'{name} ({row[1]})' if row[1] else name
 
 
+ROUTE_SLACK_NM = 80
+
+
+def off_route_nm(lat, lon, a, b) -> float:
+    """How far a point is from the great-circle flight path between two airports (nautical miles)."""
+    R = 3440.065
+    p1, l1, p2, l2, p3, l3 = (math.radians(x) for x in (a[0], a[1], b[0], b[1], lat, lon))
+    def dist(pa, la, pb, lb):
+        h = math.sin((pb - pa) / 2) ** 2 + math.cos(pa) * math.cos(pb) * math.sin((lb - la) / 2) ** 2
+        return 2 * math.asin(min(1.0, math.sqrt(h)))
+    def bearing(pa, la, pb, lb):
+        return math.atan2(math.sin(lb - la) * math.cos(pb), math.cos(pa) * math.sin(pb) - math.sin(pa) * math.cos(pb) * math.cos(lb - la))
+    d13, d12 = dist(p1, l1, p3, l3), dist(p1, l1, p2, l2)
+    xt = math.asin(max(-1.0, min(1.0, math.sin(d13) * math.sin(bearing(p1, l1, p3, l3) - bearing(p1, l1, p2, l2)))))
+    at = math.acos(max(-1.0, min(1.0, math.cos(d13) / max(1e-12, math.cos(xt)))))
+    if math.cos(bearing(p1, l1, p3, l3) - bearing(p1, l1, p2, l2)) < 0 or at > d12:   # beyond either end: distance to that airport
+        return R * min(d13, dist(p2, l2, p3, l3))
+    return R * abs(xt)
+
+
+def route_plausible(lat, lon, stops) -> bool:
+    spots = []
+    for icao in stops:
+        row = lookup('SELECT lat, lon FROM airport WHERE icao=?', (icao,))
+        if not row or row[0] is None or row[1] is None:
+            return False                 # cannot check it: not shown
+        spots.append(row)
+    return any(off_route_nm(lat, lon, spots[i], spots[i + 1]) <= ROUTE_SLACK_NM for i in range(len(spots) - 1))
+
+
 COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west']
 EMERGENCY = {'7700': 'General emergency (squawking 7700)', '7600': 'Radio failure (squawking 7600)',
              '7500': 'Unlawful interference (squawking 7500)'}
@@ -446,7 +476,9 @@ def details(entity_id: str) -> dict:
     shown_route = False
     if route and route[2] and route[2] != 'UNKNOWN':
         stops = [x for x in route[2].split('-') if re.fullmatch(r'[A-Z0-9]{3,4}', x)][:5]
-        if len(stops) >= 2:
+        # 0.5.3 (owner 4 Nov 23:36: TOM4MJ landed at Manchester, the box said Gatwick to Corfu): flight numbers are reused,
+        # so the usual route can be out of date. It is shown only if the plane is actually on (or near) that route.
+        if len(stops) >= 2 and route_plausible(a['lat'], a['lon'], stops):
             add('From', airport_name(stops[0]))
             if len(stops) > 2:
                 add('Via', ', '.join(airport_name(x) for x in stops[1:-1]))
