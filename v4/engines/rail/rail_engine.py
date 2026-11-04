@@ -51,7 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.4.2'
+ENGINE_VERSION = '0.4.3'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · railway lines: Network Rail track model (OGL) · stations: DfT NaPTAN (OGL) · junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
@@ -640,7 +640,9 @@ def snapshot(view) -> dict:
         connected_for = now - STATE['connectedAt'] if STATE['connected'] else 0
     frame_out = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
                  'observedAt': iso(now), 'receivedAt': iso(now), 'expiresAt': iso(now + 90),
-                 'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION, 'entities': []}
+                 'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION, 'entities': [],
+                 # 0.4.3 (owner 4 Nov 11:20: unreadable headcodes where trains sit on top of each other): one badge per pile
+                 'groupStacks': True}
     if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame_out['notice'] = 'Zoom in to see trains'
         return frame_out
