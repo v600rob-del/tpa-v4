@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.3'
+ENGINE_VERSION = '0.5.4'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -187,6 +187,13 @@ def fetch_national() -> None:
             if a['hex'] not in got or a['reported'] > got[a['hex']]['reported']:
                 got[a['hex']] = a
     with LOCK:
+        # 0.5.4 (owner 4 Nov 23:44-23:45, Manchester: a plane "vanished then reappeared a couple of times on the runway",
+        # "straight down the runway"): near the ground receivers lose planes now and then, and ADSB.lol leaves a plane
+        # out of an answer while it has nothing fresh. A plane missing from one answer is kept where it was last
+        # reported (fading as usual) until DROP_AFTER (90 s) has passed since that report, instead of vanishing.
+        for a in STATE['aircraft']:
+            if a['hex'] not in got and started - a['reported'] <= DROP_AFTER:
+                got[a['hex']] = a
         STATE.update(aircraft=list(got.values()), fetchedAt=started, circle='national', lastError='', consecutiveErrors=0,
                      downloadBytes=size)
         STATE['downloadsThisRun'] += 1
