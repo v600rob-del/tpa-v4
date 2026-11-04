@@ -399,7 +399,7 @@ function markers(){
   }
   // 4.8.0 (owner 1 Nov 13:40, York at zoom 13: a pile of buses on top of each other): icons that would sit
   // on top of each other are shown as one "N buses" badge, which splits as you zoom in.
-  const grouped=groupStacks(items);
+  const grouped=groupStacks(items);fanOut(items,grouped,now);
   for(const {e,k,pos,x,y} of items){
     if(grouped.has(k))continue;
     if((perLayer[e.component]=(perLayer[e.component]||0)+1)>cap)continue;
@@ -451,6 +451,33 @@ function markers(){
 const GROUP_BELOW_ZOOM=16,GROUP_MIN=3,GROUP_JOIN=32,GROUP_LEAVE=44;
 const stacks=new Map();          // group id -> {b, component, n, lat, lon, x, y, members, tf}
 let stackOf=new Map(),stackNow=[];  // vehicle key -> group id (last paint); groups to draw this paint
+// 4.15.4 (owner 4 Nov 11:30: trains piled at a station - "you can only click on ... the top one"): vehicles that sit
+// on (almost) the same spot and are not in a badge are spread into a small ring round that spot, so each one can be
+// seen and clicked. Drawing only - their real positions are unchanged; the ring keeps its order (by id), so it is calm.
+const FAN_NEAR=6,FAN={off:new Map(),t:0};
+function fanOut(items,grouped,now){
+  // trains only (owner 4 Nov 11:30, trains piled at a station): buses are signed off as they are, and other layers
+  // use a vehicle on the same spot as a marker. Only trains standing still (at a platform): two passing do not jump apart.
+  const still=it=>{const a=estimate(it.e,now+1000);if(!a)return true;const [dx,dy]=metresXY(it.pos,a);return Math.hypot(dx,dy)<0.5;};
+  const free=items.filter(it=>it.e.component==='rail'&&!grouped.has(it.k)&&still(it)),used=new Set(),want=new Map();
+  for(const a of free){
+    if(used.has(a.k))continue;
+    const pile=free.filter(b=>!used.has(b.k)&&Math.abs(b.x-a.x)<=FAN_NEAR&&Math.abs(b.y-a.y)<=FAN_NEAR);
+    if(pile.length<2)continue;
+    pile.sort((p,q)=>p.k<q.k?-1:1);
+    const cx=pile.reduce((t,p)=>t+p.x,0)/pile.length,cy=pile.reduce((t,p)=>t+p.y,0)/pile.length;
+    const r=Math.max(26,9*pile.length)*Math.max(0.8,pinScale(state.z));
+    pile.forEach((p,i)=>{const ang=-Math.PI/2+2*Math.PI*i/pile.length;want.set(p.k,[cx+r*Math.cos(ang)-p.x,cy+r*Math.sin(ang)-p.y]);used.add(p.k);});
+  }
+  // the ring opens and closes smoothly (about a quarter of a second), so a train arriving at a busy platform slides aside, never jumps
+  const t=performance.now(),f=FAN.t?1-Math.exp(-Math.min(1000,t-FAN.t)/120):1;FAN.t=t;
+  for(const it of items){
+    const w=want.get(it.k)||[0,0],c=FAN.off.get(it.k)||[0,0];
+    const o=[c[0]+(w[0]-c[0])*f,c[1]+(w[1]-c[1])*f];
+    if(!want.has(it.k)&&Math.hypot(o[0],o[1])<0.3){FAN.off.delete(it.k);continue;}
+    FAN.off.set(it.k,o);it.x+=o[0];it.y+=o[1];
+  }
+}
 function groupStacks(items){
   const out=new Set();stackNow=[];
   const z=map?map.getZoom():state.z;
