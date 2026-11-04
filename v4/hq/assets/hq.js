@@ -221,12 +221,18 @@ window.TPA_HQ_GLIDE_STATUS=()=>({budget:glideBudget,gliding:glideCount,frameMs:M
 function keyOf(e){return e.component+':'+e.id;}
 // 4.13.3 (owner 3 Nov 19:11: "Your clock is 6.5 seconds behind"): vehicles are moved by the SERVER's time. Each answer
 // carries it; the difference from this device's clock is taken from the quickest recent answers (least delay).
-const CLOCK={off:0,samples:[]};
+// 4.15.3 (owner 4 Nov 10:42: "Some people might have clocks out of kilter by much more", "belt and braces"): the
+// server's time is kept on the browser's own stopwatch (performance.now), which no clock sync, sleep or hand-set
+// clock can move. Each answer is a reading; the quickest recent ones are trusted, and a reading that disagrees by more
+// than 1.5 s (a computer back from sleep) starts afresh. The device's clock is used only until the first answer.
+const CLOCK={off:null,samples:[]};
 function noteServerTime(h,sent,got){const s=Number(h);if(!(s>1e12)||got<sent)return;
-  CLOCK.samples.push([got-sent,s-(sent+got)/2]);if(CLOCK.samples.length>12)CLOCK.samples.shift();
+  const sample=[got-sent,s-(sent+got)/2];
+  if(CLOCK.off!==null&&sample[0]<1500&&Math.abs(sample[1]-CLOCK.off)>1500)CLOCK.samples=[];
+  CLOCK.samples.push(sample);if(CLOCK.samples.length>12)CLOCK.samples.shift();
   const best=[...CLOCK.samples].sort((a,b)=>a[0]-b[0]).slice(0,5).map(x=>x[1]).sort((a,b)=>a-b);CLOCK.off=best[best.length>>1];}
-function serverNow(){return Date.now()+CLOCK.off;}
-window.TPA_HQ_CLOCK=()=>({offsetMs:Math.round(CLOCK.off),samples:CLOCK.samples.length});
+function serverNow(){return (CLOCK.off===null?Date.now():performance.now()+CLOCK.off)+(Number(window.TPA_HQ_TEST_SERVER_SHIFT)||0);}   // (the shift: tests only, to imitate time passing on the server)
+window.TPA_HQ_CLOCK=()=>({offsetMs:Math.round(serverNow()-Date.now()),samples:CLOCK.samples.length});
 function estimate(e,now){
   const p=e.position,m=state.live[e.component]?e.motion:null;
   if(!p)return null;
@@ -833,8 +839,8 @@ function checkMotion(m,p){
 async function requestBounded(url,maxBytes,timeoutMs){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{
-    const sent=Date.now(),response=await fetch(url,{cache:'no-store',signal:ctl.signal});
-    noteServerTime(response.headers.get('x-tpa-now'),sent,Date.now());
+    const sent=performance.now(),response=await fetch(url,{cache:'no-store',signal:ctl.signal});
+    noteServerTime(response.headers.get('x-tpa-now'),sent,performance.now());
     if(!response.ok || Number(response.headers.get('content-length'))>maxBytes)throw Error('unavailable');
     const body=await response.text();
     if(new TextEncoder().encode(body).byteLength>maxBytes)throw Error('oversize');
@@ -882,7 +888,7 @@ function syncOverlays(){
     const o=state.frames[id]?.overlay,have=state.overlays[id];
     const want=!!o&&state.visible[id]&&!state.parked[id]&&(state.status[id]==='ready'||state.status[id]==='stale');
     if(!want){if(have){map.removeLayer(have.layer);if(have.next)map.removeLayer(have.next.layer);delete state.overlays[id];}continue;}
-    const stamp=Math.floor(Date.now()/1000/o.refreshSeconds);
+    const stamp=Math.floor(serverNow()/1000/o.refreshSeconds);   // 4.15.3: the server's 10-minute periods, as the road engine keeps them
     const url=o.tiles+'?v='+stamp;
     if(have&&(have.url===url||have.next?.url===url))continue;
     // 4.1.11 (owner 31 Oct 22:08: traffic "loading in chunks whenever it likes"):
