@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.4'
+ENGINE_VERSION = '0.5.5'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -186,13 +186,15 @@ def fetch_national() -> None:
         for a in aircraft:
             if a['hex'] not in got or a['reported'] > got[a['hex']]['reported']:
                 got[a['hex']] = a
+    for a in got.values():
+        plan_landing(a)
     with LOCK:
         # 0.5.4 (owner 4 Nov 23:44-23:45, Manchester: a plane "vanished then reappeared a couple of times on the runway",
         # "straight down the runway"): near the ground receivers lose planes now and then, and ADSB.lol leaves a plane
         # out of an answer while it has nothing fresh. A plane missing from one answer is kept where it was last
         # reported (fading as usual) until DROP_AFTER (90 s) has passed since that report, instead of vanishing.
         for a in STATE['aircraft']:
-            if a['hex'] not in got and started - a['reported'] <= DROP_AFTER:
+            if a['hex'] not in got and started - a['reported'] <= a.get('keep', DROP_AFTER):
                 got[a['hex']] = a
         STATE.update(aircraft=list(got.values()), fetchedAt=started, circle='national', lastError='', consecutiveErrors=0,
                      downloadBytes=size)
@@ -528,6 +530,56 @@ def near_ground(a) -> bool:
     return a['ground'] or (a['alt'] is not None and a['alt'] < LOW_FEET)
 
 
+def airports_near_home() -> list:
+    """Airports with passenger codes in and around the British Isles (from the standing data), kept in memory."""
+    if STANDING.get('nearFor') != STANDING['path']:
+        rows = []
+        if STANDING['path']:
+            try:
+                db = sqlite3.connect(f"file:{STANDING['path']}?mode=ro", uri=True, timeout=2)
+                rows = db.execute("SELECT lat, lon FROM airport WHERE iata != '' AND lat BETWEEN 48 AND 62 AND lon BETWEEN -12 AND 4").fetchall()
+                db.close()
+            except sqlite3.Error:
+                rows = []
+        STANDING.update(near=[r for r in rows if r[0] is not None and r[1] is not None], nearFor=STANDING['path'])
+    return STANDING.get('near') or []
+
+
+def plan_landing(a) -> None:
+    """0.5.5 (owner 4 Nov 23:51, EZY29QN at Manchester: "seemed to land but not slow down, then vanished for a couple of
+    seconds and returned" - its last report was low on the approach, then nothing for two minutes). A plane low down,
+    coming down and heading for an airport is carried on at its speed to the airport and eased to a stop just past
+    the middle of the airfield, as a landing plane does, instead of flying on through it. It is kept there (fading)
+    until it is heard again, for up to 5 minutes."""
+    if 'landing' in a:
+        return
+    a['landing'] = None
+    if a['ground'] or a['alt'] is None or a['alt'] >= LOW_FEET or (a.get('climb') is None or a['climb'] > -300) \
+            or a['heading'] is None or not a.get('speed') or a['speed'] < 30:
+        return
+    h = math.radians(a['heading'])
+    best = None
+    for lat, lon in airports_near_home():
+        if abs(lat - a['lat']) > 0.25 or abs(lon - a['lon']) > 0.4:
+            continue
+        north = (lat - a['lat']) * 111195
+        east = (lon - a['lon']) * 111195 * math.cos(math.radians(a['lat']))
+        along = east * math.sin(h) + north * math.cos(h)
+        across = abs(east * math.cos(h) - north * math.sin(h))
+        if 0 < along < 22000 and across < max(1500, along * 0.25) and (best is None or along < best):
+            best = along
+    if best is None:
+        return
+    length = best + 600                       # the roll ends a little past the middle of the airfield
+    R = 6371000
+    end = [round(a['lon'] + length * math.sin(h) / (R * math.cos(math.radians(a['lat']))) * 180 / math.pi, 6),
+           round(a['lat'] + length * math.cos(h) / R * 180 / math.pi, 6)]
+    hold = round(6 * length / (5 * a['speed']), 1)     # steady for two-thirds of it, then easing to a stop at the end
+    a['landing'] = {'mode': 'path', 'points': [[a['lon'], a['lat']], end], 'arriveAt': iso(a['reported'] + hold),
+                    'maxSeconds': hold, 'speedMps': a['speed'], 'slowToStop': True}
+    a['keep'] = min(300, max(DROP_AFTER, hold + 60))
+
+
 def label_for(a) -> str:
     name = a['flight'] or a['reg'] or a['hex'].upper()
     parts = [name]
@@ -567,7 +619,7 @@ def snapshot(view) -> dict:
     inside = []
     for a in aircraft:
         age = now - a['reported']
-        if age > DROP_AFTER or not (s <= a['lat'] <= n and w <= a['lon'] <= e):
+        if age > a.get('keep', DROP_AFTER) or not (s <= a['lat'] <= n and w <= a['lon'] <= e):
             continue
         inside.append(((a['lat'] - clat) ** 2 + (a['lon'] - clon) ** 2, a, age))
     inside.sort(key=lambda t: t[0])
@@ -578,7 +630,9 @@ def snapshot(view) -> dict:
         # 0.2.0: speed + track let the map carry the aircraft forward smoothly between
         # reports (shown as "estimated"), for at most a minute after the real report.
         if a['heading'] is not None and a.get('speed') and a['speed'] >= 5:
-            if a['ground']:
+            if a.get('landing'):
+                entity['motion'] = a['landing']
+            elif a['ground']:
                 # 0.5.1 (owner 4 Nov 23:21, Newcastle: after landing it "reversed a bit up the runway"): a plane landing
                 # brakes hard, so carrying it on at its last speed put it too far down the runway, then pulled it back.
                 # On the runway (25 m/s or more): eased to a stop about where a braking plane stops. Taxiing: steady, easing
