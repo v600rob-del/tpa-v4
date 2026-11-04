@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.0'
+ENGINE_VERSION = '0.5.1'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -468,14 +468,25 @@ def details(entity_id: str) -> dict:
     elif a['alt'] is not None:
         climb = a.get('climb')
         how = 'level' if climb is None or abs(climb) < 300 else (f'climbing {abs(climb):,.0f} ft/min' if climb > 0 else f'descending {abs(climb):,.0f} ft/min')
-        add('Height', f"{a['alt']:,} ft · {how}")
-    if a.get('knots') is not None and not a['ground']:
+        if a['alt'] < LOW_FEET:
+            how = 'landing' if climb is not None and climb <= -300 else 'taking off' if climb is not None and climb >= 300 else ''
+            add('Height', f'Below {LOW_FEET:,} ft' + (f' · {how}' if how else ''))
+        else:
+            add('Height', f"{a['alt']:,} ft · {how}")
+    if a.get('knots') is not None and (not a['ground'] or a['knots'] >= 10):
         add('Speed', f"{round(a['knots'] * 1.15078):,} mph")
     if a['heading'] is not None and not a['ground']:
         add('Heading', f"{COMPASS[int((a['heading'] + 22.5) % 360 // 45)]} ({round(a['heading']) % 360}°)")
     if shown_route:
         out['note'] = 'Route: the one this flight number usually flies (Virtual Radar Server data).'
     return out
+
+
+LOW_FEET = 1000
+
+
+def near_ground(a) -> bool:
+    return a['ground'] or (a['alt'] is not None and a['alt'] < LOW_FEET)
 
 
 def label_for(a) -> str:
@@ -486,7 +497,9 @@ def label_for(a) -> str:
     if a['ground']:
         parts.append('on the ground')
     elif a['alt'] is not None:
-        parts.append(f"{a['alt']:,} ft")
+        # 0.5.1 (owner 4 Nov 23:21 "it landed at -350ft :D"): planes send their height set for standard air pressure,
+        # which near the ground can be hundreds of feet out (even below zero), so low down it is not given as a number
+        parts.append(f"{a['alt']:,} ft" if a['alt'] >= LOW_FEET else f'below {LOW_FEET:,} ft')
     if a['reg'] and a['reg'] != name:
         parts.append(a['reg'])
     return ' · '.join(parts)
@@ -525,8 +538,14 @@ def snapshot(view) -> dict:
                   'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(a['reported'])}
         # 0.2.0: speed + track let the map carry the aircraft forward smoothly between
         # reports (shown as "estimated"), for at most a minute after the real report.
-        if not a['ground'] and a['heading'] is not None and a.get('speed') and a['speed'] >= 5:
-            entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': 60}
+        if a['heading'] is not None and a.get('speed') and a['speed'] >= 5:
+            if near_ground(a):
+                # 0.5.1 (owner 4 Nov 23:21, Newcastle: after landing it "reversed a bit up the runway"): a plane landing
+                # brakes hard, so carrying it on at its last speed put it too far down the runway, then pulled it back.
+                # Near the ground: ease to a stop over 12 s - it falls a little behind and catches up forwards instead.
+                entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': 12, 'slowToStop': True}
+            else:
+                entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': 60}
         frame['entities'].append(entity)
     if not frame['entities'] and not circle_covers(circle, view) and not notice:
         frame['notice'] = 'Loading aircraft for this area…'
