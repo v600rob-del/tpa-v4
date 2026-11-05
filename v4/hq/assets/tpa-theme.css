@@ -107,3 +107,7 @@ h1 em{color:var(--amber)}
 .detail-picture svg .acc{fill:var(--amber)}
 .detail-picture.wide svg{width:230px}   /* 4.17.0: the class drawings are long and low */
 .marker-layer .review-pin.rail.face-left svg,.review-pin.rail.face-left svg{transform:scaleX(-1)}   /* 4.18.0: a train heading west faces left (its headcode board is not mirrored) */
+
+/* 4.21.0: the detailed train pictures sit on a light "showroom" panel, bigger than the old drawings */
+.detail-picture.photo{height:auto;aspect-ratio:9/5;padding:6px;background:radial-gradient(ellipse at 50% 35%,#ffffff 0,#eef2f7 60%,#dfe5ed 100%);border-color:#cfd8e3}
+.detail-picture.photo img{display:block;width:100%;height:100%;object-fit:contain}

@@ -117,6 +117,7 @@ const RAIL_KINDS=Object.freeze({express: ['M2 12h17c4.5 0 8.3 2.2 10.6 5.6l.6.9c
 // 4.17.0 (owner 5 Nov stage 3): TPA's own side-on drawings of the common British train classes, shown in a train's box
 // once the timetable says what it is (rail engine 0.8.0 sends picture "c800" etc.). 100x26, facing right; amber = the
 // yellow warning panel. Drawn in-house (v4/design/train-classes), no photos or logos.
+const TRAIN_PHOTOS=new Set(['c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66']);   // 4.21.0
 const TRAIN_CLASSES=Object.freeze({
   c800:["M2 8.6Q2 7 3.6 7H68C79 7 89.5 11 95.6 16.8L96 19.4H2ZM77.5 9.3C82.6 9.7 87.2 11.6 90.4 14.4H77.5ZM6 10.2h4.2v3.8h-4.2ZM12.6 10.2h4.2v3.8h-4.2ZM19.2 10.2h4.2v3.8h-4.2ZM25.8 10.2h4.2v3.8h-4.2ZM32.4 10.2h4.2v3.8h-4.2ZM39 10.2h4.2v3.8h-4.2ZM45.6 10.2h4.2v3.8h-4.2ZM52.2 10.2h4.2v3.8h-4.2ZM58.8 10.2h4.2v3.8h-4.2ZM66.5 9.6h1.3v9h-1.3ZM6.1 20.6a1.6 1.6 0 1 0 3.2 0ZM10.7 20.6a1.6 1.6 0 1 0 3.2 0ZM54.1 20.6a1.6 1.6 0 1 0 3.2 0ZM58.7 20.6a1.6 1.6 0 1 0 3.2 0ZM1 22.9h98v1.2H1Z","M91.6 15.6C93.4 16.6 94.8 17.6 95.6 18.6L95.8 19.4H91.6Z"],
   c390:["M2 9.4Q2 6.6 4.8 6.6H72C82 6.6 89 9.4 93.4 13.4Q96.4 16.2 96.6 19.4H2ZM79 8.8C84.6 9.2 88.6 11 91.2 13.6H79ZM6 10.4h3.6v3.2h-3.6ZM12 10.4h3.6v3.2h-3.6ZM18 10.4h3.6v3.2h-3.6ZM24 10.4h3.6v3.2h-3.6ZM30 10.4h3.6v3.2h-3.6ZM36 10.4h3.6v3.2h-3.6ZM42 10.4h3.6v3.2h-3.6ZM48 10.4h3.6v3.2h-3.6ZM54 10.4h3.6v3.2h-3.6ZM60 10.4h3.6v3.2h-3.6ZM68 9.6h1.3v9h-1.3ZM6.1 20.6a1.6 1.6 0 1 0 3.2 0ZM10.7 20.6a1.6 1.6 0 1 0 3.2 0ZM56.1 20.6a1.6 1.6 0 1 0 3.2 0ZM60.7 20.6a1.6 1.6 0 1 0 3.2 0ZM28 6.6l2.6-2.8h7.6l.9.9h-7.6L29.6 6.6ZM34 3.8h1v-1h3v1h1v.6h-5ZM1 22.9h98v1.2H1Z","M92.6 14.2C94.8 16 96 17.6 96.4 19.4H92.6Z"],
@@ -200,7 +201,14 @@ async function loadDetails(e,box){
       const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',wide?'0 2 100 23':'0 6 32 21');svg.setAttribute('aria-hidden','true');
       const a=document.createElementNS('http://www.w3.org/2000/svg','path');a.setAttribute('d',pic[0]);a.setAttribute('fill-rule','evenodd');svg.append(a);
       if(pic[1]){const b=document.createElementNS('http://www.w3.org/2000/svg','path');b.setAttribute('d',pic[1]);b.setAttribute('class','acc');svg.append(b);}
-      box2.append(svg);rows.unshift(box2);}
+      // 4.21.0 (owner 5 Nov 17:20-19:15: "More detailed, instead of a cheese wedge"): TPA's own detailed picture of each
+      // class (made by the owner, neutral colours, no logos), shown bigger on a light panel; the drawing stays if it fails.
+      if(wide&&TRAIN_PHOTOS.has(d.picture)){const img=document.createElement('img');img.src='/assets/trains/'+d.picture+'.webp';
+        img.alt='Picture of the train type: '+(rows.map(r=>r.textContent).find(t=>t.startsWith('Train type'))||'').replace('Train type','').trim();
+        img.decoding='async';img.addEventListener('error',()=>{box2.classList.remove('photo');img.replaceWith(svg);},{once:true});
+        box2.classList.add('photo');box2.append(img);}
+      else box2.append(svg);
+      rows.unshift(box2);}
     box.replaceChildren(...rows);
   }catch(err){}
   // the next stop changes as the vehicle moves: ask again while it stays selected
