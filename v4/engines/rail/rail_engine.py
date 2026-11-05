@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.8.2'
+ENGINE_VERSION = '0.9.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -361,7 +361,8 @@ TRAIN_FIELDS = {'lat': float, 'lon': float, 'station': str, 'when': float, 'even
                 'nlat': float, 'nlon': float, 'nname': str, 'run': int, 'cancelled': bool, 'cancelledAt': float,
                 'toc': str,   # 0.5.0: the operator's two-digit code
                 'stanox': str, 'nstanox': str, 'platform': str, 'platformAt': str, 'arriveBy': float,   # 0.6.0
-                'uid': str, 'day': str}   # 0.8.0: its timetable entry   # 0.3.0: next place + minutes to it
+                'uid': str, 'day': str,   # 0.8.0: its timetable entry
+                'arrivingAt': str}        # 0.9.0: the signals say it has arrived here; shown once the map gets it there   # 0.3.0: next place + minutes to it
 
 
 def save_memory(force: bool = False) -> None:
@@ -404,7 +405,7 @@ def restore_memory() -> int:
         item['point'] = t.get('point') is True
         item['cancelled'] = t.get('cancelled') is True
         item['toc'] = item['toc'] if re.fullmatch(r'\d{2}', item['toc']) else ''
-        for k in ('stanox', 'nstanox', 'platformAt'):
+        for k in ('stanox', 'nstanox', 'platformAt', 'arrivingAt'):
             item[k] = item[k] if re.fullmatch(r'\d{5,6}', item[k]) else ''
         item['platform'] = item['platform'] if re.fullmatch(r'[0-9A-Z]{1,3}', item['platform']) else ''
         item['uid'] = item['uid'] if re.fullmatch(r'[A-Z0-9 ]{6}', item['uid']) else ''
@@ -953,6 +954,50 @@ def booked_class(t: dict):
     return '', ''
 
 
+FASTEST = 56.0          # m/s (125 mph): the most a train is ever shown doing
+SLOWEST_CATCH_UP = 20.0 # m/s (45 mph): even a slow stretch may be caught up at this pace
+
+
+def path_metres(path) -> float:
+    return sum(km(a[1], a[0], b[1], b[0]) * 1000 for a, b in zip(path, path[1:]))
+
+
+def believable_arrival(t: dict, now: float) -> float:
+    """The soonest the train SHOWN on the map can reach its next stop at a believable speed (0 when unknown)."""
+    path = ROUTES.get(leg_key(t))
+    if not path or not t.get('run'):
+        return 0.0
+    length = path_metres(path)
+    planned = t.get('arriveBy') or (t['when'] + t['run'] * 60)
+    if length <= 0 or planned <= t['when']:
+        return 0.0
+    done = min(1.0, max(0.0, (now - t['when']) / (planned - t['when'])))
+    booked = length / (t['run'] * 60)
+    pace = min(FASTEST, max(SLOWEST_CATCH_UP, booked * 1.4))
+    return now + length * (1 - done) / pace
+
+
+def arrive_now(t: dict, stanox: str, at: float, now: float) -> bool:
+    station = (STATE['stations'] or {}).get(stanox) or STATE['points'].get(stanox)
+    if not station:
+        return False
+    t.update(lat=station[0], lon=station[1], station=station[2], stanox=stanox, event='ARRIVAL',
+             when=max(t['when'], min(now, at)), point=stanox not in (STATE['stations'] or {}),
+             nlat=0.0, nlon=0.0, nname='', nstanox='', run=0, arriveBy=0.0, arrivingAt='')
+    STATE['tdArrived'] += 1
+    return True
+
+
+def settle_arrivals(now: float) -> None:
+    """A train the signals said had arrived is shown arrived once the map has glided it there (0.9.0)."""
+    for t in STATE['trains'].values():
+        if t.get('arrivingAt') and t['event'] == 'DEPARTURE' and t.get('arriveBy') and now >= t['arriveBy']:
+            if t['arrivingAt'] == t.get('nstanox'):
+                arrive_now(t, t['arrivingAt'], t['arriveBy'], now)
+            else:
+                t['arrivingAt'] = ''
+
+
 def handle_td(item: dict, now: float) -> None:
     """One signalling message: a train stepping from one berth to the next (CA) or appearing in one (CC)."""
     if not isinstance(item, dict) or len(item) != 1:
@@ -1001,17 +1046,17 @@ def handle_td(item: dict, now: float) -> None:
             STATE['tdPlatforms'] += 1
         if arriving and t.get('nstanox') == stanox and t['event'] == 'DEPARTURE' and t.get('run'):
             eta = when + off
+            # 0.9.0 (owner 11:42 "a heck of a sprint", 12:24 "some accuracy info that makes trains whizz about"): the map
+            # never squeezes the rest of a journey into less time than a believable speed allows. A train that is
+            # behind catches up at that pace and pulls in a little later on the map, instead of rocketing there.
+            eta = max(eta, believable_arrival(t, now))
             if eta > now + 5:
                 if eta < t['when'] + t['run'] * 60 + 1800:      # re-timed signal by signal
                     t['arriveBy'] = eta
+                    t['arrivingAt'] = stanox                    # shown at the station once the map has got it there
                     STATE['tdRetimed'] += 1
             else:                                              # pulling in now: shown at the station straight away
-                station = (STATE['stations'] or {}).get(stanox) or STATE['points'].get(stanox)
-                if station:
-                    t.update(lat=station[0], lon=station[1], station=station[2], stanox=stanox, event='ARRIVAL',
-                             when=max(t['when'], min(now, eta)), point=stanox not in (STATE['stations'] or {}),
-                             nlat=0.0, nlon=0.0, nname='', nstanox='', run=0, arriveBy=0.0)
-                    STATE['tdArrived'] += 1
+                arrive_now(t, stanox, min(now, when + off), now)
         elif not arriving and plat and t.get('stanox') == stanox and not t.get('platform'):
             t.update(platform=plat, platformAt=stanox)
             STATE['tdPlatforms'] += 1
@@ -1302,6 +1347,7 @@ def snapshot(view) -> dict:
     note_demand()
     with LOCK:
         h, notice = health(now)
+        settle_arrivals(now)
         trains = list(STATE['trains'].items())
         connected_for = now - STATE['connectedAt'] if STATE['connected'] else 0
     frame_out = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
@@ -1386,6 +1432,7 @@ class Handler(BaseHTTPRequestHandler):
             note_demand()
             now = time.time()
             with LOCK:
+                settle_arrivals(now)
                 h, notice = health(now)
                 return self.reply(200, {'component': COMPONENT, 'engine': 'tpa-train-engine', 'engineVersion': ENGINE_VERSION,
                                         'contractVersion': CONTRACT, 'live': True, 'health': h, 'notice': notice,
