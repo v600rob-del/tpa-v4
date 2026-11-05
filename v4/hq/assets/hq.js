@@ -97,6 +97,20 @@ const ICON_PATHS=Object.freeze({
   rail:['M3 11h18.5c3.6 0 6.2 1.6 7.7 4.6l.9 1.8c.6 1.3-.3 2.6-1.7 2.6H3ZM5 13.2h3v3H5ZM10 13.2h3v3h-3ZM15 13.2h3v3h-3ZM21 13.2h2.6c1.5 0 2.8.8 3.5 2.2l.4.8H21ZM5.4 21.2a1.7 1.7 0 1 0 3.4 0ZM9.8 21.2a1.7 1.7 0 1 0 3.4 0ZM19.4 21.2a1.7 1.7 0 1 0 3.4 0ZM23.8 21.2a1.7 1.7 0 1 0 3.4 0ZM2 23.4h28v1.3H2Z','M3.6 17.4h24.6v1.1H3.6Z'],   // 4.15.1 (owner 21:56): side-on, so trains and buses differ at a glance
   bus:['M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z','M9.7 5.7h12.6v1.6H9.7Z']
 });
+// 4.16.0 (owner 5 Nov 00:16-00:18, "graphics work for the train types", "i like that!"): TPA's own drawing for each kind
+// of train (rail engine 0.5.0 sends it as "variant", from the headcode's first digit). Side-on, facing right; the amber
+// patch is the yellow warning panel British trains carry on the front. Unknown kinds keep the plain train.
+const RAIL_KINDS=Object.freeze({express: ['M2 12h17c4.5 0 8.3 2.2 10.6 5.6l.6.9c.5.8-.1 1.7-1 1.7H2ZM4 13.8h12.8v2.3H4ZM19.4 13.8c2.4.2 4.4 1.1 5.9 2.3h-5.9ZM4.3 21.4a1.6 1.6 0 1 0 3.2 0ZM8.3 21.4a1.6 1.6 0 1 0 3.2 0ZM19.3 21.4a1.6 1.6 0 1 0 3.2 0ZM23.3 21.4a1.6 1.6 0 1 0 3.2 0ZM2 23.4h28v1.3H2Z',
+            'M26.6 17.2c1.2.4 2.3 1 3 1.6l.6.9c.3.4.1.8-.2 1H26.6Z'],
+  stopping: ['M3 10.5h23.4c1.4 0 2.6 1.2 2.6 2.6V20H3ZM5 12.4h3.2v3.3H5ZM12.2 12.4h3.2v3.3h-3.2ZM19.4 12.4h3.2v3.3h-3.2ZM9.4 12h1.5v7.2H9.4ZM16.6 12h1.5v7.2h-1.5ZM24.4 12.4h2.8v3.3h-2.8ZM4.6 21.4a1.6 1.6 0 1 0 3.2 0ZM8.6 21.4a1.6 1.6 0 1 0 3.2 0ZM20.2 21.4a1.6 1.6 0 1 0 3.2 0ZM24.2 21.4a1.6 1.6 0 1 0 3.2 0ZM2 23.4h28v1.3H2Z',
+             'M27.4 16.6H29V20h-1.6Z'],
+  freight: ['M2 18h16.4v1.7H2ZM2.6 11.4h7v6.1h-7ZM10.6 11.4h7v6.1h-7ZM19 11h9c1.1 0 2 .9 2 2v7H19ZM25.8 12.7h2.7v2.7h-2.7ZM20.6 12.9h3.6v1H20.6ZM20.6 14.9h3.6v1H20.6ZM3.4 21.4a1.6 1.6 0 1 0 3.2 0ZM13.4 21.4a1.6 1.6 0 1 0 3.2 0ZM19.8 21.4a1.6 1.6 0 1 0 3.2 0ZM25.4 21.4a1.6 1.6 0 1 0 3.2 0ZM2 23.4h28v1.3H2Z',
+            'M28.5 16.4H30V20h-1.5Z'],
+  engine: ['M7 11h18c1.1 0 2 .9 2 2v7H5v-7c0-1.1.9-2 2-2ZM6.8 12.8h2.7v2.7H6.8ZM22.5 12.8h2.7v2.7h-2.7ZM11.6 13h8.8v1h-8.8ZM11.6 15h8.8v1h-8.8ZM6.6 21.4a1.6 1.6 0 1 0 3.2 0ZM10.4 21.4a1.6 1.6 0 1 0 3.2 0ZM18.4 21.4a1.6 1.6 0 1 0 3.2 0ZM22.2 21.4a1.6 1.6 0 1 0 3.2 0ZM2 23.4h28v1.3H2Z',
+           'M25.5 16.5H27V20h-1.5Z'],
+  empty: ['M3 10.5h23.4c1.4 0 2.6 1.2 2.6 2.6V20H3ZM4.6 12.1v6.3h22.8v-5.3c0-.6-.4-1-1-1ZM4.6 21.4a1.6 1.6 0 1 0 3.2 0ZM8.6 21.4a1.6 1.6 0 1 0 3.2 0ZM20.2 21.4a1.6 1.6 0 1 0 3.2 0ZM24.2 21.4a1.6 1.6 0 1 0 3.2 0ZM2 23.4h28v1.3H2Z',
+          '']});
+function artPair(e){return (e.component==='rail'&&typeof e.variant==='string'&&Object.hasOwn(RAIL_KINDS,e.variant)&&RAIL_KINDS[e.variant])||ICON_PATHS[e.component];}
 const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
 function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋'}[id]||'•';}
 // 4.15.1 (owner 3 Nov 22:01: "get the whole site glittered", all in house): the side menu, the vehicle box, the welcome
@@ -126,7 +140,7 @@ function buildArtwork(e){
   }else if(ICON_PATHS[e.component]){
     const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
     svg.setAttribute('viewBox','0 0 32 32');svg.setAttribute('focusable','false');
-    const [shape,detail]=ICON_PATHS[e.component];
+    const [shape,detail]=artPair(e);
     const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',shape);path.setAttribute('fill-rule','evenodd');svg.append(path);
     if(detail){const acc=document.createElementNS('http://www.w3.org/2000/svg','path');acc.setAttribute('d',detail);acc.setAttribute('class','acc');svg.append(acc);}
     // Ships always point up on-screen. Course remains as data, not an icon rotation.
@@ -157,6 +171,13 @@ async function loadDetails(e,box){
       const v=document.createElement('span');v.className='detail-value';v.textContent=String(row.value||'').slice(0,120);
       line.append(k,v);rows.push(line);}
     if(typeof d.note==='string'&&d.note){const n=document.createElement('small');n.className='detail-note';n.textContent=d.note.slice(0,160);rows.push(n);}
+    // 4.16.0 (owner 5 Nov 00:19: "a picture of the type in an information window when you click on each"): only TPA's own drawings
+    const pic=e.component==='rail'&&typeof d.picture==='string'&&Object.hasOwn(RAIL_KINDS,d.picture)?RAIL_KINDS[d.picture]:null;
+    if(pic){const box2=document.createElement('div');box2.className='detail-picture '+e.component;
+      const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox','0 6 32 21');svg.setAttribute('aria-hidden','true');
+      const a=document.createElementNS('http://www.w3.org/2000/svg','path');a.setAttribute('d',pic[0]);a.setAttribute('fill-rule','evenodd');svg.append(a);
+      if(pic[1]){const b=document.createElementNS('http://www.w3.org/2000/svg','path');b.setAttribute('d',pic[1]);b.setAttribute('class','acc');svg.append(b);}
+      box2.append(svg);rows.unshift(box2);}
     box.replaceChildren(...rows);
   }catch(err){}
   // the next stop changes as the vehicle moves: ask again while it stays selected
@@ -411,7 +432,7 @@ function markers(){
     const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}`;
     // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
     // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
-    const art=e.component+'|'+(e.badge||'')+'|'+e.id;
+    const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id;
     let pin=pins.get(k);
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
     const b=pin.b;pin.e=e;pin.lat=pos.lat;pin.lon=pos.lon;pin.active=active;
@@ -644,7 +665,7 @@ function reportText(e){
     'Shown at '+pos.lat.toFixed(5)+', '+pos.lon.toFixed(5)+(pos.est?' · estimated position':'')+' · zoom '+state.z.toFixed(1)+' · last reported '+t(new Date(e.observedAt)),
     'Vanished on screen this visit: '+VANISH.total+' vehicles'+(v?' (this one '+v+' times)':''),
     'What I saw: ',
-    'Server check (paste into Cloud Shell): ssh -i ~/.ssh/tpa_v4_server ubuntu@143.47.230.28 "sudo tpa-trace \''+e.id.replace(/'/g,'')+'\'"'].join('\n');
+    'Server check (paste into Cloud Shell): ssh -i ~/.ssh/tpa_v4_server ubuntu@150.230.114.191 "sudo tpa-trace \''+e.id.replace(/'/g,'')+'\'"'].join('\n');
 }
 async function copyReport(e){
   const text=reportText(e);
@@ -807,7 +828,7 @@ function validNum(n){return typeof n==='number'&&Number.isFinite(n);}
 function checkFrame(id,f){if(!f||typeof f!=='object'||Array.isArray(f)||f.component!==id||f.contractVersion!=='1.0'||!['ready','stale','unavailable','not_installed'].includes(f.health)||typeof f.receivedAt!=='string'||!Number.isFinite(Date.parse(f.receivedAt))||typeof f.expiresAt!=='string'||!Number.isFinite(Date.parse(f.expiresAt))||Date.parse(f.expiresAt)<Date.parse(f.receivedAt)||typeof f.attribution!=='string'||f.attribution.length>256||!Array.isArray(f.entities)||f.entities.length>10000)throw Error('Invalid component v1 envelope');
 const ids=new Set(),entities=[];for(const e of f.entities){if(!e||typeof e.id!=='string'||!e.id||e.id.length>128||ids.has(e.id)||typeof e.label!=='string'||e.label.length>160||!['observed','estimated','stale'].includes(e.quality)||!Number.isFinite(Date.parse(e.observedAt)))throw Error('Invalid entity');ids.add(e.id);
 const p=e.position;if(p!==null&&(!p||!validNum(p.lon)||!validNum(p.lat)||Math.abs(p.lon)>180||Math.abs(p.lat)>90||(p.headingDeg!=null&&(!validNum(p.headingDeg)||p.headingDeg<0||p.headingDeg>360))))throw Error('Invalid point');const position=p===null?null:{lon:p.lon,lat:p.lat,headingDeg:p.headingDeg??null};
-entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,position,motion:checkMotion(e.motion,position)});}
+entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,variant:typeof e.variant==='string'&&/^[a-z0-9-]{1,30}$/.test(e.variant)?e.variant:null,position,motion:checkMotion(e.motion,position)});}
 // 4.0.10 optional extras: a short notice, and a see-through picture layer served
 // only from this socket's own same-origin tile path. Anything else is ignored.
 const notice=typeof f.notice==='string'?f.notice.slice(0,120):'';

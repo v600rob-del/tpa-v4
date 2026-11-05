@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.7'
+ENGINE_VERSION = '0.5.8'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -593,16 +593,11 @@ def plan_landing(a) -> None:
 
 
 def label_for(a) -> str:
+    # 0.5.8 (owner 5 Nov 00:32-00:38: the title said 34,550 ft while the box below said 26,550 ft - "do we need the
+    # altitude in the title?"): the title is just who the plane is. Height, speed and the full aircraft name are in the
+    # box, which stays up to date while it is open.
     name = a['flight'] or a['reg'] or a['hex'].upper()
     parts = [name]
-    if a['type']:
-        parts.append(a['type'])
-    if a['ground']:
-        parts.append('on the ground')
-    elif a['alt'] is not None:
-        # 0.5.1 (owner 4 Nov 23:21 "it landed at -350ft :D"): planes send their height set for standard air pressure,
-        # which near the ground can be hundreds of feet out (even below zero), so low down it is not given as a number
-        parts.append(f"{a['alt']:,} ft" if a['alt'] >= LOW_FEET else f'below {LOW_FEET:,} ft')
     if a['reg'] and a['reg'] != name:
         parts.append(a['reg'])
     return ' · '.join(parts)

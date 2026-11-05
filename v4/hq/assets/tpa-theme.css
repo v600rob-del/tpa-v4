@@ -99,3 +99,9 @@ h1 em{color:var(--amber)}
 .brand-plane .own-icon{width:30px;height:30px;transform:rotate(35deg);fill:var(--amber)}
 .box-title .own-icon{margin-right:2px;color:var(--amber)}
 .prep-icon .own-icon{width:26px;height:26px}
+
+/* 4.16.0 (owner 5 Nov 00:19): a picture of the kind of train at the top of its box - TPA's own drawing */
+.detail-picture{display:grid;place-items:center;height:78px;margin:2px 0 10px;border-radius:7px;border:1px solid var(--line-2);
+  background:radial-gradient(ellipse at 50% 120%,#5a3a80 0,#2a1640 70%)}
+.detail-picture svg{width:150px;height:auto;fill:#f2f7fb}
+.detail-picture svg .acc{fill:var(--amber)}

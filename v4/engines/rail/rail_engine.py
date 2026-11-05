@@ -51,7 +51,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.4.3'
+ENGINE_VERSION = '0.5.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · railway lines: Network Rail track model (OGL) · stations: DfT NaPTAN (OGL) · junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
@@ -301,7 +301,8 @@ def load_timing_points(path: Path = TIMING_POINTS_FILE) -> dict:
 # ---------------------------------------------------------------- memory of the last 30 minutes
 TRAIN_FIELDS = {'lat': float, 'lon': float, 'station': str, 'when': float, 'event': str, 'variation': str,
                 'minutes': int, 'headcode': str, 'terminated': bool, 'point': bool,
-                'nlat': float, 'nlon': float, 'nname': str, 'run': int, 'cancelled': bool, 'cancelledAt': float}   # 0.3.0: next place + minutes to it
+                'nlat': float, 'nlon': float, 'nname': str, 'run': int, 'cancelled': bool, 'cancelledAt': float,
+                'toc': str}   # 0.5.0: the operator's two-digit code   # 0.3.0: next place + minutes to it
 
 
 def save_memory(force: bool = False) -> None:
@@ -343,6 +344,7 @@ def restore_memory() -> int:
         item['terminated'] = t.get('terminated') is True
         item['point'] = t.get('point') is True
         item['cancelled'] = t.get('cancelled') is True
+        item['toc'] = item['toc'] if re.fullmatch(r'\d{2}', item['toc']) else ''
         item['nname'] = clean(item['nname'], 60)
         if not (0 < item['run'] <= 120 and 49 < item['nlat'] < 61 and -9 < item['nlon'] < 3):
             item.update(nlat=0.0, nlon=0.0, nname='', run=0)
@@ -425,6 +427,8 @@ def handle_message(item: dict, now: float) -> None:
         except ValueError:
             minutes = 0
         match = TRUST_ID.fullmatch(train_id)
+        toc = clean(body.get('toc_id'), 2)
+        toc = toc if re.fullmatch(r'\d{2}', toc) else ''
         terminated = str(body.get('train_terminated', '')).lower() == 'true'
         # 0.3.0: after a departure (or pass), TRUST says where the train reports next and
         # how many minutes that should take. The map glides it there and stops (estimated).
@@ -443,7 +447,8 @@ def handle_message(item: dict, now: float) -> None:
                             'variation': variation, 'minutes': minutes, 'headcode': match.group(1) if match else '',
                             'terminated': terminated, 'point': at_point,
                             'nlat': nxt[0] if nxt else 0.0, 'nlon': nxt[1] if nxt else 0.0,
-                            'nname': nxt[2] if nxt else '', 'run': run, 'cancelled': False, 'cancelledAt': 0.0}
+                            'nname': nxt[2] if nxt else '', 'run': run, 'cancelled': False, 'cancelledAt': 0.0,
+                            'toc': toc}
         STATE['dirty'] = True
         if len(trains) > MAX_TRAINS:
             oldest = sorted(trains, key=lambda k: trains[k]['when'])[:len(trains) - MAX_TRAINS]
@@ -607,6 +612,77 @@ def health(now: float) -> tuple[str, str]:
     return 'ready', ''
 
 
+# 0.5.0 (owner 5 Nov 00:16 "graphics work for the train types"): what kind of train it is, from the first digit of its
+# headcode (the national rules for train reporting numbers), and who runs it, from TRUST's operator code (the "sector
+# code" in the Open Rail Data wiki's TOC Codes list). The exact class of train needs the timetable feed - later.
+KINDS = {'0': ('engine', 'Engine on its own'), '1': ('express', 'Express passenger train'), '2': ('stopping', 'Stopping passenger train'),
+         '3': ('special', 'Parcels, mail or special train'), '4': ('freight', 'Fast freight train'), '5': ('empty', 'Empty passenger train'),
+         '6': ('freight', 'Freight train'), '7': ('freight', 'Freight train'), '8': ('freight', 'Slow freight train'),
+         '9': ('stopping', 'Passenger train')}
+OPERATORS = {'02': 'JSD Rail Research & Development', '04': 'DB Cargo', '05': 'DB Cargo', '06': 'Eurostar', '07': 'Rail Operations Group',
+             '08': 'DB Cargo', '09': 'Freightliner', '10': 'Serco Rail Operations', '11': 'Freightliner', '12': 'Grand Union Trains',
+             '13': 'Europorte Channel', '14': 'Grand Central', '15': 'Network Rail (track machines)', '16': 'Loram', '17': 'Hanson & Hall Rail Services',
+             '18': 'Swanage Railway', '19': 'South Yorkshire Supertram', '20': 'TransPennine Express', '21': 'Greater Anglia', '22': 'Grand Central',
+             '23': 'Northern', '25': 'Great Western Railway', '27': 'CrossCountry', '28': 'East Midlands Railway', '29': 'West Midlands Trains',
+             '30': 'London Overground', '31': 'Network Rail', '33': 'Elizabeth line', '34': 'DC Rail', '35': 'Caledonian Sleeper',
+             '36': 'Vintage Trains', '39': 'Harsco', '40': 'Balfour Beatty Rail', '42': 'Colas Rail', '43': 'Amey', '44': 'Carillion Rail',
+             '45': 'Lumo', '46': 'SB Rail', '49': 'VolkerRail', '50': 'West Coast Railways', '51': 'North Yorkshire Moors Railway',
+             '52': 'Pre Metro Operations', '53': 'SNCF Freight Services', '54': 'GB Railfreight', '55': 'Hull Trains', '56': 'Tyne and Wear Metro',
+             '57': 'Go-Op', '59': 'On Route Logistics', '60': 'ScotRail', '61': 'LNER', '62': 'Fishbone Solutions', '64': 'Merseyrail',
+             '65': 'Avanti West Coast', '71': 'Transport for Wales', '72': 'Legge Infrastructure Services', '74': 'Chiltern Railways',
+             '79': 'c2c', '80': 'Southeastern', '84': 'South Western Railway', '85': 'Island Line', '86': 'Heathrow Express',
+             '88': 'Govia Thameslink Railway', '89': 'Locomotive Services', '92': 'Network Rail', '94': 'Ffestiniog Railway',
+             '95': 'Varamis Rail', '97': 'Direct Rail Services'}
+
+
+def uk_clock(ts: float) -> str:
+    """Times in the box are UK times, whatever the server's own time zone is."""
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.fromtimestamp(ts, ZoneInfo('Europe/London')).strftime('%H:%M')
+    except Exception:
+        return time.strftime('%H:%M', time.localtime(ts))
+
+
+def kind_of(t: dict):
+    return KINDS.get((t.get('headcode') or ' ')[0], ('', ''))
+
+
+def details(entity_id: str) -> dict:
+    out = {'component': COMPONENT, 'id': entity_id, 'rows': []}
+    tid = entity_id[5:] if entity_id.startswith('rail:') else ''
+    with LOCK:
+        t = dict(STATE['trains'].get(tid) or {})
+    if not t:
+        out['note'] = 'This train has not reported recently.'
+        return out
+    rows = out['rows']
+
+    def add(label, value):
+        if value:
+            rows.append({'label': label, 'value': str(value)[:120]})
+    if kind_of(t)[0]:
+        out['picture'] = kind_of(t)[0]      # owner 00:19: "a picture of the type in an information window" (HQ draws it)
+    add('Train', t['headcode'])
+    add('Type', kind_of(t)[1])
+    add('Operator', OPERATORS.get(t.get('toc', '')))
+    what = 'Passed' if t.get('point') else {'ARRIVAL': 'Arrived at', 'DEPARTURE': 'Departed'}.get(t['event'], 'Passed')
+    if t.get('cancelled'):
+        add('Status', 'Cancelled')
+    elif t['terminated']:
+        what = 'Terminated at'
+    add('Last report', f"{what} {t['station']} at {uk_clock(t['when'])}")
+    if t['variation'] == 'LATE' and t['minutes']:
+        add('Running', f"{t['minutes']} min late")
+    elif t['variation'] == 'EARLY' and t['minutes']:
+        add('Running', f"{t['minutes']} min early")
+    elif t['variation'] == 'ON TIME':
+        add('Running', 'On time')
+    if t.get('run') and t.get('nname') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
+        add('Next report', f"{t['nname']}, about {uk_clock(t['when'] + t['run'] * 60)}")
+    return out
+
+
 def describe(t: dict) -> str:
     what = 'passed' if t.get('point') else {'ARRIVAL': 'arrived at', 'DEPARTURE': 'departed'}.get(t['event'], 'passed')
     parts = [f"Train {t['headcode']}" if t['headcode'] else 'Train', f"{what} {t['station']}"]
@@ -662,6 +738,7 @@ def snapshot(view) -> dict:
     inside.sort(key=lambda x: x[0])
     for _, tid, t, age in inside[:MAX_PER_VIEW]:
         entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
+                  'variant': kind_of(t)[0] or None,      # 0.5.0: which of TPA's train drawings to show
                   'position': dict(zip(('lon', 'lat'), on_track(t['lon'], t['lat'])), headingDeg=None),
                   'quality': 'observed' if age <= FRESH_FOR and not t.get('cancelled') else 'stale', 'observedAt': iso(t['when'])}
         if t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
@@ -728,6 +805,8 @@ class Handler(BaseHTTPRequestHandler):
                                         'feedKBThisRun': STATE['bytes'] // 1024})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
+        if split.path == '/details':
+            return self.reply(200, details((parse_qs(split.query).get('id') or [''])[0][:140]))
         return self.reply(404, {'error': 'not found'})
 
     def do_POST(self):  # noqa: N802

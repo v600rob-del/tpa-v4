@@ -34,7 +34,7 @@ COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.15.4'
+HQ_VERSION = '4.16.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -509,6 +509,7 @@ class HQHandler(SimpleHTTPRequestHandler):
                           for r in (d.get('rows') or [])[:12] if isinstance(r,dict)]
                     body={'component':parts[4],'id':want,'rows':rows}
                     if isinstance(d.get('note'),str):body['note']=d['note'][:160]
+                    if isinstance(d.get('picture'),str) and re.fullmatch(r'[a-z0-9-]{1,30}',d['picture']):body['picture']=d['picture']   # 4.16.0
                     return self.json_reply(200,body)
                 except Exception:
                     return self.json_reply(503,{'component':parts[4],'id':want,'rows':[],'note':'Details not available right now.'})
