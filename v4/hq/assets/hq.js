@@ -440,7 +440,10 @@ function markers(){
     if(pos.est||blends.has(k)||(state.live[e.component]&&e.motion))moving++;
     shown.set(k,{lon:pos.lon,lat:pos.lat});
     const [x,y]=pixel(pos.lon,pos.lat);
-    if(x<-M||y<-M||x>d.w+M||y>d.h+M)continue;
+    const followed=!!follow&&follow.key===k;if(followed)follow.e=e;
+    // 4.18.2 (owner 13:34: back from another window, the followed train "had carried on its route but left me where i was"):
+    // the followed vehicle is never dropped for being off screen - the map goes to it
+    if((x<-M||y<-M||x>d.w+M||y>d.h+M)&&!followed)continue;
     items.push({e,k,pos,x:x-ox,y:y-oy});
   }
   // 4.8.0 (owner 1 Nov 13:40, York at zoom 13: a pile of buses on top of each other): icons that would sit
@@ -628,6 +631,13 @@ function startFollow(e){
   map.options.scrollWheelZoom='center';map.options.touchZoom='center';map.options.doubleClickZoom='center';
   updateFollowUI();paint();
 }
+// 4.18.2: coming back to the tab while following, the map goes straight to where the vehicle is now (it kept going)
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState!=='visible'||!follow||!follow.e||!map)return;
+  const p=estimate(follow.e,serverNow());if(!p)return;
+  map.setView([p.lat,p.lon],map.getZoom(),{animate:false});follow.from=follow.to=null;follow.started=performance.now();
+  refetchLiveView();paint();
+});
 function stopFollow(){
   if(!follow)return;follow=null;settleMap();
   if(map){map.options.scrollWheelZoom=true;map.options.touchZoom=true;map.options.doubleClickZoom=true;}
