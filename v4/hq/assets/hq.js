@@ -517,9 +517,11 @@ function fanOut(items,grouped,now){
   }
   // 4.17.2 (owner 5 Nov 11:54, Piccadilly: 2U42 and 1M26 on neighbouring platforms partly on top of each other): trains
   // whose icons (or headcode boards) overlap are nudged just far enough apart, the shorter way, staying by their platforms
-  const W=40*pinScale(state.z)+6,H=W*1.4,rest=free.filter(it=>!used.has(it.k)),at=new Map(rest.map(it=>[it.k,[it.x,it.y]]));
+  // 4.17.3 (owner 12:02, Piccadilly zoom 18: 1M26, ringed apart from a train on the same platform, then sat over 2H25 on
+  // the next platform): the ringed trains are nudged along with the rest, starting from their places in the ring.
+  const W=40*pinScale(state.z)+6,H=W*1.4,rest=free,at=new Map(rest.map(it=>{const w=want.get(it.k)||[0,0];return [it.k,[it.x+w[0],it.y+w[1]]];}));
   // (only zoomed in to street level and with up to 80 standing trains in view: zoomed out, grouping does this job)
-  for(let round=0;round<6&&state.z>=14&&rest.length<=80;round++){let moved=false;
+  for(let round=0;round<12&&state.z>=14&&rest.length<=80;round++){let moved=false;
     for(let i=0;i<rest.length;i++)for(let j=i+1;j<rest.length;j++){
       const p=at.get(rest[i].k),q=at.get(rest[j].k),dx=q[0]-p[0],dy=q[1]-p[1],ox=W-Math.abs(dx),oy=H-Math.abs(dy);
       if(ox<=0||oy<=0)continue;moved=true;
