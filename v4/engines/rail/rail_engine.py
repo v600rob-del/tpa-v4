@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.0.0'
+ENGINE_VERSION = '1.0.1'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -1121,20 +1121,28 @@ def plan_onwards(t: dict, now: float):
     stops = stops_of(uid) if uid else []
     if len(stops) < 2:
         return None
+    # 1.0.1 (owner 13:05, 1W16 at Stockport, zoom 18: it "sat" (no track route for its short hop to Heaton Norris Jn),
+    # then jumped there - out of view, so it vanished and "Follow me" lost it): a leg the map could not glide does not
+    # move the train; the next leg starts from where it is actually drawn.
+    drawn = None
     if leg:                                                         # finished a timetable leg: on to the next place
         idx, reached = leg['idx'], leg['end']
+        if ROUTES.get((round(leg['from'][0], 5), round(leg['from'][1], 5), round(leg['to'][0], 5), round(leg['to'][1], 5))) is False:
+            drawn = (leg['from'][0], leg['from'][1], leg['fromName'])
     elif t['event'] == 'DEPARTURE' and t.get('run'):
         reached = t.get('arriveBy') or (t['when'] + t['run'] * 60)
         if now < reached or not t.get('nstanox'):
             return None                                             # still on the leg Network Rail told us about
         idx = index_of(stops, t['nstanox'], (index_of(stops, t.get('stanox', '')) or 0) - 1 if t.get('stanox') else -1)
+        if not ROUTES.get(leg_key(t)):
+            drawn = (t['lat'], t['lon'], t['station'])
     else:                                                           # standing, or just passed a point
         idx, reached = index_of(stops, t.get('stanox', '')), t['when']
     if idx is None or idx >= len(stops) - 1:
         return None
     base = uk_midnight(t.get('day') or uk_today())
     delay = t['minutes'] * 60 * (1 if t['variation'] == 'LATE' else -1 if t['variation'] == 'EARLY' else 0)
-    here = place(stops[idx][0])
+    here = (drawn[0], drawn[1], drawn[2], '') if drawn else place(stops[idx][0])
     j = idx + 1
     while j < len(stops) and j <= idx + 8 and place(stops[j][0]) is None:
         j += 1
