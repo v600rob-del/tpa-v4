@@ -515,6 +515,17 @@ function fanOut(items,grouped,now){
     const r=Math.max(26,9*pile.length)*Math.max(0.8,pinScale(state.z));
     pile.forEach((p,i)=>{const ang=-Math.PI/2+2*Math.PI*i/pile.length;want.set(p.k,[cx+r*Math.cos(ang)-p.x,cy+r*Math.sin(ang)-p.y]);used.add(p.k);});
   }
+  // 4.17.2 (owner 5 Nov 11:54, Piccadilly: 2U42 and 1M26 on neighbouring platforms partly on top of each other): trains
+  // whose icons (or headcode boards) overlap are nudged just far enough apart, the shorter way, staying by their platforms
+  const W=40*pinScale(state.z)+6,H=W*1.4,rest=free.filter(it=>!used.has(it.k)),at=new Map(rest.map(it=>[it.k,[it.x,it.y]]));
+  // (only zoomed in to street level and with up to 80 standing trains in view: zoomed out, grouping does this job)
+  for(let round=0;round<6&&state.z>=14&&rest.length<=80;round++){let moved=false;
+    for(let i=0;i<rest.length;i++)for(let j=i+1;j<rest.length;j++){
+      const p=at.get(rest[i].k),q=at.get(rest[j].k),dx=q[0]-p[0],dy=q[1]-p[1],ox=W-Math.abs(dx),oy=H-Math.abs(dy);
+      if(ox<=0||oy<=0)continue;moved=true;
+      if(ox*1.4<oy){const m=(ox/2)*(dx<0?-1:1);p[0]-=m;q[0]+=m;}else{const m=(oy/2)*(dy<0?-1:1)||oy/2;p[1]-=m;q[1]+=m;}}
+    if(!moved)break;}
+  for(const it of rest){const p=at.get(it.k);if(Math.abs(p[0]-it.x)>0.3||Math.abs(p[1]-it.y)>0.3)want.set(it.k,[p[0]-it.x,p[1]-it.y]);}
   // the ring opens and closes smoothly (about a quarter of a second), so a train arriving at a busy platform slides aside, never jumps
   const t=performance.now(),f=FAN.t?1-Math.exp(-Math.min(1000,t-FAN.t)/120):1;FAN.t=t;
   for(const it of items){
