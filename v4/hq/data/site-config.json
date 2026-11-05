@@ -20,7 +20,8 @@
     ],
     "smallPrint": [
       "TPA is for interest only. Positions can be late, missing or wrong, so please don't rely on it for travel plans or anything safety-related; check with your operator.",
-      "No cookies, no adverts and no tracking. Your browser only remembers that you've seen this screen.",
+      "Your privacy: no accounts, no cookies, no adverts and no tracking. TPA doesn't record who you are or where you are; your browser only remembers small settings, like having seen this screen. The street map loads from OpenFreeMap, which sets no cookies.",
+      "If you email us, we only use your message to reply. Get in touch: enquiries@tpalive.co.uk",
       "Built from open data: Department for Transport (bus locations, timetables and stops), Network Rail, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
       "Test version: anything marked MOCK is a pretend example · © 2026 Rob Burnett"
     ],
@@ -39,28 +40,32 @@
   },
   "credits": [
     {
+      "layer": "About TPA",
+      "text": "Made by Rob Burnett, a Yorkshireman who once said \"wouldn't it be good if you could see all the trains, planes and buses at once?\" and then, unlike most people, didn't stop. Head of Quality Control: Geoff the cat, who has inspected every vehicle on TPA, mostly by lying on the keyboard. His findings to date: \"zzzzzzzzzz\". Get in touch: enquiries@tpalive.co.uk"
+    },
+    {
       "layer": "Map",
-      "text": "Map © OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors",
+      "text": "Map © OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors (ODbL). The street map loads straight from OpenFreeMap, which sees your internet address as any website would and sets no cookies.",
       "url": "https://www.openstreetmap.org/copyright",
       "status": "In use"
     },
     {
       "layer": "Buses",
-      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS). Road shapes for bus movement: © OpenStreetMap contributors (ODbL, via Geofabrik); backup: contains OS data © Crown copyright and database right 2026 (OS Open Roads, OGL v3.0). Between reports, positions along the road are estimated for up to 90 seconds.",
+      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS) (Open Government Licence). Bus stops: NaPTAN, DfT (OGL). Road shapes: © OpenStreetMap contributors (ODbL, via Geofabrik); backup: contains OS data © Crown copyright and database right 2026 (OS Open Roads, OGL). Between reports, positions along the road are estimated for up to 90 seconds.",
       "url": "https://www.bus-data.dft.gov.uk",
       "status": "Live in test",
       "short": "BODS (DfT)"
     },
     {
       "layer": "Trains",
-      "text": "Contains information of Network Rail Infrastructure Limited licensed under the following licence: Network Rail Infrastructure Limited Data Feeds Licence. Railway lines: Network Rail track model (OGL). Stations: DfT NaPTAN (OGL). Junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL). Between reports, train positions along the track are estimated.",
+      "text": "Contains information of Network Rail Infrastructure Limited licensed under the Network Rail Infrastructure Limited Data Feeds Licence. Lines: Network Rail track model (OGL). Stations: NaPTAN, DfT (OGL). Place codes: YA TIPLOC list (Network Rail OGL, Rail Delivery Group CC BY 2.0 UK, CC BY-SA 4.0 sources). Platforms: © OpenStreetMap contributors (ODbL). Positions between reports are estimated.",
       "url": "https://www.networkrail.co.uk/who-we-are/transparency-and-ethics/transparency/open-data-feeds/network-rail-infrastructure-limited-data-feeds-licence",
       "status": "Live in test",
       "short": "Network Rail"
     },
     {
       "layer": "Aircraft",
-      "text": "Aircraft positions from ADSB.lol (Open Database License). Between reports, positions are estimated from speed and direction.",
+      "text": "Aircraft positions from ADSB.lol (Open Database License). Airline, aircraft and route details: Virtual Radar Server standing data (CC0), with thanks. Between reports, positions are estimated from speed and direction.",
       "url": "https://www.adsb.lol/",
       "status": "Live in test",
       "short": "ADSB.lol"
@@ -77,6 +82,15 @@
       "text": "Coming soon.",
       "url": "",
       "status": "Coming soon"
+    },
+    {
+      "layer": "Train pictures and icons",
+      "text": "TPA's own pictures and icons, made for TPA by Rob Burnett. No logos or company colours."
+    },
+    {
+      "layer": "Fonts and map software",
+      "text": "Barlow fonts (SIL Open Font Licence), Leaflet (BSD-2-Clause) and MapLibre GL JS (BSD-3-Clause).",
+      "url": "https://leafletjs.com/"
     },
     {
       "layer": "Kids sounds",
