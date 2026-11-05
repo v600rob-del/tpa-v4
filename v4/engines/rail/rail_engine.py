@@ -44,6 +44,7 @@ import socket
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 import zipfile
 from datetime import datetime, timezone
@@ -51,10 +52,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.6.0'
+ENGINE_VERSION = '0.7.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
-ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · railway lines: Network Rail track model (OGL) · stations: DfT NaPTAN (OGL) · junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
+ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
+               'track: Network Rail (OGL) · stations: DfT NaPTAN (OGL) · junctions: YA TIPLOC list (CC BY-SA 4.0)')
+assert len(ATTRIBUTION) <= 256   # 0.7.0: HQ refuses a longer credit line (it once hid every train)
 
 FEED_HOST, FEED_PORT = 'publicdatafeeds.networkrail.co.uk', 61618
 FEED_TOPIC = '/topic/TRAIN_MVT_ALL_TOC'
@@ -68,6 +71,16 @@ TD_TOPIC = '/topic/TD_ALL_SIG_AREA'
 TD_ON = os.environ.get('TPA_RAIL_TD', '1').strip() != '0'
 SMART_URL = 'https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART'
 MAX_SMART = 150_000_000
+# 0.7.0 (owner 4 Nov 11:44 "place the trains on the platforms they are due at or actually on", 5 Nov 10:20 stage 2): where
+# each platform is, from OpenStreetMap (railway=platform with its number in ref/local_ref), fetched once a month from the
+# public Overpass service and kept on our own server. A train standing at a station with a known platform number is drawn
+# on the track beside that platform instead of on the station's dot.
+OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
+OVERPASS_QUERY = ('[out:json][timeout:300];area["ISO3166-1"="GB"][admin_level=2]->.gb;'
+                  '(way["railway"="platform"](area.gb);relation["railway"="platform"](area.gb);'
+                  'way["public_transport"="platform"]["train"="yes"](area.gb););out center tags;')
+MAX_PLATFORMS_FILE = 80_000_000
+PLATFORM_REACH_KM = 0.6
 CORPUS_URL = 'https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS'
 NAPTAN_URL = 'https://naptan.api.dft.gov.uk/v1/access-nodes?atcoAreaCodes=910&dataFormat=csv'
 MAX_CORPUS, MAX_NAPTAN = 22_000_000, 20_000_000
@@ -95,9 +108,10 @@ _t_stomp = os.environ.get('TPA_RAIL_TEST_STOMP', '').strip()
 _t_corpus = os.environ.get('TPA_RAIL_TEST_CORPUS_URL', '').strip()
 _t_naptan = os.environ.get('TPA_RAIL_TEST_NAPTAN_URL', '').strip()
 _t_smart = os.environ.get('TPA_RAIL_TEST_SMART_URL', '').strip()
+_t_overpass = os.environ.get('TPA_RAIL_TEST_OVERPASS_URL', '').strip()
 if _t_stomp and not re.fullmatch(r'127\.0\.0\.1:\d{2,5}', _t_stomp):
     raise SystemExit('TPA_RAIL_TEST_STOMP must be 127.0.0.1:port')
-for _u in (_t_corpus, _t_naptan, _t_smart):
+for _u in (_t_corpus, _t_naptan, _t_smart, _t_overpass):
     if _u and not re.match(r'^http://127\.0\.0\.1:\d+/', _u):
         raise SystemExit('Test URLs must point at 127.0.0.1')
 if _t_stomp:
@@ -105,10 +119,12 @@ if _t_stomp:
 CORPUS_SRC = _t_corpus or CORPUS_URL
 NAPTAN_SRC = _t_naptan or NAPTAN_URL
 SMART_SRC = _t_smart or SMART_URL
+OVERPASS_SRC = _t_overpass or OVERPASS_URL
 DATA = Path(os.environ.get('TPA_RAIL_DATA_DIR') or (Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir()) / 'TPA' / 'rail-engine'))
 REFERENCE_FILE = DATA / 'station-reference.json'
 MEMORY_FILE = DATA / 'trains-last-30-min.json'
 SMART_FILE = DATA / 'smart-steps.json'
+PLATFORMS_FILE = DATA / 'platforms.json'
 SAVE_EVERY = max(1, int(os.environ.get('TPA_RAIL_SAVE_SECONDS', '60') or 60))
 TIMING_POINTS_FILE = Path(os.environ.get('TPA_RAIL_TIMING_POINTS_FILE') or (Path(__file__).resolve().parent / 'data' / 'timing-points.csv'))
 
@@ -119,7 +135,10 @@ STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': Fals
          'points': {}, 'atPoints': 0, 'restored': 0, 'dirty': False, 'savedAt': 0.0,
          'trackLoaded': False, 'trackError': '', 'cancelledSeen': 0, 'reinstatedSeen': 0,
          'smartSteps': 0, 'smartError': '', 'smartBuiltAt': 0.0, 'tdMessages': 0, 'tdUseful': 0, 'tdMatched': 0,
-         'tdRetimed': 0, 'tdArrived': 0, 'tdPlatforms': 0, 'tdBlockedUntil': 0.0, 'tdThisSession': False}
+         'tdRetimed': 0, 'tdArrived': 0, 'tdPlatforms': 0, 'tdBlockedUntil': 0.0, 'tdThisSession': False,
+         'platformsKnown': 0, 'platformsError': '', 'platformsBuiltAt': 0.0, 'drawnOnPlatform': 0}
+PLATFORMS = {}   # 0.7.0: (round(lat,2), round(lon,2)) -> [(lat, lon, refs), ...]
+SPOTS = {}       # (stanox, platform) -> (lat, lon) or None
 BY_HEAD = {}   # 0.6.0: headcode -> train ids (kept loosely; checked on use)
 SMART = {'steps': {}, 'interposes': {}}   # (area, from, to) / (area, to) -> (stanox, event, platform, offset seconds)
 WAKE = threading.Event()
@@ -163,7 +182,7 @@ def clean(text, limit: int) -> str:
 
 
 # ---------------------------------------------------------------- station reference (v3 method)
-def _download(url: str, limit: int, login: str | None = None) -> bytes:
+def _download(url: str, limit: int, login: str | None = None, timeout: int = 60) -> bytes:
     expected = urlsplit(url).hostname
     test = expected == '127.0.0.1'
 
@@ -185,7 +204,7 @@ def _download(url: str, limit: int, login: str | None = None) -> bytes:
     if login:
         headers['Authorization'] = 'Basic ' + base64.b64encode(login.encode('utf-8')).decode('ascii')
     opener = urllib.request.build_opener(SafeRedirect()) if not test else urllib.request.build_opener(urllib.request.ProxyHandler({}), SafeRedirect())
-    with opener.open(urllib.request.Request(url, headers=headers), timeout=60) as res:
+    with opener.open(urllib.request.Request(url, headers=headers), timeout=timeout) as res:
         data = res.read(limit + 1)
     if len(data) > limit:
         raise ValueError('oversized')
@@ -465,8 +484,7 @@ def handle_message(item: dict, now: float) -> None:
                 run = 0
             if not nxt or not 0 < run <= 120 or km(station[0], station[1], nxt[0], nxt[1]) < 0.2:
                 nxt, run = None, 0
-        platform = clean(body.get('platform'), 3).strip().upper()
-        platform = platform if re.fullmatch(r'[0-9A-Z]{1,3}', platform) else ''
+        platform = norm_platform(body.get('platform'))
         before = trains.get(train_id) or {}
         if not platform and before.get('platformAt') == stanox:     # the signalling feed told us first: keep it
             platform = before.get('platform', '')
@@ -509,8 +527,7 @@ def build_smart(payload: bytes) -> dict:
             off = 0
         if not -600 <= off <= 600:
             continue
-        plat = g('PLATFORM', 3)
-        row = (stanox.zfill(5), ev, plat if re.fullmatch(r'[0-9A-Z]{1,3}', plat) else '', off)
+        row = (stanox.zfill(5), ev, norm_platform(r.get('PLATFORM')), off)
         if g('STEPTYPE', 1) == 'I' and to:
             interposes[f'{area}|{to}'] = row
         elif frm and to:
@@ -567,6 +584,129 @@ def smart_loop() -> None:
             time.sleep(REFERENCE_MAX_AGE if ok else 6 * 3600)
         else:
             time.sleep(3600)
+
+
+PLATFORM_REF = re.compile(r'[0-9]{1,2}[A-Z]?|[A-Z]')
+
+
+def norm_platform(text) -> str:
+    """'04' -> '4', ' 3a' -> '3A'; anything else that is not a platform number -> ''."""
+    p = clean(text, 4).strip().upper()
+    p = p.lstrip('0') or p
+    return p if PLATFORM_REF.fullmatch(p) else ''
+
+
+def platform_refs(tags: dict) -> list:
+    """'1;2', '1 & 2', '3a', 'Platform 4' -> ['1', '2'] ... (upper case)."""
+    text = ' '.join(str(tags.get(k) or '') for k in ('ref', 'local_ref', 'railway:platform:ref')).upper()
+    text = re.sub(r'PLATFORMS?', ' ', text)
+    return sorted({norm_platform(tok) for tok in re.split(r'[^0-9A-Z]+', text) if norm_platform(tok)})[:8]
+
+
+def build_platforms(payload: bytes) -> list:
+    data = json.loads(payload)
+    out = []
+    for el in data.get('elements', []) if isinstance(data, dict) else []:
+        if not isinstance(el, dict):
+            continue
+        c = el.get('center') or el
+        try:
+            lat, lon = float(c.get('lat')), float(c.get('lon'))
+        except (TypeError, ValueError):
+            continue
+        refs = platform_refs(el.get('tags') or {})
+        if refs and 49 < lat < 61 and -9 < lon < 3:
+            out.append([round(lat, 6), round(lon, 6), refs])
+    return out
+
+
+def index_platforms(rows: list) -> None:
+    grid = {}
+    for lat, lon, refs in rows:
+        grid.setdefault((round(lat, 2), round(lon, 2)), []).append((lat, lon, tuple(refs)))
+    PLATFORMS.clear(); PLATFORMS.update(grid); SPOTS.clear()
+    with LOCK:
+        STATE['platformsKnown'] = len(rows)
+
+
+def load_platforms() -> bool:
+    try:
+        cached = json.loads(PLATFORMS_FILE.read_text(encoding='utf-8'))
+        if time.time() - cached.get('builtAt', 0) < 30 * 86400 and cached.get('platforms'):
+            index_platforms(cached['platforms'])
+            with LOCK:
+                STATE.update(platformsError='', platformsBuiltAt=cached['builtAt'])
+            return True
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    try:
+        url = OVERPASS_SRC + '?' + urllib.parse.urlencode({'data': OVERPASS_QUERY})
+        rows = build_platforms(_download(url, MAX_PLATFORMS_FILE, timeout=360))
+    except urllib.error.HTTPError as exc:
+        with LOCK:
+            STATE['platformsError'] = f'platforms-http-{exc.code}'
+        return False
+    except Exception as exc:
+        with LOCK:
+            STATE['platformsError'] = ('platforms-' + type(exc).__name__)[:40]
+        return False
+    if len(rows) < 2:
+        with LOCK:
+            STATE['platformsError'] = 'platforms-too-few'
+        return False
+    index_platforms(rows)
+    built = time.time()
+    with LOCK:
+        STATE.update(platformsError='', platformsBuiltAt=built)
+    try:
+        DATA.mkdir(parents=True, exist_ok=True)
+        tmp = PLATFORMS_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'builtAt': built, 'platforms': rows}), encoding='utf-8')
+        tmp.replace(PLATFORMS_FILE)
+    except OSError:
+        pass
+    print(f'Platforms ready: {len(rows)} numbered platforms from OpenStreetMap', flush=True)
+    return True
+
+
+def platforms_loop() -> None:
+    while True:
+        if not HAVE_LOGIN:          # no trains without the Network Rail login: nothing to place, nothing fetched
+            time.sleep(3600)
+            continue
+        ok = load_platforms()
+        time.sleep(30 * 86400 if ok else 6 * 3600)
+
+
+def platform_spot(stanox: str, platform: str, lat: float, lon: float):
+    """The middle of platform `platform` at the station at (lat, lon), if OpenStreetMap has exactly that number nearby."""
+    key = (stanox, platform)
+    if key in SPOTS:
+        return SPOTS[key]
+    best = None
+    for dlat in (-0.01, 0, 0.01):
+        for dlon in (-0.01, 0, 0.01):
+            for plat_lat, plat_lon, refs in PLATFORMS.get((round(lat + dlat, 2), round(lon + dlon, 2)), ()):
+                if platform in refs:
+                    d = km(lat, lon, plat_lat, plat_lon)
+                    if d <= PLATFORM_REACH_KM and (best is None or d < best[0]):
+                        best = (d, plat_lat, plat_lon, len(refs))
+    spot = None
+    if best:
+        spot = (best[1], best[2])
+    if len(SPOTS) > 50000:
+        SPOTS.clear()
+    SPOTS[key] = spot
+    return spot
+
+
+def drawn_at(t: dict):
+    """Where a train is drawn: beside its platform when it is standing at a station whose platform we know."""
+    if t.get('platform') and t.get('platformAt') and t.get('platformAt') == t.get('stanox') and not (t.get('run') and t['event'] == 'DEPARTURE'):
+        spot = platform_spot(t['stanox'], t['platform'], t['lat'], t['lon'])
+        if spot:
+            return on_track(spot[1], spot[0]), True
+    return on_track(t['lon'], t['lat']), False
 
 
 def handle_td(item: dict, now: float) -> None:
@@ -932,10 +1072,13 @@ def snapshot(view) -> dict:
         if (s <= t['lat'] <= n and w <= t['lon'] <= e) or heading_in:
             inside.append(((t['lat'] - clat) ** 2 + (t['lon'] - clon) ** 2, tid, t, age))
     inside.sort(key=lambda x: x[0])
+    on_platform = 0
     for _, tid, t, age in inside[:MAX_PER_VIEW]:
+        drawn = drawn_at(t)              # 0.7.0: beside its platform when we know it
+        on_platform += drawn[1]
         entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
                   'variant': kind_of(t)[0] or None,      # 0.5.0: which of TPA's train drawings to show
-                  'position': dict(zip(('lon', 'lat'), on_track(t['lon'], t['lat'])), headingDeg=None),
+                  'position': dict(zip(('lon', 'lat'), drawn[0]), headingDeg=None),
                   'quality': 'observed' if age <= FRESH_FOR and not t.get('cancelled') else 'stale', 'observedAt': iso(t['when'])}
         if t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
             key = leg_key(t)
@@ -948,6 +1091,8 @@ def snapshot(view) -> dict:
                 entity['motion'] = {'mode': 'path', 'points': path,
                                     'arriveAt': iso(arrive), 'maxSeconds': round(max(60, arrive - t['when']) + 120)}
         frame_out['entities'].append(entity)
+    with LOCK:
+        STATE['drawnOnPlatform'] = on_platform
     if not frame_out['entities'] and h == 'ready' and not notice and connected_for < 600:
         frame_out['notice'] = 'Listening · trains appear as they report at stations'
     elif len(inside) > MAX_PER_VIEW and not notice:
@@ -1003,7 +1148,10 @@ class Handler(BaseHTTPRequestHandler):
                                         'signalling': {'on': TD_ON, 'refusedUntil': iso(STATE['tdBlockedUntil']) if STATE['tdBlockedUntil'] > time.time() else None, 'smartSteps': STATE['smartSteps'], 'smartError': STATE['smartError'],
                                                        'smartBuiltAt': iso(STATE['smartBuiltAt']) if STATE['smartBuiltAt'] else None,
                                                        'messages': STATE['tdMessages'], 'useful': STATE['tdUseful'], 'matched': STATE['tdMatched'],
-                                                       'retimed': STATE['tdRetimed'], 'arrivedEarly': STATE['tdArrived'], 'platforms': STATE['tdPlatforms']}})
+                                                       'retimed': STATE['tdRetimed'], 'arrivedEarly': STATE['tdArrived'], 'platforms': STATE['tdPlatforms']},
+                                        'platformMap': {'known': STATE['platformsKnown'], 'error': STATE['platformsError'],
+                                                        'builtAt': iso(STATE['platformsBuiltAt']) if STATE['platformsBuiltAt'] else None,
+                                                        'drawnOnPlatformLastView': STATE['drawnOnPlatform']}})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
         if split.path == '/details':
@@ -1066,6 +1214,7 @@ def main() -> None:
     threading.Thread(target=memory_loop, daemon=True).start()
     threading.Thread(target=route_loop, daemon=True).start()
     threading.Thread(target=smart_loop, daemon=True).start()
+    threading.Thread(target=platforms_loop, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA TRAIN ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
