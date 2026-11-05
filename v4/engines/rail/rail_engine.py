@@ -51,13 +51,23 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.5.0'
+ENGINE_VERSION = '0.6.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = 'Train movements: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · railway lines: Network Rail track model (OGL) · stations: DfT NaPTAN (OGL) · junctions: YA TIPLOC list (CC BY-SA 4.0 / OGL)'
 
 FEED_HOST, FEED_PORT = 'publicdatafeeds.networkrail.co.uk', 61618
 FEED_TOPIC = '/topic/TRAIN_MVT_ALL_TOC'
+# 0.6.0 (owner 5 Nov 09:48-10:03: signalling feed + platforms; the new Network Rail portal gives "global access to all
+# data feeds", and the server's login downloads SMART with 206): the signalling (TD) feed says each time a train steps
+# from one signal section ("berth") to the next. Network Rail's SMART file says which steps mean "arriving at / leaving
+# station X", how many seconds before or after the official report that happens, and at which PLATFORM. So between
+# stations a train's arrival is re-timed signal by signal, it arrives on the map as it pulls in (not when the report
+# comes), and the box says which platform. Same login, same connection; nothing new to pay for or sign up to.
+TD_TOPIC = '/topic/TD_ALL_SIG_AREA'
+TD_ON = os.environ.get('TPA_RAIL_TD', '1').strip() != '0'
+SMART_URL = 'https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART'
+MAX_SMART = 150_000_000
 CORPUS_URL = 'https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS'
 NAPTAN_URL = 'https://naptan.api.dft.gov.uk/v1/access-nodes?atcoAreaCodes=910&dataFormat=csv'
 MAX_CORPUS, MAX_NAPTAN = 22_000_000, 20_000_000
@@ -84,18 +94,21 @@ HAVE_LOGIN = bool(USERNAME and PASSWORD)
 _t_stomp = os.environ.get('TPA_RAIL_TEST_STOMP', '').strip()
 _t_corpus = os.environ.get('TPA_RAIL_TEST_CORPUS_URL', '').strip()
 _t_naptan = os.environ.get('TPA_RAIL_TEST_NAPTAN_URL', '').strip()
+_t_smart = os.environ.get('TPA_RAIL_TEST_SMART_URL', '').strip()
 if _t_stomp and not re.fullmatch(r'127\.0\.0\.1:\d{2,5}', _t_stomp):
     raise SystemExit('TPA_RAIL_TEST_STOMP must be 127.0.0.1:port')
-for _u in (_t_corpus, _t_naptan):
+for _u in (_t_corpus, _t_naptan, _t_smart):
     if _u and not re.match(r'^http://127\.0\.0\.1:\d+/', _u):
         raise SystemExit('Test URLs must point at 127.0.0.1')
 if _t_stomp:
     FEED_HOST, FEED_PORT = '127.0.0.1', int(_t_stomp.split(':')[1])
 CORPUS_SRC = _t_corpus or CORPUS_URL
 NAPTAN_SRC = _t_naptan or NAPTAN_URL
+SMART_SRC = _t_smart or SMART_URL
 DATA = Path(os.environ.get('TPA_RAIL_DATA_DIR') or (Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir()) / 'TPA' / 'rail-engine'))
 REFERENCE_FILE = DATA / 'station-reference.json'
 MEMORY_FILE = DATA / 'trains-last-30-min.json'
+SMART_FILE = DATA / 'smart-steps.json'
 SAVE_EVERY = max(1, int(os.environ.get('TPA_RAIL_SAVE_SECONDS', '60') or 60))
 TIMING_POINTS_FILE = Path(os.environ.get('TPA_RAIL_TIMING_POINTS_FILE') or (Path(__file__).resolve().parent / 'data' / 'timing-points.csv'))
 
@@ -104,7 +117,11 @@ STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': Fals
          'lastMessageAt': 0.0, 'lastError': '' if HAVE_LOGIN else 'no-login', 'authRejectedUntil': 0.0,
          'lastDemandAt': 0.0, 'messages': 0, 'movements': 0, 'unplaced': 0, 'bytes': 0,
          'points': {}, 'atPoints': 0, 'restored': 0, 'dirty': False, 'savedAt': 0.0,
-         'trackLoaded': False, 'trackError': '', 'cancelledSeen': 0, 'reinstatedSeen': 0}
+         'trackLoaded': False, 'trackError': '', 'cancelledSeen': 0, 'reinstatedSeen': 0,
+         'smartSteps': 0, 'smartError': '', 'smartBuiltAt': 0.0, 'tdMessages': 0, 'tdUseful': 0, 'tdMatched': 0,
+         'tdRetimed': 0, 'tdArrived': 0, 'tdPlatforms': 0, 'tdBlockedUntil': 0.0, 'tdThisSession': False}
+BY_HEAD = {}   # 0.6.0: headcode -> train ids (kept loosely; checked on use)
+SMART = {'steps': {}, 'interposes': {}}   # (area, from, to) / (area, to) -> (stanox, event, platform, offset seconds)
 WAKE = threading.Event()
 # 0.4.0: trains glide ALONG THE TRACK. Routes between a train's last place and its next
 # reporting point come from Network Rail's own track model (data/rail-network.json.gz,
@@ -302,7 +319,8 @@ def load_timing_points(path: Path = TIMING_POINTS_FILE) -> dict:
 TRAIN_FIELDS = {'lat': float, 'lon': float, 'station': str, 'when': float, 'event': str, 'variation': str,
                 'minutes': int, 'headcode': str, 'terminated': bool, 'point': bool,
                 'nlat': float, 'nlon': float, 'nname': str, 'run': int, 'cancelled': bool, 'cancelledAt': float,
-                'toc': str}   # 0.5.0: the operator's two-digit code   # 0.3.0: next place + minutes to it
+                'toc': str,   # 0.5.0: the operator's two-digit code
+                'stanox': str, 'nstanox': str, 'platform': str, 'platformAt': str, 'arriveBy': float}   # 0.6.0   # 0.3.0: next place + minutes to it
 
 
 def save_memory(force: bool = False) -> None:
@@ -345,6 +363,9 @@ def restore_memory() -> int:
         item['point'] = t.get('point') is True
         item['cancelled'] = t.get('cancelled') is True
         item['toc'] = item['toc'] if re.fullmatch(r'\d{2}', item['toc']) else ''
+        for k in ('stanox', 'nstanox', 'platformAt'):
+            item[k] = item[k] if re.fullmatch(r'\d{5,6}', item[k]) else ''
+        item['platform'] = item['platform'] if re.fullmatch(r'[0-9A-Z]{1,3}', item['platform']) else ''
         item['nname'] = clean(item['nname'], 60)
         if not (0 < item['run'] <= 120 and 49 < item['nlat'] < 61 and -9 < item['nlon'] < 3):
             item.update(nlat=0.0, nlon=0.0, nname='', run=0)
@@ -356,6 +377,8 @@ def restore_memory() -> int:
             current = STATE['trains'].get(tid)
             if not current or current['when'] < item['when']:
                 STATE['trains'][tid] = item
+                if item['headcode']:
+                    BY_HEAD.setdefault(item['headcode'], set()).add(tid)
         STATE['restored'] = len(restored)
     return len(restored)
 
@@ -432,7 +455,7 @@ def handle_message(item: dict, now: float) -> None:
         terminated = str(body.get('train_terminated', '')).lower() == 'true'
         # 0.3.0: after a departure (or pass), TRUST says where the train reports next and
         # how many minutes that should take. The map glides it there and stops (estimated).
-        nxt, run = None, 0
+        nxt, run, nstanox = None, 0, ''
         if event == 'DEPARTURE' and not terminated:
             nstanox = clean(body.get('next_report_stanox'), 6).zfill(5)
             nxt = (STATE['stations'] or {}).get(nstanox) or STATE['points'].get(nstanox)
@@ -442,18 +465,173 @@ def handle_message(item: dict, now: float) -> None:
                 run = 0
             if not nxt or not 0 < run <= 120 or km(station[0], station[1], nxt[0], nxt[1]) < 0.2:
                 nxt, run = None, 0
+        platform = clean(body.get('platform'), 3).strip().upper()
+        platform = platform if re.fullmatch(r'[0-9A-Z]{1,3}', platform) else ''
+        before = trains.get(train_id) or {}
+        if not platform and before.get('platformAt') == stanox:     # the signalling feed told us first: keep it
+            platform = before.get('platform', '')
         trains[train_id] = {'lat': station[0], 'lon': station[1], 'station': station[2], 'when': when,
                             'event': event if event in ('ARRIVAL', 'DEPARTURE') else 'REPORT',
                             'variation': variation, 'minutes': minutes, 'headcode': match.group(1) if match else '',
                             'terminated': terminated, 'point': at_point,
                             'nlat': nxt[0] if nxt else 0.0, 'nlon': nxt[1] if nxt else 0.0,
                             'nname': nxt[2] if nxt else '', 'run': run, 'cancelled': False, 'cancelledAt': 0.0,
-                            'toc': toc}
+                            'toc': toc, 'stanox': stanox, 'nstanox': nstanox if nxt else '',
+                            'platform': platform, 'platformAt': stanox if platform else '', 'arriveBy': 0.0}
+        if match:
+            BY_HEAD.setdefault(match.group(1), set()).add(train_id)
         STATE['dirty'] = True
         if len(trains) > MAX_TRAINS:
             oldest = sorted(trains, key=lambda k: trains[k]['when'])[:len(trains) - MAX_TRAINS]
             for k in oldest:
                 trains.pop(k, None)
+
+
+# ---------------------------------------------------------------- 0.6.0: SMART + the signalling (TD) feed
+SMART_ROW = re.compile(rb'\{[^{}]*\}')
+
+
+def build_smart(payload: bytes) -> dict:
+    """Keeps only the steps that mean arriving at / leaving a place, row by row (never the whole file as objects)."""
+    steps, interposes = {}, {}
+    for m in SMART_ROW.finditer(payload):
+        try:
+            r = json.loads(m.group(0))
+        except ValueError:
+            continue
+        g = lambda k, n: clean(r.get(k), n).strip().upper()   # noqa: E731
+        area, frm, to, ev, stanox = g('TD', 2), g('FROMBERTH', 4), g('TOBERTH', 4), g('EVENT', 1), g('STANOX', 6)
+        if ev not in ('A', 'B', 'C', 'D') or not re.fullmatch(r'\d{3,6}', stanox) or not re.fullmatch(r'[A-Z0-9]{2}', area):
+            continue
+        try:
+            off = int(str(r.get('BERTHOFFSET') or '0').strip().replace('+', '') or 0)
+        except ValueError:
+            off = 0
+        if not -600 <= off <= 600:
+            continue
+        plat = g('PLATFORM', 3)
+        row = (stanox.zfill(5), ev, plat if re.fullmatch(r'[0-9A-Z]{1,3}', plat) else '', off)
+        if g('STEPTYPE', 1) == 'I' and to:
+            interposes[f'{area}|{to}'] = row
+        elif frm and to:
+            steps[f'{area}|{frm}|{to}'] = row
+    return {'steps': steps, 'interposes': interposes}
+
+
+def load_smart() -> bool:
+    """SMART kept for a week on our own server; a fresh copy downloaded with the Network Rail login when older."""
+    try:
+        cached = json.loads(SMART_FILE.read_text(encoding='utf-8'))
+        if time.time() - cached.get('builtAt', 0) < REFERENCE_MAX_AGE and cached.get('steps'):
+            index = {'steps': {k: tuple(v) for k, v in cached['steps'].items()},
+                     'interposes': {k: tuple(v) for k, v in cached.get('interposes', {}).items()}}
+            SMART.update(index)
+            with LOCK:
+                STATE.update(smartSteps=len(index['steps']), smartError='', smartBuiltAt=cached['builtAt'])
+            return True
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    try:
+        index = build_smart(_download(SMART_SRC, MAX_SMART, USERNAME + ':' + PASSWORD))
+    except urllib.error.HTTPError as exc:
+        with LOCK:
+            STATE['smartError'] = f'smart-http-{exc.code}'
+        return False
+    except Exception as exc:
+        with LOCK:
+            STATE['smartError'] = ('smart-' + type(exc).__name__)[:40]
+        return False
+    if len(index['steps']) < 10:
+        with LOCK:
+            STATE['smartError'] = 'smart-too-few'
+        return False
+    SMART.update(index)
+    built = time.time()
+    with LOCK:
+        STATE.update(smartSteps=len(index['steps']), smartError='', smartBuiltAt=built)
+    try:
+        DATA.mkdir(parents=True, exist_ok=True)
+        tmp = SMART_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'builtAt': built, **index}), encoding='utf-8')
+        tmp.replace(SMART_FILE)
+    except OSError:
+        pass
+    print(f'Signalling steps ready: {len(index["steps"])} steps that mean arriving at or leaving a place', flush=True)
+    return True
+
+
+def smart_loop() -> None:
+    while True:
+        if HAVE_LOGIN and TD_ON:
+            ok = load_smart()
+            time.sleep(REFERENCE_MAX_AGE if ok else 6 * 3600)
+        else:
+            time.sleep(3600)
+
+
+def handle_td(item: dict, now: float) -> None:
+    """One signalling message: a train stepping from one berth to the next (CA) or appearing in one (CC)."""
+    if not isinstance(item, dict) or len(item) != 1:
+        return
+    kind, msg = next(iter(item.items()))
+    if kind not in ('CA_MSG', 'CC_MSG') or not isinstance(msg, dict):
+        return
+    area, descr = clean(msg.get('area_id'), 2).upper(), clean(msg.get('descr'), 4).upper()
+    to = clean(msg.get('to'), 4).upper()
+    if not re.fullmatch(r'[0-9][A-Z][0-9]{2}', descr):
+        return
+    if kind == 'CA_MSG':
+        row = SMART['steps'].get(f"{area}|{clean(msg.get('from'), 4).upper()}|{to}")
+    else:
+        row = SMART['interposes'].get(f'{area}|{to}')
+    if not row:
+        return
+    stanox, ev, plat, off = row
+    try:
+        when = int(msg.get('time')) / 1000
+    except (TypeError, ValueError):
+        when = now
+    if not now - 300 < when < now + 60:
+        return
+    with LOCK:
+        STATE['tdUseful'] += 1
+        best = None
+        ids = BY_HEAD.get(descr) or set()
+        for tid in list(ids):
+            t = STATE['trains'].get(tid)
+            if not t or t.get('headcode') != descr:
+                ids.discard(tid)
+                continue
+            if t.get('cancelled') or t.get('terminated'):
+                continue
+            if t.get('nstanox') == stanox or t.get('stanox') == stanox:
+                if best is None or t['when'] > best[1]['when']:
+                    best = (tid, t)
+        if best is None:
+            return
+        tid, t = best
+        STATE['tdMatched'] += 1
+        arriving = ev in ('A', 'C')
+        if arriving and plat:
+            t.update(platform=plat, platformAt=stanox)
+            STATE['tdPlatforms'] += 1
+        if arriving and t.get('nstanox') == stanox and t['event'] == 'DEPARTURE' and t.get('run'):
+            eta = when + off
+            if eta > now + 5:
+                if eta < t['when'] + t['run'] * 60 + 1800:      # re-timed signal by signal
+                    t['arriveBy'] = eta
+                    STATE['tdRetimed'] += 1
+            else:                                              # pulling in now: shown at the station straight away
+                station = (STATE['stations'] or {}).get(stanox) or STATE['points'].get(stanox)
+                if station:
+                    t.update(lat=station[0], lon=station[1], station=station[2], stanox=stanox, event='ARRIVAL',
+                             when=max(t['when'], min(now, eta)), point=stanox not in (STATE['stations'] or {}),
+                             nlat=0.0, nlon=0.0, nname='', nstanox='', run=0, arriveBy=0.0)
+                    STATE['tdArrived'] += 1
+        elif not arriving and plat and t.get('stanox') == stanox and not t.get('platform'):
+            t.update(platform=plat, platformAt=stanox)
+            STATE['tdPlatforms'] += 1
+        STATE['dirty'] = True
 
 
 def stomp_escape(value: str) -> str:
@@ -508,6 +686,11 @@ def feed_session() -> None:
                     connected = True
         sock.sendall(frame('SUBSCRIBE', {'id': '1', 'destination': FEED_TOPIC, 'ack': 'auto'}))
         with LOCK:
+            td_now = TD_ON and time.time() >= STATE['tdBlockedUntil']
+            STATE['tdThisSession'] = td_now
+        if td_now:
+            sock.sendall(frame('SUBSCRIBE', {'id': '2', 'destination': TD_TOPIC, 'ack': 'auto'}))
+        with LOCK:
             STATE.update(connected=True, connectedAt=time.time(), lastMessageAt=time.time(), lastError='')
         print('Network Rail feed: connected and listening', flush=True)
         sock.settimeout(5)
@@ -547,11 +730,12 @@ def feed_session() -> None:
                     items = json.loads(body.decode('utf-8'))
                 except (ValueError, UnicodeDecodeError):
                     continue
+                signalling = headers.get('subscription') == '2' or headers.get('destination', '').endswith('TD_ALL_SIG_AREA')
                 with LOCK:
-                    STATE['messages'] += 1
+                    STATE['tdMessages' if signalling else 'messages'] += 1
                 for item in items if isinstance(items, list) else [items]:
                     if isinstance(item, dict):
-                        handle_message(item, time.time())
+                        (handle_td if signalling else handle_message)(item, time.time())
     finally:
         with LOCK:
             STATE['connected'] = False
@@ -584,9 +768,17 @@ def feed_loop() -> None:
             backoff = 15
         except PermissionError as exc:
             with LOCK:
+                td_refused = str(exc) == 'feed-error' and STATE['tdThisSession']
                 STATE['lastError'] = str(exc)
-                STATE['authRejectedUntil'] = time.time() + 1800
-            print('Network Rail feed:', exc, '- will not retry for 30 minutes', flush=True)
+                if td_refused:   # 0.6.0: never let the signalling feed cost us the train reports: carry on without it for 6 hours
+                    STATE['tdBlockedUntil'] = time.time() + 6 * 3600
+                else:
+                    STATE['authRejectedUntil'] = time.time() + 1800
+            if td_refused:
+                print('Network Rail refused the signalling feed - carrying on with train reports only for 6 hours', flush=True)
+                time.sleep(5)
+            else:
+                print('Network Rail feed:', exc, '- will not retry for 30 minutes', flush=True)
         except (OSError, TimeoutError, ConnectionError, ValueError) as exc:
             with LOCK:
                 STATE['lastError'] = (str(exc) or type(exc).__name__)[:40]
@@ -666,6 +858,10 @@ def details(entity_id: str) -> dict:
     add('Train', t['headcode'])
     add('Type', kind_of(t)[1])
     add('Operator', OPERATORS.get(t.get('toc', '')))
+    if t.get('platform') and t.get('platformAt'):
+        with LOCK:
+            place = ((STATE['stations'] or {}).get(t['platformAt']) or STATE['points'].get(t['platformAt']) or (0, 0, ''))[2]
+        add('Platform', f"{t['platform']}" + (f' at {place}' if place else ''))
     what = 'Passed' if t.get('point') else {'ARRIVAL': 'Arrived at', 'DEPARTURE': 'Departed'}.get(t['event'], 'Passed')
     if t.get('cancelled'):
         add('Status', 'Cancelled')
@@ -748,8 +944,9 @@ def snapshot(view) -> dict:
                 if path is None and STATE['trackLoaded'] and key not in PENDING_SET and len(PENDING) < 5000:
                     PENDING.append(key); PENDING_SET.add(key); ROUTE_WAKE.set()
             if path:
+                arrive = t.get('arriveBy') or (t['when'] + t['run'] * 60)     # 0.6.0: re-timed by the signals when known
                 entity['motion'] = {'mode': 'path', 'points': path,
-                                    'arriveAt': iso(t['when'] + t['run'] * 60), 'maxSeconds': t['run'] * 60 + 120}
+                                    'arriveAt': iso(arrive), 'maxSeconds': round(max(60, arrive - t['when']) + 120)}
         frame_out['entities'].append(entity)
     if not frame_out['entities'] and h == 'ready' and not notice and connected_for < 600:
         frame_out['notice'] = 'Listening · trains appear as they report at stations'
@@ -802,7 +999,11 @@ class Handler(BaseHTTPRequestHandler):
                                         'trackRoutesWaiting': len(PENDING), 'trackError': STATE['trackError'],
                                         'cancellationsSeen': STATE['cancelledSeen'], 'reinstatementsSeen': STATE['reinstatedSeen'],
                                         'movementsReceived': STATE['movements'], 'movementsAtUnmappedLocations': STATE['unplaced'],
-                                        'feedKBThisRun': STATE['bytes'] // 1024})
+                                        'feedKBThisRun': STATE['bytes'] // 1024,
+                                        'signalling': {'on': TD_ON, 'refusedUntil': iso(STATE['tdBlockedUntil']) if STATE['tdBlockedUntil'] > time.time() else None, 'smartSteps': STATE['smartSteps'], 'smartError': STATE['smartError'],
+                                                       'smartBuiltAt': iso(STATE['smartBuiltAt']) if STATE['smartBuiltAt'] else None,
+                                                       'messages': STATE['tdMessages'], 'useful': STATE['tdUseful'], 'matched': STATE['tdMatched'],
+                                                       'retimed': STATE['tdRetimed'], 'arrivedEarly': STATE['tdArrived'], 'platforms': STATE['tdPlatforms']}})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
         if split.path == '/details':
@@ -864,6 +1065,7 @@ def main() -> None:
     threading.Thread(target=feed_loop, daemon=True).start()
     threading.Thread(target=memory_loop, daemon=True).start()
     threading.Thread(target=route_loop, daemon=True).start()
+    threading.Thread(target=smart_loop, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA TRAIN ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
