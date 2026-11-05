@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.5'
+ENGINE_VERSION = '0.5.6'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -524,6 +524,7 @@ def details(entity_id: str) -> dict:
 
 
 LOW_FEET = 1000
+APPROACH_FEET = 4000
 
 
 def near_ground(a) -> bool:
@@ -554,7 +555,10 @@ def plan_landing(a) -> None:
     if 'landing' in a:
         return
     a['landing'] = None
-    if a['ground'] or a['alt'] is None or a['alt'] >= LOW_FEET or (a.get('climb') is None or a['climb'] > -300) \
+    # 0.5.6 (owner 23:59, DHK457 into East Midlands: last heard at "2,200 ft" about 3 miles out, then "stayed at 160mph until
+    # the end of the runway"): the height planes send is set for standard air pressure, so on a low-pressure night a plane
+    # on its final approach can read well over 1,000 ft. Any plane under APPROACH_FEET coming down towards an airport counts.
+    if a['ground'] or a['alt'] is None or a['alt'] >= APPROACH_FEET or (a.get('climb') is None or a['climb'] > -300) \
             or a['heading'] is None or not a.get('speed') or a['speed'] < 30:
         return
     h = math.radians(a['heading'])
