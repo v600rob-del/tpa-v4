@@ -7,7 +7,7 @@
 <meta name="description" content="TPA: buses, trains, planes and road traffic moving live on one map of the UK. Free for everyone. Coming soon.">
 <meta name="theme-color" content="#05080e">
 <style>
-/* TPA coming-soon page (kit 4.16). Control-room look: navy-black, departure-board amber, signal teal.
+/* TPA coming-soon page (kit 4.16; 4.22.1: new icons, the fleet, Geoff's bus). Control-room look: navy-black, departure-board amber, signal teal.
    Self-contained: own fonts, no outside requests, nothing collected. */
 @font-face{font-family:'TPA Sans';src:url(fonts/Barlow-Regular.woff) format('woff');font-weight:400;font-display:swap}
 @font-face{font-family:'TPA Sans';src:url(fonts/Barlow-SemiBold.woff) format('woff');font-weight:600;font-display:swap}
@@ -34,11 +34,13 @@ a{color:var(--teal)}
 /* hero */
 .hero{padding-block:56px 28px;display:grid;gap:22px;justify-items:start}
 .eyebrow{font-family:var(--sign);letter-spacing:.22em;color:var(--teal);font-size:.85rem;text-transform:uppercase}
-.board{display:flex;flex-wrap:wrap;gap:14px 26px}
-.word{display:flex;gap:6px}
-.flap{display:inline-grid;place-items:center;width:clamp(30px,9vw,62px);height:clamp(44px,12.6vw,86px);background:linear-gradient(#141f2e 0 49%,#0b131f 51% 100%);
-  border:1px solid var(--line2);border-radius:6px;font-family:var(--sign);font-weight:700;font-size:clamp(26px,8.4vw,58px);color:var(--amber);position:relative;
-  box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.board{justify-self:stretch;width:100%;display:grid;grid-template-columns:repeat(11,minmax(0,1fr));gap:clamp(3px,.9vw,10px);container-type:inline-size}
+.flap{display:grid;place-items:center;aspect-ratio:5/7;background:linear-gradient(#141f2e 0 49%,#0b131f 51% 100%);
+  border:1px solid var(--line2);border-radius:clamp(3px,.6vw,7px);font-family:var(--sign);font-weight:700;font-size:min(9.6cqw,120px);line-height:1;color:var(--amber);position:relative;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04);overflow:hidden}
+.flap.gap{background:linear-gradient(#0f1825 0 49%,#090f19 51% 100%)}
+.flap.turn{animation:turn .055s linear}
+@keyframes turn{0%{transform:scaleY(1)}50%{transform:scaleY(.82)}100%{transform:scaleY(1)}}
 .flap::after{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:#03060b}
 h1{margin:0;font-family:var(--sign);font-weight:700;font-size:clamp(1.9rem,5vw,3.3rem);line-height:1.08;text-wrap:balance;max-width:20ch}
 h1 em{font-style:normal;color:var(--amber)}
@@ -59,6 +61,19 @@ h1 em{font-style:normal;color:var(--amber)}
 @keyframes glide{from{transform:translateX(0)}to{transform:translateX(calc(100vw + 120px))}}
 .m3 svg{transform:rotate(90deg)}
 
+.mover.pic{padding:2px;overflow:hidden}.mover.pic img,.card .ic.pic img{width:100%;height:100%;object-fit:contain;display:block}
+.card .ic.pic{padding:2px;overflow:hidden}
+/* the fleet: click any bus or train for a picture of its type */
+.fleet-sec{padding-block:34px 40px}
+.fleet-lead{margin:-6px 0 16px;color:#c9d4e2;max-width:62ch}
+.fleet{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,2fr);gap:12px}
+@media (max-width:760px){.fleet{grid-template-columns:minmax(0,1fr)}}
+.plate{margin:0;border-radius:12px;border:1px solid #cfd8e3;background:radial-gradient(ellipse at 50% 35%,#ffffff 0,#eef2f7 60%,#dfe5ed 100%);padding:10px;display:grid;align-content:space-between}
+.plate img{display:block;width:100%;height:auto;mix-blend-mode:multiply}
+.plate figcaption{color:#3a4a5e;font-size:.8rem;font-family:var(--sign);letter-spacing:.1em;text-transform:uppercase;padding:4px 4px 0}
+.trains{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.trains .plate{padding:6px}
+.trains .plate figcaption{font-size:.68rem;padding-top:2px}
 /* screen */
 .screen-sec{padding-block:30px}
 .monitor{border:1px solid var(--line2);border-radius:12px;background:var(--panel);padding:10px;box-shadow:0 30px 80px -30px rgba(255,178,30,.18),0 0 0 1px rgba(255,255,255,.02)}
@@ -113,10 +128,10 @@ footer .wrap{padding-block:18px 26px;color:var(--soft);font-size:.82rem;display:
 
   <div class="track" aria-hidden="true">
     <div class="rail"></div>
-    <div class="mover m1"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M3 11h18.5c3.6 0 6.2 1.6 7.7 4.6l.9 1.8c.6 1.3-.3 2.6-1.7 2.6H3ZM5 13.2h3v3H5ZM10 13.2h3v3h-3ZM15 13.2h3v3h-3ZM21 13.2h2.6c1.5 0 2.8.8 3.5 2.2l.4.8H21ZM5.4 21.2a1.7 1.7 0 1 0 3.4 0ZM9.8 21.2a1.7 1.7 0 1 0 3.4 0ZM19.4 21.2a1.7 1.7 0 1 0 3.4 0ZM23.8 21.2a1.7 1.7 0 1 0 3.4 0ZM2 23.4h28v1.3H2Z"/><path fill="#ffb21e" d="M3.6 17.4h24.6v1.1H3.6Z"/></svg></div>
-    <div class="mover m2"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z"/><path fill="#ffb21e" d="M9.7 5.7h12.6v1.6H9.7Z"/></svg></div>
+    <div class="mover m1 pic"><img src="pics/icon-train.webp" alt=""></div>
+    <div class="mover m2 pic"><img src="pics/icon-bus.webp" alt=""></div>
     <div class="mover m3"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z"/></svg></div>
-    <div class="mover m4"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M2 12h17c4.5 0 8.3 2.2 10.6 5.6l.6.9c.5.8-.1 1.7-1 1.7H2ZM4 13.8h12.8v2.3H4ZM19.4 13.8c2.4.2 4.4 1.1 5.9 2.3h-5.9ZM4.3 21.4a1.6 1.6 0 1 0 3.2 0ZM8.3 21.4a1.6 1.6 0 1 0 3.2 0ZM19.3 21.4a1.6 1.6 0 1 0 3.2 0ZM23.3 21.4a1.6 1.6 0 1 0 3.2 0ZM2 23.4h28v1.3H2Z"/><path fill="#ffb21e" d="M26.6 17.2c1.2.4 2.3 1 3 1.6l.6.9c.3.4.1.8-.2 1H26.6Z"/></svg></div>
+    <div class="mover m4 pic"><img src="pics/icon-train.webp" alt=""></div>
   </div>
 
   <section class="screen-sec" id="preview-sec" aria-labelledby="ph">
@@ -128,11 +143,27 @@ footer .wrap{padding-block:18px 26px;color:var(--soft);font-size:.82rem;display:
     <p class="caption">Taken from the test version over York. Map data © OpenStreetMap contributors, map style by OpenFreeMap, traffic flow © TomTom.</p>
   </section>
 
+  <section class="fleet-sec" aria-labelledby="fh">
+    <h2 id="fh">Click anything</h2>
+    <p class="fleet-lead">Tap a bus or a train to see where it's going, and a picture of what it is: TPA's own drawings, from a Pendolino to a Class 66 freight engine.</p>
+    <div class="fleet">
+      <figure class="plate"><img src="pics/bus-geoff.webp" alt="Geoff the cat giving a thumbs up from the driver's seat of a TPA bus" width="720" height="400" loading="lazy"><figcaption>Every bus · driver: Geoff</figcaption></figure>
+      <div class="trains">
+        <figure class="plate"><img src="pics/c800.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Azuma</figcaption></figure>
+        <figure class="plate"><img src="pics/c390.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Pendolino</figcaption></figure>
+        <figure class="plate"><img src="pics/c43.webp" alt="" width="720" height="400" loading="lazy"><figcaption>InterCity 125</figcaption></figure>
+        <figure class="plate"><img src="pics/c195.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Civity</figcaption></figure>
+        <figure class="plate"><img src="pics/c755.webp" alt="" width="720" height="400" loading="lazy"><figcaption>FLIRT</figcaption></figure>
+        <figure class="plate"><img src="pics/c66.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Class 66 freight</figcaption></figure>
+      </div>
+    </div>
+  </section>
+
   <section aria-labelledby="eh">
     <h2 id="eh">What you'll see</h2>
     <div class="cards">
-      <article class="card"><span class="ic" style="color:var(--green)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z"/></svg></span><h3>Buses</h3><p>Buses following their real roads, with where they're heading and their next stop.</p></article>
-      <article class="card"><span class="ic" style="color:var(--purple)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M3 11h18.5c3.6 0 6.2 1.6 7.7 4.6l.9 1.8c.6 1.3-.3 2.6-1.7 2.6H3ZM5 13.2h3v3H5ZM10 13.2h3v3h-3ZM15 13.2h3v3h-3ZM21 13.2h2.6c1.5 0 2.8.8 3.5 2.2l.4.8H21ZM5.4 21.2a1.7 1.7 0 1 0 3.4 0ZM9.8 21.2a1.7 1.7 0 1 0 3.4 0ZM19.4 21.2a1.7 1.7 0 1 0 3.4 0ZM23.8 21.2a1.7 1.7 0 1 0 3.4 0ZM2 23.4h28v1.3H2Z"/></svg></span><h3>Trains</h3><p>Trains gliding along the real tracks, standing at their platforms, with the train type and how late they're running.</p></article>
+      <article class="card"><span class="ic pic" style="color:var(--green)"><img src="pics/icon-bus.webp" alt=""></span><h3>Buses</h3><p>Buses following their real roads, with where they're heading and their next stop. Driven by Geoff, obviously.</p></article>
+      <article class="card"><span class="ic pic" style="color:var(--purple)"><img src="pics/icon-train.webp" alt=""></span><h3>Trains</h3><p>Trains gliding along the real tracks, standing at their platforms, with the train type and how late they're running.</p></article>
       <article class="card"><span class="ic" style="color:var(--teal)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z"/></svg></span><h3>Planes</h3><p>Aircraft over the UK, from airline and aircraft type to the moment they touch down.</p></article>
       <article class="card"><span class="ic" style="color:var(--amber)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M4 26 12 6h3l-1 6h4l-1-6h3l8 20h-6l-1-5h-6l-1 5Zm9-9h6l-.6-3h-4.8Z"/></svg></span><h3>Road traffic</h3><p>Main roads coloured by how busy they are, refreshed every ten minutes.</p></article>
     </div>
@@ -145,24 +176,31 @@ footer .wrap{padding-block:18px 26px;color:var(--soft);font-size:.82rem;display:
       <li>Built from official, open transport data, credited in full.</li>
       <li>Made in Yorkshire by one person who loves watching things move.</li>
     </ul>
-    <div class="geoff"><img src="geoff.jpg" alt="Geoff, a black and white cat" width="72" height="72"><div><b>Geoff</b><span>Head of quality control. Currently asleep on the keyboard.</span></div></div>
+    <div class="geoff"><img src="geoff.jpg" alt="Geoff, a black and white cat" width="72" height="72"><div><b>Geoff</b><span>Head of quality control. Bus driver. Currently asleep on the keyboard.</span></div></div>
   </section>
 </main>
 
-<footer><div class="wrap"><span>© TPA · tpalive.co.uk</span><span>Coming soon. Not for planning real journeys.</span></div></footer>
+<footer><div class="wrap"><span>© TPA · tpalive.co.uk · <a href="mailto:enquiries@tpalive.co.uk">enquiries@tpalive.co.uk</a></span><span>Coming soon. Not for planning real journeys.</span></div></footer>
 
 <script>
 (function(){
-  // departure-board letters flip into place
-  var words=['COMING','SOON'], board=document.getElementById('board'), chars='ABCDEFGHIJKLMNOPQRSTUVWXYZ', reduce=matchMedia('(prefers-reduced-motion: reduce)').matches, k=0;
-  words.forEach(function(w){
-    var g=document.createElement('span');g.className='word';board.appendChild(g);
-    w.split('').forEach(function(ch){
-      var f=document.createElement('span');f.className='flap';g.appendChild(f);
+  // departure-board letters flip into place (4.22.1, owner 21:41: "fit across the page and occasionally flicker
+  // round, like a real one every now and then")
+  var text='COMING SOON', board=document.getElementById('board'), chars='ABCDEFGHIJKLMNOPQRSTUVWXYZ ', reduce=matchMedia('(prefers-reduced-motion: reduce)').matches, flaps=[];
+  text.split('').forEach(function(ch){var f=document.createElement('span');f.className='flap'+(ch===' '?' gap':'');board.appendChild(f);flaps.push([f,ch]);});
+  function roll(first){
+    flaps.forEach(function(p,i){
+      var f=p[0],ch=p[1];
       if(reduce){f.textContent=ch;return;}
-      var n=0,stop=8+(k++)*2;var t=setInterval(function(){f.textContent=n>=stop?ch:chars[(Math.random()*26)|0];if(n++>=stop)clearInterval(t);},55);
+      var n=0,stop=(first?8:5)+i*2+((Math.random()*4)|0);
+      var t=setInterval(function(){
+        f.textContent=n>=stop?ch:chars[(Math.random()*chars.length)|0];
+        f.classList.remove('turn');void f.offsetWidth;f.classList.add('turn');
+        if(n++>=stop)clearInterval(t);},55);
     });
-  });
+  }
+  roll(true);
+  if(!reduce)(function later(){setTimeout(function(){if(!document.hidden)roll(false);later();},18000+Math.random()*22000);})();
   // UK clock in the top strip
   var c=document.getElementById('clock');
   function tick(){try{c.textContent=new Date().toLocaleTimeString('en-GB',{timeZone:'Europe/London',hour:'2-digit',minute:'2-digit',second:'2-digit'})+' UK';}catch(e){c.textContent='';}}

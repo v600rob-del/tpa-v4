@@ -115,3 +115,4 @@ h1 em{color:var(--amber)}
 /* 4.21.2: the owner's front-on bus and train pictures sit inside the frame (option B), sized with the zoom like the drawings */
 .review-pin .pic-icon{display:block;width:30px;height:30px;object-fit:contain;pointer-events:none;user-select:none;filter:drop-shadow(0 1px 1px #0007)}
 .marker-layer .review-pin.bus .pic-icon,.marker-layer .review-pin.rail .pic-icon{width:calc(34px*var(--pin-s,1));height:calc(34px*var(--pin-s,1))}
+.detail-picture.bus img{mix-blend-mode:multiply}   /* 4.22.1: the bus picture has a white background; it melts into the light panel */
