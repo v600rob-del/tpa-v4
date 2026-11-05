@@ -523,7 +523,9 @@ function fanOut(items,grouped,now){
   // whose icons (or headcode boards) overlap are nudged just far enough apart, the shorter way, staying by their platforms
   // 4.17.3 (owner 12:02, Piccadilly zoom 18: 1M26, ringed apart from a train on the same platform, then sat over 2H25 on
   // the next platform): the ringed trains are nudged along with the rest, starting from their places in the ring.
-  const W=40*pinScale(state.z)+6,H=W*1.4,rest=free,at=new Map(rest.map(it=>{const w=want.get(it.k)||[0,0];return [it.k,[it.x+w[0],it.y+w[1]]];}));
+  // 4.18.1 (owner 12:14, Piccadilly zoom 18: "now looks a bit too spread out"): each train claims only its icon and headcode
+  // board, and neighbours may touch - no extra gap - so a busy station stays close to its real shape.
+  const W=40*pinScale(state.z)*0.95,H=54*pinScale(state.z)*0.95,rest=free,at=new Map(rest.map(it=>{const w=want.get(it.k)||[0,0];return [it.k,[it.x+w[0],it.y+w[1]]];}));
   // (only zoomed in to street level and with up to 80 standing trains in view: zoomed out, grouping does this job)
   for(let round=0;round<12&&state.z>=14&&rest.length<=80;round++){let moved=false;
     for(let i=0;i<rest.length;i++)for(let j=i+1;j<rest.length;j++){
