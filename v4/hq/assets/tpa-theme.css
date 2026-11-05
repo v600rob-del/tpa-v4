@@ -105,3 +105,4 @@ h1 em{color:var(--amber)}
   background:radial-gradient(ellipse at 50% 120%,#5a3a80 0,#2a1640 70%)}
 .detail-picture svg{width:150px;height:auto;fill:#f2f7fb}
 .detail-picture svg .acc{fill:var(--amber)}
+.detail-picture.wide svg{width:230px}   /* 4.17.0: the class drawings are long and low */

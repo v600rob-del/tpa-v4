@@ -36,6 +36,7 @@ import base64
 import csv
 import gzip
 import io
+import zlib
 import json
 import math
 import os
@@ -47,12 +48,12 @@ import time
 import urllib.parse
 import urllib.request
 import zipfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.7.1'
+ENGINE_VERSION = '0.8.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -71,6 +72,12 @@ TD_TOPIC = '/topic/TD_ALL_SIG_AREA'
 TD_ON = os.environ.get('TPA_RAIL_TD', '1').strip() != '0'
 SMART_URL = 'https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=SMART'
 MAX_SMART = 150_000_000
+# 0.8.0 (owner 5 Nov 00:16-00:19 + 10:55 stage 3: a picture of the actual type of train in its box): each night the
+# timetable (SCHEDULE, the full daily file) is read AS IT DOWNLOADS and only today's and tomorrow's trains are kept, each
+# with what it is booked to be (power type + "timing load", which for units is the class number). Network Rail's
+# "activated" message (0001) links a running train to its timetable entry, so its box can say "Class 800".
+SCHEDULE_URL = 'https://publicdatafeeds.networkrail.co.uk/ntrod/CifFileAuthenticate?type=CIF_ALL_FULL_DAILY&day=toc-full'
+MAX_SCHEDULE_GZ = 1_500_000_000
 # 0.7.0 (owner 4 Nov 11:44 "place the trains on the platforms they are due at or actually on", 5 Nov 10:20 stage 2): where
 # each platform is, from OpenStreetMap (railway=platform with its number in ref/local_ref), fetched once a month from the
 # public Overpass service and kept on our own server. A train standing at a station with a known platform number is drawn
@@ -117,9 +124,10 @@ _t_corpus = os.environ.get('TPA_RAIL_TEST_CORPUS_URL', '').strip()
 _t_naptan = os.environ.get('TPA_RAIL_TEST_NAPTAN_URL', '').strip()
 _t_smart = os.environ.get('TPA_RAIL_TEST_SMART_URL', '').strip()
 _t_overpass = os.environ.get('TPA_RAIL_TEST_OVERPASS_URL', '').strip()
+_t_schedule = os.environ.get('TPA_RAIL_TEST_SCHEDULE_URL', '').strip()
 if _t_stomp and not re.fullmatch(r'127\.0\.0\.1:\d{2,5}', _t_stomp):
     raise SystemExit('TPA_RAIL_TEST_STOMP must be 127.0.0.1:port')
-for _u in (_t_corpus, _t_naptan, _t_smart, _t_overpass):
+for _u in (_t_corpus, _t_naptan, _t_smart, _t_overpass, _t_schedule):
     if _u and not re.match(r'^http://127\.0\.0\.1:\d+/', _u):
         raise SystemExit('Test URLs must point at 127.0.0.1')
 if _t_stomp:
@@ -127,12 +135,14 @@ if _t_stomp:
 CORPUS_SRC = _t_corpus or CORPUS_URL
 NAPTAN_SRC = _t_naptan or NAPTAN_URL
 SMART_SRC = _t_smart or SMART_URL
+SCHEDULE_SRC = _t_schedule or SCHEDULE_URL
 OVERPASS_SRCS = [_t_overpass] if _t_overpass else OVERPASS_URLS
 DATA = Path(os.environ.get('TPA_RAIL_DATA_DIR') or (Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir()) / 'TPA' / 'rail-engine'))
 REFERENCE_FILE = DATA / 'station-reference.json'
 MEMORY_FILE = DATA / 'trains-last-30-min.json'
 SMART_FILE = DATA / 'smart-steps.json'
 PLATFORMS_FILE = DATA / 'platforms.json'
+CLASSES_FILE = DATA / 'booked-classes.json'
 SAVE_EVERY = max(1, int(os.environ.get('TPA_RAIL_SAVE_SECONDS', '60') or 60))
 TIMING_POINTS_FILE = Path(os.environ.get('TPA_RAIL_TIMING_POINTS_FILE') or (Path(__file__).resolve().parent / 'data' / 'timing-points.csv'))
 
@@ -144,7 +154,10 @@ STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': Fals
          'trackLoaded': False, 'trackError': '', 'cancelledSeen': 0, 'reinstatedSeen': 0,
          'smartSteps': 0, 'smartError': '', 'smartBuiltAt': 0.0, 'tdMessages': 0, 'tdUseful': 0, 'tdMatched': 0,
          'tdRetimed': 0, 'tdArrived': 0, 'tdPlatforms': 0, 'tdBlockedUntil': 0.0, 'tdThisSession': False,
-         'platformsKnown': 0, 'platformsError': '', 'platformsBuiltAt': 0.0, 'drawnOnPlatform': 0}
+         'platformsKnown': 0, 'platformsError': '', 'platformsBuiltAt': 0.0, 'drawnOnPlatform': 0,
+         'bookedDays': [], 'bookedTrains': 0, 'scheduleError': '', 'scheduleBuiltAt': 0.0, 'activations': 0, 'withClass': 0}
+BOOKED = {}      # 0.8.0: 'YYYY-MM-DD' -> {train uid: [power type, timing load]}
+ACTIVATED = {}   # 0.8.0: TRUST train id -> (train uid, day it set off)
 PLATFORMS = {}   # 0.7.0: (round(lat,2), round(lon,2)) -> [(lat, lon, refs), ...]
 SPOTS = {}       # (stanox, platform) -> (lat, lon) or None
 BY_HEAD = {}   # 0.6.0: headcode -> train ids (kept loosely; checked on use)
@@ -347,7 +360,8 @@ TRAIN_FIELDS = {'lat': float, 'lon': float, 'station': str, 'when': float, 'even
                 'minutes': int, 'headcode': str, 'terminated': bool, 'point': bool,
                 'nlat': float, 'nlon': float, 'nname': str, 'run': int, 'cancelled': bool, 'cancelledAt': float,
                 'toc': str,   # 0.5.0: the operator's two-digit code
-                'stanox': str, 'nstanox': str, 'platform': str, 'platformAt': str, 'arriveBy': float}   # 0.6.0   # 0.3.0: next place + minutes to it
+                'stanox': str, 'nstanox': str, 'platform': str, 'platformAt': str, 'arriveBy': float,   # 0.6.0
+                'uid': str, 'day': str}   # 0.8.0: its timetable entry   # 0.3.0: next place + minutes to it
 
 
 def save_memory(force: bool = False) -> None:
@@ -393,6 +407,8 @@ def restore_memory() -> int:
         for k in ('stanox', 'nstanox', 'platformAt'):
             item[k] = item[k] if re.fullmatch(r'\d{5,6}', item[k]) else ''
         item['platform'] = item['platform'] if re.fullmatch(r'[0-9A-Z]{1,3}', item['platform']) else ''
+        item['uid'] = item['uid'] if re.fullmatch(r'[A-Z0-9 ]{6}', item['uid']) else ''
+        item['day'] = item['day'] if re.fullmatch(r'\d{4}-\d{2}-\d{2}', item['day']) else ''
         item['nname'] = clean(item['nname'], 60)
         if not (0 < item['run'] <= 120 and 49 < item['nlat'] < 61 and -9 < item['nlon'] < 3):
             item.update(nlat=0.0, nlon=0.0, nname='', run=0)
@@ -450,6 +466,19 @@ def handle_message(item: dict, now: float) -> None:
                 STATE['reinstatedSeen'] += 1
                 STATE['dirty'] = True
             return
+        if kind == '0001':  # 0.8.0: activated - which timetable entry this running train is
+            uid = clean(body.get('train_uid'), 6).upper()
+            day = clean(body.get('tp_origin_timestamp') or body.get('schedule_start_date'), 10)
+            if re.fullmatch(r'[A-Z0-9 ]{6}', uid):
+                ACTIVATED[train_id] = (uid, day if re.fullmatch(r'\d{4}-\d{2}-\d{2}', day) else '')
+                STATE['activations'] += 1
+                if len(ACTIVATED) > 60000:
+                    for k in list(ACTIVATED)[:20000]:
+                        ACTIVATED.pop(k, None)
+                t = trains.get(train_id)
+                if t:
+                    t.update(uid=ACTIVATED[train_id][0], day=ACTIVATED[train_id][1])
+            return
         if kind != '0003':
             return
         STATE['movements'] += 1
@@ -503,7 +532,9 @@ def handle_message(item: dict, now: float) -> None:
                             'nlat': nxt[0] if nxt else 0.0, 'nlon': nxt[1] if nxt else 0.0,
                             'nname': nxt[2] if nxt else '', 'run': run, 'cancelled': False, 'cancelledAt': 0.0,
                             'toc': toc, 'stanox': stanox, 'nstanox': nstanox if nxt else '',
-                            'platform': platform, 'platformAt': stanox if platform else '', 'arriveBy': 0.0}
+                            'platform': platform, 'platformAt': stanox if platform else '', 'arriveBy': 0.0,
+                            'uid': (ACTIVATED.get(train_id) or (before.get('uid', ''), ''))[0],
+                            'day': (ACTIVATED.get(train_id) or ('', before.get('day', '')))[1]}
         if match:
             BY_HEAD.setdefault(match.group(1), set()).add(train_id)
         STATE['dirty'] = True
@@ -726,6 +757,181 @@ def drawn_at(t: dict):
         if spot:
             return on_track(spot[1], spot[0]), True
     return on_track(t['lon'], t['lat']), False
+
+
+def uk_today(offset_days: int = 0) -> str:
+    try:
+        from zoneinfo import ZoneInfo
+        d = datetime.now(ZoneInfo('Europe/London'))
+    except Exception:
+        d = datetime.now()
+    return (d + timedelta(days=offset_days)).strftime('%Y-%m-%d')
+
+
+STP_RANK = {'O': 3, 'N': 2, 'P': 1}
+# each entry's few fields picked out by pattern (an entry carries every stop, so unpacking each one fully would cost
+# minutes of the server's time every night)
+SCHED_FIELD = {k: re.compile(rb'"' + k.encode() + rb'"\s*:\s*"([^"]*)"') for k in (
+    'CIF_train_uid', 'CIF_stp_indicator', 'schedule_start_date', 'schedule_end_date', 'schedule_days_runs',
+    'transaction_type', 'CIF_power_type', 'CIF_timing_load')}
+
+
+def read_schedule(stream, days: list) -> dict:
+    """Reads the SCHEDULE file line by line as it arrives (gzip or plain). Keeps, for each of `days`, each train uid's
+    booked power type and timing load from the entry that applies that day (overlay > new > permanent; cancelled = none)."""
+    wanted = {d: datetime.strptime(d, '%Y-%m-%d') for d in days}
+    best = {d: {} for d in days}
+    cancelled = {d: set() for d in days}
+    unzip, gz, rest, total = None, None, b'', 0
+    while True:
+        chunk = stream.read(1 << 20)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > MAX_SCHEDULE_GZ:
+            raise ValueError('oversized')
+        if gz is None:
+            gz = chunk.startswith(b'\x1f\x8b')
+            unzip = zlib.decompressobj(16 + zlib.MAX_WBITS) if gz else None
+        data = rest + (unzip.decompress(chunk) if gz else chunk)
+        lines = data.split(b'\n')
+        rest = lines.pop()
+        if len(rest) > 2_000_000:
+            raise ValueError('line-too-long')
+        for line in lines:
+            if b'JsonScheduleV1' not in line:
+                continue
+            def field(name, default=''):
+                m = SCHED_FIELD[name].search(line)
+                return m.group(1).decode('ascii', 'replace') if m else default
+            try:
+                uid = field('CIF_train_uid').strip().upper()
+                stp = field('CIF_stp_indicator').strip().upper()
+                start = datetime.strptime(field('schedule_start_date'), '%Y-%m-%d')
+                end = datetime.strptime(field('schedule_end_date') or field('schedule_start_date'), '%Y-%m-%d')
+                runs = field('schedule_days_runs', '1111111')
+            except ValueError:
+                continue
+            if not re.fullmatch(r'[A-Z0-9 ]{6}', uid) or field('transaction_type', 'Create') != 'Create':
+                continue
+            for d, when in wanted.items():
+                if not start <= when <= end or len(runs) != 7 or runs[when.weekday()] != '1':
+                    continue
+                if stp == 'C':
+                    cancelled[d].add(uid)
+                    continue
+                rank = STP_RANK.get(stp, 0)
+                have = best[d].get(uid)
+                if have is None or rank > have[0]:
+                    best[d][uid] = (rank, clean(field('CIF_power_type'), 3).strip().upper(), clean(field('CIF_timing_load'), 4).strip().upper())
+    if gz and unzip is not None:
+        rest += unzip.flush()
+    return {d: {uid: [v[1], v[2]] for uid, v in best[d].items() if uid not in cancelled[d] or v[0] > 1} for d in days}
+
+
+def load_schedule() -> bool:
+    days = [uk_today(), uk_today(1)]
+    try:
+        cached = json.loads(CLASSES_FILE.read_text(encoding='utf-8'))
+        if days[1] in cached.get('days', {}):        # made today (it already knows tomorrow): use it
+            BOOKED.clear(); BOOKED.update(cached['days'])
+            with LOCK:
+                STATE.update(bookedDays=sorted(BOOKED), bookedTrains=len(BOOKED.get(days[0], {})), scheduleError='',
+                             scheduleBuiltAt=cached.get('builtAt', 0.0))
+            return True
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    try:
+        expected = urlsplit(SCHEDULE_SRC).hostname
+        test = expected == '127.0.0.1'
+
+        class SafeRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, req, fp, code, msg, headers, newurl):
+                host = urlsplit(newurl).hostname or ''
+                ok = host == expected or re.fullmatch(r'(?:[a-z0-9-]+\.)*s3(?:[.-][a-z0-9-]+)*\.amazonaws\.com', host)
+                if not ok or (urlsplit(newurl).scheme != 'https' and not test):
+                    raise ValueError('unapproved-redirect')
+                new = super().redirect_request(req, fp, code, msg, headers, newurl)
+                if new and host != expected:   # never send the Network Rail login to S3
+                    new.remove_header('Authorization')
+                return new
+        handlers = [SafeRedirect()] + ([urllib.request.ProxyHandler({})] if test else [])
+        req = urllib.request.Request(SCHEDULE_SRC, headers={
+            'User-Agent': f'TPA-Train-Engine/{ENGINE_VERSION} (+mailto:tpaprojectuk@gmail.com)',
+            'Authorization': 'Basic ' + base64.b64encode((USERNAME + ':' + PASSWORD).encode('utf-8')).decode('ascii')})
+        with urllib.request.build_opener(*handlers).open(req, timeout=120) as res:
+            booked = read_schedule(res, days)
+    except urllib.error.HTTPError as exc:
+        with LOCK:
+            STATE['scheduleError'] = f'schedule-http-{exc.code}'
+        return False
+    except Exception as exc:
+        with LOCK:
+            STATE['scheduleError'] = ('schedule-' + type(exc).__name__)[:40]
+        return False
+    if len(booked.get(days[0], {})) < 1:
+        with LOCK:
+            STATE['scheduleError'] = 'schedule-empty'
+        return False
+    BOOKED.clear(); BOOKED.update(booked)
+    built = time.time()
+    with LOCK:
+        STATE.update(bookedDays=sorted(BOOKED), bookedTrains=len(booked[days[0]]), scheduleError='', scheduleBuiltAt=built)
+    try:
+        DATA.mkdir(parents=True, exist_ok=True)
+        tmp = CLASSES_FILE.with_suffix('.tmp')
+        tmp.write_text(json.dumps({'builtAt': built, 'days': booked}), encoding='utf-8')
+        tmp.replace(CLASSES_FILE)
+    except OSError:
+        pass
+    print(f'Timetable ready: {len(booked[days[0]])} trains booked today, with what each is booked to be', flush=True)
+    return True
+
+
+def schedule_loop() -> None:
+    while True:
+        if not HAVE_LOGIN:
+            time.sleep(3600)
+            continue
+        ok = load_schedule()
+        if not ok:
+            time.sleep(3600)
+            continue
+        # next look: after 03:00 UK time (Network Rail's new file is out by then), or in an hour if the day has changed
+        time.sleep(3600)
+
+
+# drawings TPA has (HQ's train-class pictures) and the classes each covers
+CLASS_DRAWINGS = {'800': ('800', '801', '802', '805', '807', '810'), '390': ('390',), '220': ('220', '221', '222'),
+                  '150': ('150', '153', '155', '156'), '158': ('158', '159'), '170': ('168', '170', '171', '172'),
+                  '195': ('195', '196', '197', '331', '397'), '345': ('345', '701', '710', '720', '730'),
+                  '700': ('700', '707', '717'), '755': ('231', '745', '755', '756'), '387': ('357', '375', '377', '378', '379', '387')}
+DRAWING_OF = {c: k for k, cs in CLASS_DRAWINGS.items() for c in cs}
+CLASS_NAMES = {'800': 'Hitachi Azuma / IET', '390': 'Alstom Pendolino', '220': 'Bombardier Voyager', '150': 'Sprinter',
+               '158': 'Express Sprinter', '170': 'Turbostar', '195': 'CAF Civity', '345': 'Aventra', '700': 'Siemens Desiro City',
+               '755': 'Stadler FLIRT', '387': 'Bombardier Electrostar', '43': 'InterCity 125 (HST)'}
+POWER = {'D': 'diesel locomotive', 'E': 'electric locomotive', 'ED': 'electro-diesel locomotive'}
+
+
+def booked_class(t: dict):
+    """(what it is, which drawing) from its timetable entry, or ('', '')."""
+    uid, day = t.get('uid'), t.get('day')
+    if not uid:
+        return '', ''
+    entry = (BOOKED.get(day) or {}).get(uid) or (BOOKED.get(uk_today()) or {}).get(uid)
+    if not entry:
+        return '', ''
+    power, load = entry
+    if power == 'HST':
+        return 'Class 43 · ' + CLASS_NAMES['43'], 'c43'
+    if re.fullmatch(r'\d{3}', load) and power in ('EMU', 'DMU', 'DEM', 'EML'):
+        drawing = DRAWING_OF.get(load, '')
+        name = CLASS_NAMES.get(drawing, '')
+        return f'Class {load}' + (f' · {name}' if name else ''), ('c' + drawing if drawing else '')
+    if power in POWER:
+        diesel = power == 'D'
+        return 'Hauled by a ' + POWER[power], ('c66' if diesel and kind_of(t)[0] == 'freight' else '')
+    return '', ''
 
 
 def handle_td(item: dict, now: float) -> None:
@@ -1014,8 +1220,12 @@ def details(entity_id: str) -> dict:
             rows.append({'label': label, 'value': str(value)[:120]})
     if kind_of(t)[0]:
         out['picture'] = kind_of(t)[0]      # owner 00:19: "a picture of the type in an information window" (HQ draws it)
+    what, drawing = booked_class(t)         # 0.8.0: its actual type, from the timetable
+    if drawing:
+        out['picture'] = drawing
     add('Train', t['headcode'])
     add('Type', kind_of(t)[1])
+    add('Train type', what)
     add('Operator', OPERATORS.get(t.get('toc', '')))
     if t.get('platform') and t.get('platformAt'):
         with LOCK:
@@ -1168,6 +1378,9 @@ class Handler(BaseHTTPRequestHandler):
                                                        'smartBuiltAt': iso(STATE['smartBuiltAt']) if STATE['smartBuiltAt'] else None,
                                                        'messages': STATE['tdMessages'], 'useful': STATE['tdUseful'], 'matched': STATE['tdMatched'],
                                                        'retimed': STATE['tdRetimed'], 'arrivedEarly': STATE['tdArrived'], 'platforms': STATE['tdPlatforms']},
+                                        'timetable': {'days': STATE['bookedDays'], 'trainsToday': STATE['bookedTrains'], 'error': STATE['scheduleError'],
+                                                      'builtAt': iso(STATE['scheduleBuiltAt']) if STATE['scheduleBuiltAt'] else None,
+                                                      'activationsSeen': STATE['activations']},
                                         'platformMap': {'known': STATE['platformsKnown'], 'error': STATE['platformsError'],
                                                         'builtAt': iso(STATE['platformsBuiltAt']) if STATE['platformsBuiltAt'] else None,
                                                         'drawnOnPlatformLastView': STATE['drawnOnPlatform']}})
@@ -1234,6 +1447,7 @@ def main() -> None:
     threading.Thread(target=route_loop, daemon=True).start()
     threading.Thread(target=smart_loop, daemon=True).start()
     threading.Thread(target=platforms_loop, daemon=True).start()
+    threading.Thread(target=schedule_loop, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA TRAIN ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
