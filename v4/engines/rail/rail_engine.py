@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.9.0'
+ENGINE_VERSION = '1.0.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -155,7 +155,8 @@ STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': Fals
          'smartSteps': 0, 'smartError': '', 'smartBuiltAt': 0.0, 'tdMessages': 0, 'tdUseful': 0, 'tdMatched': 0,
          'tdRetimed': 0, 'tdArrived': 0, 'tdPlatforms': 0, 'tdBlockedUntil': 0.0, 'tdThisSession': False,
          'platformsKnown': 0, 'platformsError': '', 'platformsBuiltAt': 0.0, 'drawnOnPlatform': 0,
-         'bookedDays': [], 'bookedTrains': 0, 'scheduleError': '', 'scheduleBuiltAt': 0.0, 'activations': 0, 'withClass': 0}
+         'bookedDays': [], 'bookedTrains': 0, 'scheduleError': '', 'scheduleBuiltAt': 0.0, 'activations': 0, 'withClass': 0,
+         'tiplocs': {}, 'onTimetable': 0, 'routesToday': 0}
 BOOKED = {}      # 0.8.0: 'YYYY-MM-DD' -> {train uid: [power type, timing load]}
 ACTIVATED = {}   # 0.8.0: TRUST train id -> (train uid, day it set off)
 PLATFORMS = {}   # 0.7.0: (round(lat,2), round(lon,2)) -> [(lat, lon, refs), ...]
@@ -237,6 +238,19 @@ def _download(url: str, limit: int, login: str | None = None, timeout: int = 60)
     return data
 
 
+def tiploc_codes(corpus_payload: bytes) -> dict:
+    """1.0.0: Network Rail location code (TIPLOC, as in the timetable) -> STANOX, for every place CORPUS knows."""
+    corpus = json.loads(corpus_payload)
+    records = corpus.get('TIPLOCDATA') if isinstance(corpus, dict) else corpus
+    out = {}
+    for item in records if isinstance(records, list) else []:
+        if isinstance(item, dict):
+            stanox, tiploc = str(item.get('STANOX') or '').strip(), str(item.get('TIPLOC') or '').strip().upper()
+            if re.fullmatch(r'\d{3,6}', stanox) and re.fullmatch(r'[A-Z0-9]{3,7}', tiploc):
+                out[tiploc] = stanox.zfill(5)
+    return out
+
+
 def build_lookup(corpus_payload: bytes, naptan_payload: bytes) -> dict:
     corpus = json.loads(corpus_payload)
     records = corpus.get('TIPLOCDATA') if isinstance(corpus, dict) else corpus
@@ -295,9 +309,10 @@ def load_reference() -> None:
     """Use the cached station list if under 7 days old; otherwise rebuild it."""
     try:
         cached = json.loads(REFERENCE_FILE.read_text(encoding='utf-8'))
-        if time.time() - cached.get('builtAt', 0) < REFERENCE_MAX_AGE and len(cached.get('stations', {})) >= 50:
+        if time.time() - cached.get('builtAt', 0) < REFERENCE_MAX_AGE and len(cached.get('stations', {})) >= 50 and cached.get('tiplocs'):
             with LOCK:
                 STATE['stations'] = {k.zfill(5): tuple(v) for k, v in cached['stations'].items()}
+                STATE['tiplocs'] = dict(cached['tiplocs'])
                 STATE['referenceError'] = ''
             return
     except (OSError, ValueError, AttributeError):
@@ -314,16 +329,18 @@ def load_reference() -> None:
         return _ref_fail('naptan-' + type(exc).__name__)
     try:
         stations = build_lookup(corpus, naptan)
+        tiplocs = tiploc_codes(corpus)
     except Exception as exc:
         return _ref_fail('match-' + (str(exc) if isinstance(exc, ValueError) else type(exc).__name__)[:30])
     if len(stations) < 50:
         return _ref_fail('too-few-stations')
     with LOCK:
         STATE['stations'], STATE['referenceError'] = {k.zfill(5): v for k, v in stations.items()}, ''
+        STATE['tiplocs'] = tiplocs
     try:
         DATA.mkdir(parents=True, exist_ok=True)
         tmp = REFERENCE_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'builtAt': time.time(), 'stations': stations}), encoding='utf-8')
+        tmp.write_text(json.dumps({'builtAt': time.time(), 'stations': stations, 'tiplocs': tiplocs}), encoding='utf-8')
         tmp.replace(REFERENCE_FILE)
     except OSError:
         pass
@@ -772,6 +789,41 @@ def uk_today(offset_days: int = 0) -> str:
 STP_RANK = {'O': 3, 'N': 2, 'P': 1}
 # each entry's few fields picked out by pattern (an entry carries every stop, so unpacking each one fully would cost
 # minutes of the server's time every night)
+SCHED_STOP = re.compile(rb'\{[^{}]*"tiploc_code"[^{}]*\}')
+STOP_FIELD = {k: re.compile(rb'"' + k.encode() + rb'"\s*:\s*"([^"]*)"') for k in ('tiploc_code', 'arrival', 'departure', 'pass')}
+
+
+def clock_seconds(hhmm: str):
+    """'1230' -> 45000, '1230H' -> 45030 (seconds after midnight), else None."""
+    m = re.fullmatch(r'([01]\d|2[0-3])([0-5]\d)(H?)', hhmm.strip())
+    return (int(m.group(1)) * 3600 + int(m.group(2)) * 60 + (30 if m.group(3) else 0)) if m else None
+
+
+def booked_stops(line: bytes) -> str:
+    """1.0.0: a timetable entry's places in order, as 'TIPLOC,arrive,leave;...' (seconds after midnight, the next day
+    going past 86400), kept as one short string per train so a whole day fits in a few megabytes."""
+    out, last = [], None
+    for m in SCHED_STOP.finditer(line):
+        obj = m.group(0)
+        def f(k):
+            g = STOP_FIELD[k].search(obj)
+            return g.group(1).decode('ascii', 'replace') if g else ''
+        tiploc = f('tiploc_code').strip().upper()
+        arr, dep, pas = clock_seconds(f('arrival')), clock_seconds(f('departure')), clock_seconds(f('pass'))
+        a, d = (pas, pas) if pas is not None else (arr if arr is not None else dep, dep if dep is not None else arr)
+        if not re.fullmatch(r'[A-Z0-9]{3,7}', tiploc) or a is None:
+            continue
+        if last is not None:
+            while a < last - 6 * 3600:
+                a += 86400
+                d += 86400
+        if d < a:
+            d += 86400
+        last = d
+        out.append(f'{tiploc},{a},{d}')
+    return ';'.join(out[:120])
+
+
 SCHED_FIELD = {k: re.compile(rb'"' + k.encode() + rb'"\s*:\s*"([^"]*)"') for k in (
     'CIF_train_uid', 'CIF_stp_indicator', 'schedule_start_date', 'schedule_end_date', 'schedule_days_runs',
     'transaction_type', 'CIF_power_type', 'CIF_timing_load', 'signalling_id', 'atoc_code')}
@@ -825,15 +877,17 @@ def read_schedule(stream, days: list) -> dict:
                 have = best[d].get(uid)
                 if have is None or rank > have[0]:
                     best[d][uid] = (rank, clean(field('CIF_power_type'), 3).strip().upper(), clean(field('CIF_timing_load'), 4).strip().upper(),
-                                    clean(field('signalling_id'), 4).strip().upper(), clean(field('atoc_code'), 2).strip().upper())
+                                    clean(field('signalling_id'), 4).strip().upper(), clean(field('atoc_code'), 2).strip().upper(),
+                                    booked_stops(line) if d == days[0] else '')
     if gz and unzip is not None:
         rest += unzip.flush()
     out = {d: {uid: [v[1], v[2]] for uid, v in best[d].items() if uid not in cancelled[d] or v[0] > 1} for d in days}
+    out[days[0]]['#stops'] = {uid: v[5] for uid, v in best[days[0]].items() if v[5] and (uid not in cancelled[days[0]] or v[0] > 1)}
     # 0.8.1 (owner 11:57, 1A35 left Piccadilly after the update but showed no class - Network Rail had "activated" it about
     # an hour before it left, before the update): by headcode too. A headcode whose trains that day are all booked the
     # same is enough to know what a train is without its activation (a headcode shared by different types: unknown).
     for d in days:
-        heads = {}
+        heads, uids = {}, {}
         for uid, v in best[d].items():
             if (uid not in cancelled[d] or v[0] > 1) and re.fullmatch(r'[0-9][A-Z][0-9]{2}', v[3]):
                 heads.setdefault(v[3], set()).add((v[1], v[2]))
@@ -841,7 +895,9 @@ def read_schedule(stream, days: list) -> dict:
                 # other trains): headcode + operator too, which is almost always enough
                 if re.fullmatch(r'[A-Z]{2}', v[4]):
                     heads.setdefault(v[3] + '|' + v[4], set()).add((v[1], v[2]))
+                    uids.setdefault(v[3] + '|' + v[4], []).append(uid)
         out[d]['#heads'] = {h: list(next(iter(kinds))) for h, kinds in heads.items() if len(kinds) == 1}
+        out[d]['#uidOf'] = {h: u[0] for h, u in uids.items() if len(u) == 1}   # 1.0.0: the one train with that headcode + operator
     return out
 
 
@@ -849,10 +905,10 @@ def load_schedule() -> bool:
     days = [uk_today(), uk_today(1)]
     try:
         cached = json.loads(CLASSES_FILE.read_text(encoding='utf-8'))
-        if days[1] in cached.get('days', {}) and cached.get('v') == 2:   # made today by this version: use it
+        if days[1] in cached.get('days', {}) and cached.get('v') == 3:   # made today by this version: use it
             BOOKED.clear(); BOOKED.update(cached['days'])
             with LOCK:
-                STATE.update(bookedDays=sorted(BOOKED), bookedTrains=max(0, len(BOOKED.get(days[0], {})) - 1), scheduleError='',
+                STATE.update(bookedDays=sorted(BOOKED), bookedTrains=max(0, len(BOOKED.get(days[0], {})) - 3), scheduleError='',
                              scheduleBuiltAt=cached.get('builtAt', 0.0))
             return True
     except (OSError, ValueError, AttributeError, TypeError):
@@ -885,22 +941,22 @@ def load_schedule() -> bool:
         with LOCK:
             STATE['scheduleError'] = ('schedule-' + type(exc).__name__)[:40]
         return False
-    if len(booked.get(days[0], {})) < 2:
+    if len(booked.get(days[0], {})) < 4:
         with LOCK:
             STATE['scheduleError'] = 'schedule-empty'
         return False
     BOOKED.clear(); BOOKED.update(booked)
     built = time.time()
     with LOCK:
-        STATE.update(bookedDays=sorted(BOOKED), bookedTrains=len(booked[days[0]]) - 1, scheduleError='', scheduleBuiltAt=built)
+        STATE.update(bookedDays=sorted(BOOKED), bookedTrains=len(booked[days[0]]) - 3, scheduleError='', scheduleBuiltAt=built)
     try:
         DATA.mkdir(parents=True, exist_ok=True)
         tmp = CLASSES_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'v': 2, 'builtAt': built, 'days': booked}), encoding='utf-8')
+        tmp.write_text(json.dumps({'v': 3, 'builtAt': built, 'days': booked}), encoding='utf-8')
         tmp.replace(CLASSES_FILE)
     except OSError:
         pass
-    print(f'Timetable ready: {len(booked[days[0]]) - 1} trains booked today, with what each is booked to be', flush=True)
+    print(f'Timetable ready: {len(booked[days[0]]) - 3} trains booked today, with what each is booked to be and where it goes', flush=True)
     return True
 
 
@@ -996,6 +1052,126 @@ def settle_arrivals(now: float) -> None:
                 arrive_now(t, t['arrivingAt'], t['arriveBy'], now)
             else:
                 t['arrivingAt'] = ''
+
+
+# ---------------------------------------------------------------- 1.0.0: carrying on along the booked route
+# (owner 5 Nov 12:27, 1A36 south of Stockport: "sat for a minute or more then reappeared a couple of miles down the
+# track" - Network Rail only reports some trains at a few points, so the map ran out of road at the last one). Once a
+# train has reached the last place it was reported heading for, it carries on along its booked route at its booked
+# times (shifted by how late it is), place by place, until the next real report takes over - for up to 20 minutes.
+ONWARD_LIMIT = 20 * 60
+STOPS_CACHE = {}
+
+
+def uk_midnight(day: str) -> float:
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=ZoneInfo('Europe/London')).timestamp()
+    except Exception:
+        return datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()
+
+
+def train_uid(t: dict) -> str:
+    if t.get('uid'):
+        return t['uid']
+    atoc = ATOC_OF.get(t.get('toc', ''), '')
+    if not (atoc and t.get('headcode')):
+        return ''
+    return ((BOOKED.get(uk_today()) or {}).get('#uidOf') or {}).get(t['headcode'] + '|' + atoc, '')
+
+
+def stops_of(uid: str):
+    got = STOPS_CACHE.get(uid)
+    if got is None:
+        text = ((BOOKED.get(uk_today()) or {}).get('#stops') or {}).get(uid, '')
+        got = []
+        for part in text.split(';') if text else []:
+            try:
+                tiploc, a, d = part.split(',')
+                got.append((tiploc, int(a), int(d)))
+            except ValueError:
+                continue
+        if len(STOPS_CACHE) > 20000:
+            STOPS_CACHE.clear()
+        STOPS_CACHE[uid] = got
+    return got
+
+
+def place(tiploc: str):
+    stanox = STATE['tiplocs'].get(tiploc, '')
+    spot = (STATE['stations'] or {}).get(stanox) or STATE['points'].get(stanox)
+    return (spot[0], spot[1], spot[2], stanox) if spot else None
+
+
+def index_of(stops, stanox: str, after: int = -1):
+    for i in range(after + 1, len(stops)):
+        if STATE['tiplocs'].get(stops[i][0]) == stanox:
+            return i
+    return None
+
+
+def plan_onwards(t: dict, now: float):
+    """The leg of its booked route the train is on now, when real reports have run out (None otherwise)."""
+    if now - t['when'] > ONWARD_LIMIT or t.get('cancelled') or t.get('terminated'):
+        return None
+    leg = t.get('vleg')
+    if leg and now < leg['end']:
+        return leg
+    uid = train_uid(t)
+    stops = stops_of(uid) if uid else []
+    if len(stops) < 2:
+        return None
+    if leg:                                                         # finished a timetable leg: on to the next place
+        idx, reached = leg['idx'], leg['end']
+    elif t['event'] == 'DEPARTURE' and t.get('run'):
+        reached = t.get('arriveBy') or (t['when'] + t['run'] * 60)
+        if now < reached or not t.get('nstanox'):
+            return None                                             # still on the leg Network Rail told us about
+        idx = index_of(stops, t['nstanox'], (index_of(stops, t.get('stanox', '')) or 0) - 1 if t.get('stanox') else -1)
+    else:                                                           # standing, or just passed a point
+        idx, reached = index_of(stops, t.get('stanox', '')), t['when']
+    if idx is None or idx >= len(stops) - 1:
+        return None
+    base = uk_midnight(t.get('day') or uk_today())
+    delay = t['minutes'] * 60 * (1 if t['variation'] == 'LATE' else -1 if t['variation'] == 'EARLY' else 0)
+    here = place(stops[idx][0])
+    j = idx + 1
+    while j < len(stops) and j <= idx + 8 and place(stops[j][0]) is None:
+        j += 1
+    there = place(stops[j][0]) if j < len(stops) else None
+    if not here or not there:
+        return None
+    booked = max(20, stops[j][1] - stops[idx][2])
+    calls = stops[idx][2] > stops[idx][1]                           # a station it stops at: waits for its booked time
+    start = max(reached, base + stops[idx][2] + delay) if calls else reached
+    end = max(start + 20, base + stops[j][1] + delay)               # due at the next place at its booked time + lateness
+    if end - start > 3 * booked:                                    # (never crawling: booked running time at most x3)
+        end = start + booked
+    if start - now > 30 * 60:
+        return None
+    return {'from': [here[0], here[1]], 'fromName': here[2], 'to': [there[0], there[1]], 'toName': there[2],
+            'toStanox': there[3], 'start': start, 'end': end, 'idx': j}
+
+
+def onward_loop() -> None:
+    while True:
+        time.sleep(5)
+        now = time.time()
+        with LOCK:
+            settle_arrivals(now)
+            n = 0
+            for t in STATE['trains'].values():
+                if now - t['when'] > ONWARD_LIMIT:
+                    t.pop('vleg', None)
+                    continue
+                leg = plan_onwards(t, now)
+                if leg:
+                    t['vleg'] = leg
+                    n += 1
+                else:
+                    t.pop('vleg', None)
+            STATE['onTimetable'] = n
+            STATE['routesToday'] = len(((BOOKED.get(uk_today()) or {}).get('#stops') or {}))
 
 
 def handle_td(item: dict, now: float) -> None:
@@ -1313,7 +1489,10 @@ def details(entity_id: str) -> dict:
         add('Running', f"{t['minutes']} min early")
     elif t['variation'] == 'ON TIME':
         add('Running', 'On time')
-    if t.get('run') and t.get('nname') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
+    leg = t.get('vleg')
+    if leg:
+        add('Now (estimated)', f"Following its timetable towards {leg['toName']}, about {uk_clock(leg['end'])}")
+    elif t.get('run') and t.get('nname') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
         add('Next report', f"{t['nname']}, about {uk_clock(t['when'] + t['run'] * 60)}")
     return out
 
@@ -1369,18 +1548,34 @@ def snapshot(view) -> dict:
             continue
         # 0.4.1: also send a train that is heading INTO this area, so it glides in instead of popping up later.
         heading_in = bool(t.get('run')) and s <= t['nlat'] <= n and w <= t['nlon'] <= e
+        leg = t.get('vleg')
+        if leg:                                   # 1.0.0: following its timetable - in view if either end is
+            heading_in = any(s <= p[0] <= n and w <= p[1] <= e for p in (leg['from'], leg['to']))
         if (s <= t['lat'] <= n and w <= t['lon'] <= e) or heading_in:
             inside.append(((t['lat'] - clat) ** 2 + (t['lon'] - clon) ** 2, tid, t, age))
     inside.sort(key=lambda x: x[0])
     on_platform = 0
     for _, tid, t, age in inside[:MAX_PER_VIEW]:
         drawn = drawn_at(t)              # 0.7.0: beside its platform when we know it
+        leg = t.get('vleg')
+        if leg:
+            drawn = (on_track(leg['from'][1], leg['from'][0]), False)
         on_platform += drawn[1]
         entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
                   'variant': kind_of(t)[0] or None,      # 0.5.0: which of TPA's train drawings to show
                   'position': dict(zip(('lon', 'lat'), drawn[0]), headingDeg=None),
                   'quality': 'observed' if age <= FRESH_FOR and not t.get('cancelled') else 'stale', 'observedAt': iso(t['when'])}
-        if t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
+        if leg and now >= leg['start']:
+            key = (round(leg['from'][0], 5), round(leg['from'][1], 5), round(leg['to'][0], 5), round(leg['to'][1], 5))
+            with LOCK:
+                path = ROUTES.get(key)
+                if path is None and STATE['trackLoaded'] and key not in PENDING_SET and len(PENDING) < 5000:
+                    PENDING.append(key); PENDING_SET.add(key); ROUTE_WAKE.set()
+            if path:
+                entity['observedAt'] = iso(leg['start'])
+                entity['motion'] = {'mode': 'path', 'points': path, 'arriveAt': iso(leg['end']),
+                                    'maxSeconds': round(min(7700, leg['end'] - leg['start'] + 120))}
+        elif t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
             key = leg_key(t)
             with LOCK:
                 path = ROUTES.get(key)
@@ -1452,7 +1647,8 @@ class Handler(BaseHTTPRequestHandler):
                                                        'retimed': STATE['tdRetimed'], 'arrivedEarly': STATE['tdArrived'], 'platforms': STATE['tdPlatforms']},
                                         'timetable': {'days': STATE['bookedDays'], 'trainsToday': STATE['bookedTrains'], 'error': STATE['scheduleError'],
                                                       'builtAt': iso(STATE['scheduleBuiltAt']) if STATE['scheduleBuiltAt'] else None,
-                                                      'activationsSeen': STATE['activations']},
+                                                      'activationsSeen': STATE['activations'], 'routesToday': STATE['routesToday'],
+                                                      'followingTimetableNow': STATE['onTimetable'], 'placeCodesKnown': len(STATE['tiplocs'])},
                                         'platformMap': {'known': STATE['platformsKnown'], 'error': STATE['platformsError'],
                                                         'builtAt': iso(STATE['platformsBuiltAt']) if STATE['platformsBuiltAt'] else None,
                                                         'drawnOnPlatformLastView': STATE['drawnOnPlatform']}})
@@ -1520,6 +1716,7 @@ def main() -> None:
     threading.Thread(target=smart_loop, daemon=True).start()
     threading.Thread(target=platforms_loop, daemon=True).start()
     threading.Thread(target=schedule_loop, daemon=True).start()
+    threading.Thread(target=onward_loop, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA TRAIN ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
