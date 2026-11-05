@@ -16,7 +16,11 @@ const $=id=>document.getElementById(id),root=$('map'),canvas=$('geo-canvas'),ctx
 // vehicle is tapped, big picture buttons, "I can see …" counting, "Ride along!", and a grown-ups button that
 // must be held for 3 seconds. No coffee box (we never ask children for money) and nothing is collected.
 const KIDS=location.pathname==='/kids'||new URLSearchParams(location.search).get('view')==='kids';
-const USER_VIEW=KIDS||location.pathname==='/user'||new URLSearchParams(location.search).get('view')==='user';
+// 4.20.0 (owner 5 Nov 15:26-16:41): the live server makes the main address the user page (data-default-view on the
+// page); the owner's full page, with "Report this", is /full (or ?view=full).
+const VIEW_ASKED=new URLSearchParams(location.search).get('view');
+const FULL_VIEW=!KIDS&&(location.pathname==='/full'||VIEW_ASKED==='full');
+const USER_VIEW=KIDS||(!FULL_VIEW&&(location.pathname==='/user'||VIEW_ASKED==='user'||document.documentElement.dataset.defaultView==='user'));
 if(KIDS){document.documentElement.classList.add('kids-view');}
 if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':'TPA · live UK transport map';
   const h=document.querySelector('.search-panel h2');if(h)h.textContent='FIND A PLACE';
@@ -1434,7 +1438,7 @@ async function loadSiteConfig(){
   if(!cfg||typeof cfg!=='object'||cfg.configVersion!==1)return;
   for(const c of Array.isArray(cfg.credits)?cfg.credits:[]){const l=str(c?.layer,40).toLowerCase(),sh=str(c?.short,40);if(l&&sh)shortCredit[l]=sh;}
   liveCredit();
-  REPORT_ON=cfg.report===true;      // 4.12.0: the "Report this" button, for the testing phase
+  REPORT_ON=cfg.report===true&&!USER_VIEW;      // 4.12.0: the "Report this" button, for the testing phase; 4.20.0: full (full) page only
   const credits=buildCredits(cfg.credits);
   let welcome=null;try{welcome=buildWelcome(cfg.welcome,cfg.tip,credits);}catch(_){}   // 4.5.0: a welcome problem never costs the side menu
   const about=el('section','panel about-panel');about.setAttribute('aria-label','About TPA');

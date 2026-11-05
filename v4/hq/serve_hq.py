@@ -31,10 +31,10 @@ import time
 
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
-PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
+PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.19.0'
+HQ_VERSION = '4.20.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -70,6 +70,9 @@ DISABLE_MAP_NETWORK = os.environ.get('TPA_HQ_DISABLE_MAP_NETWORK', '0') == '1'
 # (its normal, intended use: "no limits on map views or requests"). The route through HQ stays
 # as an automatic backup if the direct route fails. Default "via-hq" keeps the PC unchanged.
 BASEMAP = os.environ.get('TPA_HQ_BASEMAP', 'via-hq').strip().lower()
+# 4.20.0 (owner 5 Nov 15:26-16:41): the live server sets TPA_HQ_DEFAULT_VIEW=user, so the main address is the clean
+# user page; /full (or ?view=full) is the owner's full page with "Report this". Unset = / stays the full page.
+DEFAULT_VIEW = 'user' if os.environ.get('TPA_HQ_DEFAULT_VIEW', '').strip().lower() == 'user' else 'full'
 if BASEMAP not in ('direct', 'via-hq'):
     raise SystemExit('TPA_HQ_BASEMAP must be "direct" or "via-hq"')
 OFM = 'https://tiles.openfreemap.org'
@@ -576,8 +579,15 @@ class HQHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 record_error('openfreemap',sanitized_error(exc),relative[:160])
                 return self.send_error(502,'Map resource unavailable; check hq-map-status')
+        if path=='/' and DEFAULT_VIEW=='user':
+            raw=(ROOT/'index.html').read_bytes().replace(b'<html ',b'<html data-default-view="user" ',1)
+            self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(raw)))
+            self.send_header('Cache-Control','no-cache');self._cache_set=True;self.end_headers()
+            try:self.wfile.write(raw)
+            except (BrokenPipeError,ConnectionResetError):pass
+            return
         if path in PUBLIC:
-            self.path='/index.html' if path in ('/','/user','/kids') else path
+            self.path='/index.html' if path in ('/','/user','/kids','/full') else path
             return super().do_GET()
         return self.send_error(404,'HQ standard-only resource allowlist')
     def do_POST(self):
