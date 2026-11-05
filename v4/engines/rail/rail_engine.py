@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.0.1'
+ENGINE_VERSION = '1.0.2'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -1555,10 +1555,14 @@ def snapshot(view) -> dict:
         if age > DROP_AFTER or (t['terminated'] and age > TERMINATED_KEEP) or (t.get('cancelled') and now - t.get('cancelledAt', 0) > CANCELLED_KEEP):
             continue
         # 0.4.1: also send a train that is heading INTO this area, so it glides in instead of popping up later.
-        heading_in = bool(t.get('run')) and s <= t['nlat'] <= n and w <= t['nlon'] <= e
+        # 1.0.2 (owner 13:25, following 2D47 and zooming in: "it vanished from my screen"): zoomed right in, a train half way
+        # between two places has neither end in view - so a train is sent whenever the stretch it is on crosses the view
+        def crosses(a_lat, a_lon, b_lat, b_lon):
+            return min(a_lat, b_lat) <= n and max(a_lat, b_lat) >= s and min(a_lon, b_lon) <= e and max(a_lon, b_lon) >= w
+        heading_in = bool(t.get('run')) and crosses(t['lat'], t['lon'], t['nlat'], t['nlon'])
         leg = t.get('vleg')
-        if leg:                                   # 1.0.0: following its timetable - in view if either end is
-            heading_in = any(s <= p[0] <= n and w <= p[1] <= e for p in (leg['from'], leg['to']))
+        if leg:                                   # 1.0.0: following its timetable
+            heading_in = crosses(leg['from'][0], leg['from'][1], leg['to'][0], leg['to'][1])
         if (s <= t['lat'] <= n and w <= t['lon'] <= e) or heading_in:
             inside.append(((t['lat'] - clat) ** 2 + (t['lon'] - clon) ** 2, tid, t, age))
     inside.sort(key=lambda x: x[0])
@@ -1646,6 +1650,9 @@ class Handler(BaseHTTPRequestHandler):
                                         'trainsRestoredAtStart': STATE['restored'], 'alwaysOn': ALWAYS_ON,
                                         'trackMapLoaded': STATE['trackLoaded'], 'trackRoutesKnown': sum(1 for v in ROUTES.values() if v),
                                         'trackRoutesWaiting': len(PENDING), 'trackError': STATE['trackError'],
+                                        # 1.0.2 (owner 13:05, 1W16 sat at Stockport): how often no track route is found, with examples
+                                        'trackRoutesFailed': sum(1 for v in ROUTES.values() if v is False),
+                                        'trackRoutesFailedExamples': [failed_example(k) for k, v in list(ROUTES.items())[-400:] if v is False][-8:],
                                         'cancellationsSeen': STATE['cancelledSeen'], 'reinstatementsSeen': STATE['reinstatedSeen'],
                                         'movementsReceived': STATE['movements'], 'movementsAtUnmappedLocations': STATE['unplaced'],
                                         'feedKBThisRun': STATE['bytes'] // 1024,
@@ -1675,6 +1682,17 @@ class Handler(BaseHTTPRequestHandler):
 
 def leg_key(t: dict):
     return (round(t['lat'], 5), round(t['lon'], 5), round(t['nlat'], 5), round(t['nlon'], 5))
+
+
+def failed_example(key) -> str:
+    """'Stockport -> Heaton Norris Jn' for a leg with no track route (names from the places we know)."""
+    def name(lat, lon):
+        for table in ((STATE['stations'] or {}), STATE['points']):
+            for v in table.values():
+                if abs(v[0] - lat) < 2e-5 and abs(v[1] - lon) < 2e-5:
+                    return v[2]
+        return f'{lat:.4f},{lon:.4f}'
+    return f'{name(key[0], key[1])} -> {name(key[2], key[3])}'
 
 
 def route_loop() -> None:
