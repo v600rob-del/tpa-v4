@@ -106,3 +106,4 @@ h1 em{color:var(--amber)}
 .detail-picture svg{width:150px;height:auto;fill:#f2f7fb}
 .detail-picture svg .acc{fill:var(--amber)}
 .detail-picture.wide svg{width:230px}   /* 4.17.0: the class drawings are long and low */
+.marker-layer .review-pin.rail.face-left svg,.review-pin.rail.face-left svg{transform:scaleX(-1)}   /* 4.18.0: a train heading west faces left (its headcode board is not mirrored) */

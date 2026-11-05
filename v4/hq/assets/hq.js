@@ -454,7 +454,11 @@ function markers(){
     const prefix=state.live[e.component]?'':'MOCK ';
     const glideWanted=!REDUCED&&!mapMoving&&!!pin0(k)&&(pos.est||blends.has(k)||(state.live[e.component]&&!!e.motion));
     const canGlide=glideWanted&&glideOK.has(k)&&!viewMoved,glide=canGlide&&!pos.hop;
-    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}`;
+    // 4.18.0 (owner 5 Nov 12:09: 1D86 going left and 1M08 going right "both give the impression of travelling right"):
+    // a side-on train faces the way it is going (west-ish: mirrored), and keeps facing that way when it stops
+    if(e.component==='rail'&&!KIDS){const a=estimate(e,now+2000);if(a){const mx=metresXY(pos,a)[0];if(Math.abs(mx)>2){if(FACE.size>5000)FACE.clear();FACE.set(k,mx<0);}}}
+    const faceLeft=e.component==='rail'&&FACE.get(k)===true;
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
     // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
     // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
     const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id;
@@ -500,7 +504,7 @@ let stackOf=new Map(),stackNow=[];  // vehicle key -> group id (last paint); gro
 // 4.15.4 (owner 4 Nov 11:30: trains piled at a station - "you can only click on ... the top one"): vehicles that sit
 // on (almost) the same spot and are not in a badge are spread into a small ring round that spot, so each one can be
 // seen and clicked. Drawing only - their real positions are unchanged; the ring keeps its order (by id), so it is calm.
-const FAN_NEAR=6,FAN={off:new Map(),t:0};
+const FAN_NEAR=6,FAN={off:new Map(),t:0},FACE=new Map();   // FACE: train key -> true when last seen going west-ish
 function fanOut(items,grouped,now){
   // trains only (owner 4 Nov 11:30, trains piled at a station): buses are signed off as they are, and other layers
   // use a vehicle on the same spot as a marker. Only trains standing still (at a platform): two passing do not jump apart.
