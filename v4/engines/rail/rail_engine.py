@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.8.1'
+ENGINE_VERSION = '0.8.2'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -773,7 +773,7 @@ STP_RANK = {'O': 3, 'N': 2, 'P': 1}
 # minutes of the server's time every night)
 SCHED_FIELD = {k: re.compile(rb'"' + k.encode() + rb'"\s*:\s*"([^"]*)"') for k in (
     'CIF_train_uid', 'CIF_stp_indicator', 'schedule_start_date', 'schedule_end_date', 'schedule_days_runs',
-    'transaction_type', 'CIF_power_type', 'CIF_timing_load', 'signalling_id')}
+    'transaction_type', 'CIF_power_type', 'CIF_timing_load', 'signalling_id', 'atoc_code')}
 
 
 def read_schedule(stream, days: list) -> dict:
@@ -824,7 +824,7 @@ def read_schedule(stream, days: list) -> dict:
                 have = best[d].get(uid)
                 if have is None or rank > have[0]:
                     best[d][uid] = (rank, clean(field('CIF_power_type'), 3).strip().upper(), clean(field('CIF_timing_load'), 4).strip().upper(),
-                                    clean(field('signalling_id'), 4).strip().upper())
+                                    clean(field('signalling_id'), 4).strip().upper(), clean(field('atoc_code'), 2).strip().upper())
     if gz and unzip is not None:
         rest += unzip.flush()
     out = {d: {uid: [v[1], v[2]] for uid, v in best[d].items() if uid not in cancelled[d] or v[0] > 1} for d in days}
@@ -836,6 +836,10 @@ def read_schedule(stream, days: list) -> dict:
         for uid, v in best[d].items():
             if (uid not in cancelled[d] or v[0] > 1) and re.fullmatch(r'[0-9][A-Z][0-9]{2}', v[3]):
                 heads.setdefault(v[3], set()).add((v[1], v[2]))
+                # 0.8.2 (owner 12:16, 1A36 Avanti out of Piccadilly: no type - other operators also run a "1A36" today with
+                # other trains): headcode + operator too, which is almost always enough
+                if re.fullmatch(r'[A-Z]{2}', v[4]):
+                    heads.setdefault(v[3] + '|' + v[4], set()).add((v[1], v[2]))
         out[d]['#heads'] = {h: list(next(iter(kinds))) for h, kinds in heads.items() if len(kinds) == 1}
     return out
 
@@ -844,7 +848,7 @@ def load_schedule() -> bool:
     days = [uk_today(), uk_today(1)]
     try:
         cached = json.loads(CLASSES_FILE.read_text(encoding='utf-8'))
-        if days[1] in cached.get('days', {}) and '#heads' in cached['days'][days[1]]:   # made today by this version: use it
+        if days[1] in cached.get('days', {}) and cached.get('v') == 2:   # made today by this version: use it
             BOOKED.clear(); BOOKED.update(cached['days'])
             with LOCK:
                 STATE.update(bookedDays=sorted(BOOKED), bookedTrains=max(0, len(BOOKED.get(days[0], {})) - 1), scheduleError='',
@@ -891,7 +895,7 @@ def load_schedule() -> bool:
     try:
         DATA.mkdir(parents=True, exist_ok=True)
         tmp = CLASSES_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'builtAt': built, 'days': booked}), encoding='utf-8')
+        tmp.write_text(json.dumps({'v': 2, 'builtAt': built, 'days': booked}), encoding='utf-8')
         tmp.replace(CLASSES_FILE)
     except OSError:
         pass
@@ -930,8 +934,10 @@ def booked_class(t: dict):
     entry = None
     if uid:
         entry = (BOOKED.get(day) or {}).get(uid) or (BOOKED.get(uk_today()) or {}).get(uid)
-    if not entry and t.get('headcode'):      # 0.8.1: no activation seen - its headcode, if that tells us for sure
-        entry = ((BOOKED.get(uk_today()) or {}).get('#heads') or {}).get(t['headcode'])
+    if not entry and t.get('headcode'):      # 0.8.1: no activation seen - its headcode (+ operator), if that tells us for sure
+        heads = (BOOKED.get(uk_today()) or {}).get('#heads') or {}
+        atoc = ATOC_OF.get(t.get('toc', ''), '')
+        entry = (heads.get(t['headcode'] + '|' + atoc) if atoc else None) or heads.get(t['headcode'])
     if not entry or entry[0] == '#':
         return '', ''
     power, load = entry
@@ -1212,6 +1218,12 @@ def uk_clock(ts: float) -> str:
         return datetime.fromtimestamp(ts, ZoneInfo('Europe/London')).strftime('%H:%M')
     except Exception:
         return time.strftime('%H:%M', time.localtime(ts))
+
+
+# TRUST's two-digit operator code -> the timetable's two-letter operator code (passenger operators; Open Rail Data wiki)
+ATOC_OF = {'06': 'ES', '20': 'TP', '21': 'LE', '22': 'GC', '23': 'NT', '25': 'GW', '27': 'XC', '28': 'EM', '29': 'LM',
+           '30': 'LO', '33': 'XR', '35': 'CS', '45': 'LD', '55': 'HT', '60': 'SR', '61': 'GR', '64': 'ME', '65': 'VT',
+           '71': 'AW', '74': 'CH', '79': 'CC', '80': 'SE', '84': 'SW', '85': 'IL', '86': 'HX'}
 
 
 def kind_of(t: dict):
