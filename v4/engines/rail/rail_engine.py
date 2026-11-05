@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.8.0'
+ENGINE_VERSION = '0.8.1'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -773,7 +773,7 @@ STP_RANK = {'O': 3, 'N': 2, 'P': 1}
 # minutes of the server's time every night)
 SCHED_FIELD = {k: re.compile(rb'"' + k.encode() + rb'"\s*:\s*"([^"]*)"') for k in (
     'CIF_train_uid', 'CIF_stp_indicator', 'schedule_start_date', 'schedule_end_date', 'schedule_days_runs',
-    'transaction_type', 'CIF_power_type', 'CIF_timing_load')}
+    'transaction_type', 'CIF_power_type', 'CIF_timing_load', 'signalling_id')}
 
 
 def read_schedule(stream, days: list) -> dict:
@@ -823,20 +823,31 @@ def read_schedule(stream, days: list) -> dict:
                 rank = STP_RANK.get(stp, 0)
                 have = best[d].get(uid)
                 if have is None or rank > have[0]:
-                    best[d][uid] = (rank, clean(field('CIF_power_type'), 3).strip().upper(), clean(field('CIF_timing_load'), 4).strip().upper())
+                    best[d][uid] = (rank, clean(field('CIF_power_type'), 3).strip().upper(), clean(field('CIF_timing_load'), 4).strip().upper(),
+                                    clean(field('signalling_id'), 4).strip().upper())
     if gz and unzip is not None:
         rest += unzip.flush()
-    return {d: {uid: [v[1], v[2]] for uid, v in best[d].items() if uid not in cancelled[d] or v[0] > 1} for d in days}
+    out = {d: {uid: [v[1], v[2]] for uid, v in best[d].items() if uid not in cancelled[d] or v[0] > 1} for d in days}
+    # 0.8.1 (owner 11:57, 1A35 left Piccadilly after the update but showed no class - Network Rail had "activated" it about
+    # an hour before it left, before the update): by headcode too. A headcode whose trains that day are all booked the
+    # same is enough to know what a train is without its activation (a headcode shared by different types: unknown).
+    for d in days:
+        heads = {}
+        for uid, v in best[d].items():
+            if (uid not in cancelled[d] or v[0] > 1) and re.fullmatch(r'[0-9][A-Z][0-9]{2}', v[3]):
+                heads.setdefault(v[3], set()).add((v[1], v[2]))
+        out[d]['#heads'] = {h: list(next(iter(kinds))) for h, kinds in heads.items() if len(kinds) == 1}
+    return out
 
 
 def load_schedule() -> bool:
     days = [uk_today(), uk_today(1)]
     try:
         cached = json.loads(CLASSES_FILE.read_text(encoding='utf-8'))
-        if days[1] in cached.get('days', {}):        # made today (it already knows tomorrow): use it
+        if days[1] in cached.get('days', {}) and '#heads' in cached['days'][days[1]]:   # made today by this version: use it
             BOOKED.clear(); BOOKED.update(cached['days'])
             with LOCK:
-                STATE.update(bookedDays=sorted(BOOKED), bookedTrains=len(BOOKED.get(days[0], {})), scheduleError='',
+                STATE.update(bookedDays=sorted(BOOKED), bookedTrains=max(0, len(BOOKED.get(days[0], {})) - 1), scheduleError='',
                              scheduleBuiltAt=cached.get('builtAt', 0.0))
             return True
     except (OSError, ValueError, AttributeError, TypeError):
@@ -869,14 +880,14 @@ def load_schedule() -> bool:
         with LOCK:
             STATE['scheduleError'] = ('schedule-' + type(exc).__name__)[:40]
         return False
-    if len(booked.get(days[0], {})) < 1:
+    if len(booked.get(days[0], {})) < 2:
         with LOCK:
             STATE['scheduleError'] = 'schedule-empty'
         return False
     BOOKED.clear(); BOOKED.update(booked)
     built = time.time()
     with LOCK:
-        STATE.update(bookedDays=sorted(BOOKED), bookedTrains=len(booked[days[0]]), scheduleError='', scheduleBuiltAt=built)
+        STATE.update(bookedDays=sorted(BOOKED), bookedTrains=len(booked[days[0]]) - 1, scheduleError='', scheduleBuiltAt=built)
     try:
         DATA.mkdir(parents=True, exist_ok=True)
         tmp = CLASSES_FILE.with_suffix('.tmp')
@@ -884,7 +895,7 @@ def load_schedule() -> bool:
         tmp.replace(CLASSES_FILE)
     except OSError:
         pass
-    print(f'Timetable ready: {len(booked[days[0]])} trains booked today, with what each is booked to be', flush=True)
+    print(f'Timetable ready: {len(booked[days[0]]) - 1} trains booked today, with what each is booked to be', flush=True)
     return True
 
 
@@ -916,10 +927,12 @@ POWER = {'D': 'diesel locomotive', 'E': 'electric locomotive', 'ED': 'electro-di
 def booked_class(t: dict):
     """(what it is, which drawing) from its timetable entry, or ('', '')."""
     uid, day = t.get('uid'), t.get('day')
-    if not uid:
-        return '', ''
-    entry = (BOOKED.get(day) or {}).get(uid) or (BOOKED.get(uk_today()) or {}).get(uid)
-    if not entry:
+    entry = None
+    if uid:
+        entry = (BOOKED.get(day) or {}).get(uid) or (BOOKED.get(uk_today()) or {}).get(uid)
+    if not entry and t.get('headcode'):      # 0.8.1: no activation seen - its headcode, if that tells us for sure
+        entry = ((BOOKED.get(uk_today()) or {}).get('#heads') or {}).get(t['headcode'])
+    if not entry or entry[0] == '#':
         return '', ''
     power, load = entry
     if power == 'HST':
