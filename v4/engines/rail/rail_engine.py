@@ -52,7 +52,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '0.7.0'
+ENGINE_VERSION = '0.7.1'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -75,10 +75,18 @@ MAX_SMART = 150_000_000
 # each platform is, from OpenStreetMap (railway=platform with its number in ref/local_ref), fetched once a month from the
 # public Overpass service and kept on our own server. A train standing at a station with a known platform number is drawn
 # on the track beside that platform instead of on the station's dot.
-OVERPASS_URL = 'https://overpass-api.de/api/interpreter'
-OVERPASS_QUERY = ('[out:json][timeout:300];area["ISO3166-1"="GB"][admin_level=2]->.gb;'
-                  '(way["railway"="platform"](area.gb);relation["railway"="platform"](area.gb);'
-                  'way["public_transport"="platform"]["train"="yes"](area.gb););out center tags;')
+# 0.7.1 (owner 10:39: "platforms-http-502" - the public Overpass service was too busy for one Britain-wide question):
+# Britain is asked for in five strips, from the main service or one of two other free copies of it, and a failure is
+# tried again after 30 minutes (not 6 hours).
+OVERPASS_URLS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter',
+                 'https://overpass.kumi.systems/api/interpreter']
+OVERPASS_STRIPS = [(49.8, 51.5), (51.5, 52.5), (52.5, 53.5), (53.5, 55.0), (55.0, 61.0)]
+
+
+def overpass_query(south: float, north: float) -> str:
+    box = f'{south},-8.7,{north},2.0'
+    return (f'[out:json][timeout:180];(way["railway"="platform"]({box});relation["railway"="platform"]({box});'
+            f'way["public_transport"="platform"]["train"="yes"]({box}););out center tags;')
 MAX_PLATFORMS_FILE = 80_000_000
 PLATFORM_REACH_KM = 0.6
 CORPUS_URL = 'https://publicdatafeeds.networkrail.co.uk/ntrod/SupportingFileAuthenticate?type=CORPUS'
@@ -119,7 +127,7 @@ if _t_stomp:
 CORPUS_SRC = _t_corpus or CORPUS_URL
 NAPTAN_SRC = _t_naptan or NAPTAN_URL
 SMART_SRC = _t_smart or SMART_URL
-OVERPASS_SRC = _t_overpass or OVERPASS_URL
+OVERPASS_SRCS = [_t_overpass] if _t_overpass else OVERPASS_URLS
 DATA = Path(os.environ.get('TPA_RAIL_DATA_DIR') or (Path(os.environ.get('LOCALAPPDATA') or tempfile.gettempdir()) / 'TPA' / 'rail-engine'))
 REFERENCE_FILE = DATA / 'station-reference.json'
 MEMORY_FILE = DATA / 'trains-last-30-min.json'
@@ -639,17 +647,28 @@ def load_platforms() -> bool:
             return True
     except (OSError, ValueError, AttributeError, TypeError):
         pass
-    try:
-        url = OVERPASS_SRC + '?' + urllib.parse.urlencode({'data': OVERPASS_QUERY})
-        rows = build_platforms(_download(url, MAX_PLATFORMS_FILE, timeout=360))
-    except urllib.error.HTTPError as exc:
-        with LOCK:
-            STATE['platformsError'] = f'platforms-http-{exc.code}'
-        return False
-    except Exception as exc:
-        with LOCK:
-            STATE['platformsError'] = ('platforms-' + type(exc).__name__)[:40]
-        return False
+    rows, seen = [], set()
+    for south, north in OVERPASS_STRIPS:
+        got, problem = None, ''
+        for src in OVERPASS_SRCS:
+            try:
+                url = src + '?' + urllib.parse.urlencode({'data': overpass_query(south, north)})
+                got = build_platforms(_download(url, MAX_PLATFORMS_FILE, timeout=240))
+                break
+            except urllib.error.HTTPError as exc:
+                problem = f'platforms-http-{exc.code}'
+            except Exception as exc:
+                problem = ('platforms-' + type(exc).__name__)[:40]
+            time.sleep(2)
+        if got is None:
+            with LOCK:
+                STATE['platformsError'] = problem
+            return False
+        for row in got:
+            key = (row[0], row[1])
+            if key not in seen:
+                seen.add(key)
+                rows.append(row)
     if len(rows) < 2:
         with LOCK:
             STATE['platformsError'] = 'platforms-too-few'
@@ -675,7 +694,7 @@ def platforms_loop() -> None:
             time.sleep(3600)
             continue
         ok = load_platforms()
-        time.sleep(30 * 86400 if ok else 6 * 3600)
+        time.sleep(30 * 86400 if ok else 1800)
 
 
 def platform_spot(stanox: str, platform: str, lat: float, lon: float):
