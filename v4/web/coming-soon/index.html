@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>TPA · Live UK transport, coming soon</title>
+<meta name="description" content="TPA: buses, trains, planes and road traffic moving live on one map of the UK. Free for everyone. Coming soon.">
+<meta name="theme-color" content="#05080e">
+<style>
+/* TPA coming-soon page (kit 4.16). Control-room look: navy-black, departure-board amber, signal teal.
+   Self-contained: own fonts, no outside requests, nothing collected. */
+@font-face{font-family:'TPA Sans';src:url(fonts/Barlow-Regular.woff) format('woff');font-weight:400;font-display:swap}
+@font-face{font-family:'TPA Sans';src:url(fonts/Barlow-SemiBold.woff) format('woff');font-weight:600;font-display:swap}
+@font-face{font-family:'TPA Sign';src:url(fonts/BarlowSemiCondensed-Bold.woff) format('woff');font-weight:700;font-display:swap}
+:root{--bg:#05080e;--panel:#0a111c;--panel2:#0e1826;--line:#1c2a3b;--line2:#2a3c52;--soft:#8597ad;--white:#edf3f9;
+  --amber:#ffb21e;--teal:#2fc7b5;--green:#3fd39a;--purple:#9b7bff;
+  --sign:'TPA Sign','Arial Narrow',Arial,sans-serif;--sans:'TPA Sans',system-ui,-apple-system,'Segoe UI',Arial,sans-serif;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--white);font-family:var(--sans);font-size:16px;line-height:1.55}
+body{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);overflow-x:hidden}
+.wrap{max-width:1100px;margin:0 auto;padding-left:max(18px,env(safe-area-inset-left,0px));padding-right:max(18px,env(safe-area-inset-right,0px))}
+a{color:var(--teal)}
+:focus-visible{outline:2px solid var(--teal);outline-offset:3px}
+
+/* top status strip */
+.strip{border-bottom:1px solid var(--line);background:#070c15}
+.strip .wrap{display:flex;justify-content:space-between;align-items:center;gap:12px;padding-block:10px;font-family:var(--sign);letter-spacing:.16em;font-size:.78rem;color:var(--soft);text-transform:uppercase}
+.onair{display:flex;align-items:center;gap:8px}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 0 rgba(47,199,181,.6);animation:ping 2s infinite}
+@keyframes ping{0%{box-shadow:0 0 0 0 rgba(47,199,181,.55)}70%{box-shadow:0 0 0 9px rgba(47,199,181,0)}100%{box-shadow:0 0 0 0 rgba(47,199,181,0)}}
+  .brand{color:var(--amber);font-weight:700;letter-spacing:.2em;font-size:.95rem;margin-right:6px}
+#clock{font-variant-numeric:tabular-nums;letter-spacing:.1em}
+
+/* hero */
+.hero{padding-block:56px 28px;display:grid;gap:22px;justify-items:start}
+.eyebrow{font-family:var(--sign);letter-spacing:.22em;color:var(--teal);font-size:.85rem;text-transform:uppercase}
+.board{display:flex;flex-wrap:wrap;gap:14px 26px}
+.word{display:flex;gap:6px}
+.flap{display:inline-grid;place-items:center;width:clamp(30px,9vw,62px);height:clamp(44px,12.6vw,86px);background:linear-gradient(#141f2e 0 49%,#0b131f 51% 100%);
+  border:1px solid var(--line2);border-radius:6px;font-family:var(--sign);font-weight:700;font-size:clamp(26px,8.4vw,58px);color:var(--amber);position:relative;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.flap::after{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:#03060b}
+h1{margin:0;font-family:var(--sign);font-weight:700;font-size:clamp(1.9rem,5vw,3.3rem);line-height:1.08;text-wrap:balance;max-width:20ch}
+h1 em{font-style:normal;color:var(--amber)}
+.lead{margin:0;max-width:60ch;color:#c9d4e2;font-size:1.08rem}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{border:1px solid var(--line2);border-radius:999px;padding:6px 12px;font-family:var(--sign);letter-spacing:.12em;font-size:.78rem;color:var(--soft);text-transform:uppercase}
+.chip b{color:var(--amber);font-weight:700}
+
+/* moving line: TPA's own icons glide past */
+.track{position:relative;height:74px;margin-block:8px 6px;border-top:1px dashed var(--line2);border-bottom:1px dashed var(--line2);overflow:hidden}
+.track .rail{position:absolute;left:0;right:0;top:50%;height:2px;background:linear-gradient(90deg,transparent,var(--line2) 10%,var(--line2) 90%,transparent)}
+.mover{position:absolute;top:50%;width:46px;height:46px;margin-top:-23px;left:-60px;animation:glide linear infinite;display:grid;place-items:center;border-radius:12px;border:2px solid currentColor;background:var(--panel)}
+.mover svg{width:30px;height:30px}
+.m1{color:var(--purple);animation-duration:14s}
+.m2{color:var(--green);animation-duration:22s;animation-delay:-8s;border-radius:9px}
+.m3{color:var(--teal);animation-duration:9s;animation-delay:-3s;border-radius:50%;top:28%}
+.m4{color:var(--purple);animation-duration:17s;animation-delay:-12s}
+@keyframes glide{from{transform:translateX(0)}to{transform:translateX(calc(100vw + 120px))}}
+.m3 svg{transform:rotate(90deg)}
+
+/* screen */
+.screen-sec{padding-block:30px}
+.monitor{border:1px solid var(--line2);border-radius:12px;background:var(--panel);padding:10px;box-shadow:0 30px 80px -30px rgba(255,178,30,.18),0 0 0 1px rgba(255,255,255,.02)}
+.monitor .bar{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:4px 6px 10px;font-family:var(--sign);letter-spacing:.14em;font-size:.72rem;color:var(--soft);text-transform:uppercase}
+.monitor .live{color:var(--teal)}
+.monitor img{display:block;width:100%;height:auto;border-radius:8px;border:1px solid var(--line)}
+.caption{margin:10px 2px 0;color:var(--soft);font-size:.82rem}
+
+/* what to expect */
+h2{font-family:var(--sign);font-weight:700;font-size:clamp(1.4rem,3.4vw,2rem);margin:0 0 16px;letter-spacing:.01em}
+.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+@media (max-width:860px){.cards{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:480px){.cards{grid-template-columns:minmax(0,1fr)}}
+.card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px;display:grid;gap:8px;align-content:start}
+.card .ic{width:44px;height:44px;border-radius:10px;display:grid;place-items:center;border:2px solid currentColor;background:var(--bg)}
+.card .ic svg{width:28px;height:28px}
+.card h3{margin:0;font-family:var(--sign);font-weight:700;font-size:1.15rem;letter-spacing:.04em}
+.card p{margin:0;color:#bccadb;font-size:.95rem}
+.soon{opacity:.75}
+.soon .tag{font-family:var(--sign);font-size:.72rem;letter-spacing:.14em;color:var(--amber);text-transform:uppercase}
+
+.promise{padding-block:40px 20px;display:grid;grid-template-columns:minmax(0,1fr) auto;gap:24px;align-items:center}
+@media (max-width:700px){.promise{grid-template-columns:minmax(0,1fr)}}
+.promise ul{margin:0;padding:0;list-style:none;display:grid;gap:10px}
+.promise li{display:flex;gap:10px;align-items:baseline}
+.promise li::before{content:"";flex:none;width:10px;height:10px;border-radius:2px;background:var(--amber);transform:translateY(1px)}
+.geoff{display:flex;gap:14px;align-items:center;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:12px 16px 12px 12px}
+.geoff img{width:72px;height:72px;border-radius:50%;object-fit:cover;border:2px solid var(--amber)}
+.geoff b{font-family:var(--sign);letter-spacing:.06em;color:var(--amber)}
+.geoff span{display:block;color:var(--soft);font-size:.88rem}
+
+footer{border-top:1px solid var(--line);margin-top:30px}
+footer .wrap{padding-block:18px 26px;color:var(--soft);font-size:.82rem;display:flex;flex-wrap:wrap;gap:8px 18px;justify-content:space-between}
+
+@media (prefers-reduced-motion:reduce){.mover,.dot{animation:none}.mover{position:static;margin:0;display:inline-grid}.track{display:flex;gap:16px;align-items:center;justify-content:center;height:auto;padding:12px}.track .rail{display:none}}
+</style>
+</head>
+<body>
+<div class="strip"><div class="wrap">
+  <span class="onair"><b class="brand">TPA</b><span class="dot" aria-hidden="true"></span>Control room warming up</span>
+  <span id="clock" aria-label="Current UK time"></span>
+</div></div>
+
+<main class="wrap">
+  <section class="hero" aria-labelledby="h">
+    <span class="eyebrow">Trains · Planes · Automobiles · and boats</span>
+    <div class="board" id="board" aria-hidden="true"></div>
+    <h1 id="h">The whole of UK transport, <em>moving live</em> on one map.</h1>
+    <p class="lead">Watch buses roll down your street, trains glide into their platforms and planes ease onto the runway, all at once and as near to real time as the data allows. It's nearly ready.</p>
+    <div class="chips"><span class="chip"><b>Free</b> for everyone</span><span class="chip">No app</span><span class="chip">No account</span><span class="chip">No adverts</span></div>
+  </section>
+
+  <div class="track" aria-hidden="true">
+    <div class="rail"></div>
+    <div class="mover m1"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M3 11h18.5c3.6 0 6.2 1.6 7.7 4.6l.9 1.8c.6 1.3-.3 2.6-1.7 2.6H3ZM5 13.2h3v3H5ZM10 13.2h3v3h-3ZM15 13.2h3v3h-3ZM21 13.2h2.6c1.5 0 2.8.8 3.5 2.2l.4.8H21ZM5.4 21.2a1.7 1.7 0 1 0 3.4 0ZM9.8 21.2a1.7 1.7 0 1 0 3.4 0ZM19.4 21.2a1.7 1.7 0 1 0 3.4 0ZM23.8 21.2a1.7 1.7 0 1 0 3.4 0ZM2 23.4h28v1.3H2Z"/><path fill="#ffb21e" d="M3.6 17.4h24.6v1.1H3.6Z"/></svg></div>
+    <div class="mover m2"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z"/><path fill="#ffb21e" d="M9.7 5.7h12.6v1.6H9.7Z"/></svg></div>
+    <div class="mover m3"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z"/></svg></div>
+    <div class="mover m4"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M2 12h17c4.5 0 8.3 2.2 10.6 5.6l.6.9c.5.8-.1 1.7-1 1.7H2ZM4 13.8h12.8v2.3H4ZM19.4 13.8c2.4.2 4.4 1.1 5.9 2.3h-5.9ZM4.3 21.4a1.6 1.6 0 1 0 3.2 0ZM8.3 21.4a1.6 1.6 0 1 0 3.2 0ZM19.3 21.4a1.6 1.6 0 1 0 3.2 0ZM23.3 21.4a1.6 1.6 0 1 0 3.2 0ZM2 23.4h28v1.3H2Z"/><path fill="#ffb21e" d="M26.6 17.2c1.2.4 2.3 1 3 1.6l.6.9c.3.4.1.8-.2 1H26.6Z"/></svg></div>
+  </div>
+
+  <section class="screen-sec" id="preview-sec" aria-labelledby="ph">
+    <h2 id="ph">A first look</h2>
+    <div class="monitor">
+      <div class="bar"><span>TPA · live UK transport map</span><span class="live">● Preview</span></div>
+      <img src="preview.jpg" alt="A preview of TPA: a dark map of the UK with bus, train and plane icons and coloured road traffic" width="1600" height="722" onerror="document.getElementById('preview-sec').hidden=true">
+    </div>
+    <p class="caption">Taken from the test version over York. Map data © OpenStreetMap contributors, map style by OpenFreeMap, traffic flow © TomTom.</p>
+  </section>
+
+  <section aria-labelledby="eh">
+    <h2 id="eh">What you'll see</h2>
+    <div class="cards">
+      <article class="card"><span class="ic" style="color:var(--green)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z"/></svg></span><h3>Buses</h3><p>Buses following their real roads, with where they're heading and their next stop.</p></article>
+      <article class="card"><span class="ic" style="color:var(--purple)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M3 11h18.5c3.6 0 6.2 1.6 7.7 4.6l.9 1.8c.6 1.3-.3 2.6-1.7 2.6H3ZM5 13.2h3v3H5ZM10 13.2h3v3h-3ZM15 13.2h3v3h-3ZM21 13.2h2.6c1.5 0 2.8.8 3.5 2.2l.4.8H21ZM5.4 21.2a1.7 1.7 0 1 0 3.4 0ZM9.8 21.2a1.7 1.7 0 1 0 3.4 0ZM19.4 21.2a1.7 1.7 0 1 0 3.4 0ZM23.8 21.2a1.7 1.7 0 1 0 3.4 0ZM2 23.4h28v1.3H2Z"/></svg></span><h3>Trains</h3><p>Trains gliding along the real tracks, standing at their platforms, with the train type and how late they're running.</p></article>
+      <article class="card"><span class="ic" style="color:var(--teal)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z"/></svg></span><h3>Planes</h3><p>Aircraft over the UK, from airline and aircraft type to the moment they touch down.</p></article>
+      <article class="card"><span class="ic" style="color:var(--amber)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M4 26 12 6h3l-1 6h4l-1-6h3l8 20h-6l-1-5h-6l-1 5Zm9-9h6l-.6-3h-4.8Z"/></svg></span><h3>Road traffic</h3><p>Main roads coloured by how busy they are, refreshed every ten minutes.</p></article>
+    </div>
+    <p class="caption" style="margin-top:12px">Boats are on the list for later.</p>
+  </section>
+
+  <section class="promise" aria-label="Our promise">
+    <ul>
+      <li>Free for everyone, always. Just open the page and watch.</li>
+      <li>Built from official, open transport data, credited in full.</li>
+      <li>Made in Yorkshire by one person who loves watching things move.</li>
+    </ul>
+    <div class="geoff"><img src="geoff.jpg" alt="Geoff, a black and white cat" width="72" height="72"><div><b>Geoff</b><span>Head of quality control. Currently asleep on the keyboard.</span></div></div>
+  </section>
+</main>
+
+<footer><div class="wrap"><span>© TPA · tpalive.co.uk</span><span>Coming soon. Not for planning real journeys.</span></div></footer>
+
+<script>
+(function(){
+  // departure-board letters flip into place
+  var words=['COMING','SOON'], board=document.getElementById('board'), chars='ABCDEFGHIJKLMNOPQRSTUVWXYZ', reduce=matchMedia('(prefers-reduced-motion: reduce)').matches, k=0;
+  words.forEach(function(w){
+    var g=document.createElement('span');g.className='word';board.appendChild(g);
+    w.split('').forEach(function(ch){
+      var f=document.createElement('span');f.className='flap';g.appendChild(f);
+      if(reduce){f.textContent=ch;return;}
+      var n=0,stop=8+(k++)*2;var t=setInterval(function(){f.textContent=n>=stop?ch:chars[(Math.random()*26)|0];if(n++>=stop)clearInterval(t);},55);
+    });
+  });
+  // UK clock in the top strip
+  var c=document.getElementById('clock');
+  function tick(){try{c.textContent=new Date().toLocaleTimeString('en-GB',{timeZone:'Europe/London',hour:'2-digit',minute:'2-digit',second:'2-digit'})+' UK';}catch(e){c.textContent='';}}
+  tick();setInterval(tick,1000);
+})();
+</script>
+</body>
+</html>

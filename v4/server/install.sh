@@ -133,6 +133,8 @@ if [[ "$(/usr/local/bin/caddy version 2>/dev/null | cut -d' ' -f1)" != "v$CADDY_
 fi
 install -d -m 0755 /etc/tpa-web    # no secrets in here; the web front door reads it
 install -m 0644 "$REL/v4/server/Caddyfile" /etc/tpa-web/Caddyfile
+# kit 4.16 (owner 5 Nov 15:50): tpalive.co.uk shows a "coming soon" page until launch (no password, read-only files)
+if [[ -d "$REL/v4/web/coming-soon" ]]; then rm -rf /opt/tpa/soon && cp -r "$REL/v4/web/coming-soon" /opt/tpa/soon && chmod -R a+rX /opt/tpa/soon; fi
 fi
 
 # ---- services ----------------------------------------------------------------------
