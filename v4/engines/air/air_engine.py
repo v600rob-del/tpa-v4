@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.6'
+ENGINE_VERSION = '0.5.7'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -558,7 +558,13 @@ def plan_landing(a) -> None:
     # 0.5.6 (owner 23:59, DHK457 into East Midlands: last heard at "2,200 ft" about 3 miles out, then "stayed at 160mph until
     # the end of the runway"): the height planes send is set for standard air pressure, so on a low-pressure night a plane
     # on its final approach can read well over 1,000 ft. Any plane under APPROACH_FEET coming down towards an airport counts.
-    if a['ground'] or a['alt'] is None or a['alt'] >= APPROACH_FEET or (a.get('climb') is None or a['climb'] > -300) \
+    climb = a.get('climb')
+    # 0.5.7 (owner 5 Nov 00:05, RYR2CF at Liverpool: "exact to the runway, ran to end at 131mph then appeared again mid
+    # runway"): last heard just as it touched down - levelling off (not "coming down" any more), and already over the
+    # airfield. Very low and not climbing counts as landing too, and an airfield just behind still counts.
+    coming_down = climb is not None and climb <= -300
+    touching = a['alt'] is not None and a['alt'] < LOW_FEET and (climb is None or climb <= 0)
+    if a['ground'] or a['alt'] is None or a['alt'] >= APPROACH_FEET or not (coming_down or touching) \
             or a['heading'] is None or not a.get('speed') or a['speed'] < 30:
         return
     h = math.radians(a['heading'])
@@ -570,11 +576,13 @@ def plan_landing(a) -> None:
         east = (lon - a['lon']) * 111195 * math.cos(math.radians(a['lat']))
         along = east * math.sin(h) + north * math.cos(h)
         across = abs(east * math.cos(h) - north * math.sin(h))
-        if 0 < along < 22000 and across < max(1500, along * 0.25) and (best is None or along < best):
+        reach = 22000 if coming_down else 3000     # levelling off: only right over the airfield
+        if -2500 < along < reach and across < max(1500, along * 0.25) and (best is None or abs(along) < abs(best)):
             best = along
     if best is None:
         return
-    length = best + 600                       # the roll ends a little past the middle of the airfield
+    # the roll ends a little past the middle of the airfield - or, already past it, after braking (about 1.5 m/s each second)
+    length = max(best + 600, a['speed'] ** 2 / 3.0)
     R = 6371000
     end = [round(a['lon'] + length * math.sin(h) / (R * math.cos(math.radians(a['lat']))) * 180 / math.pi, 6),
            round(a['lat'] + length * math.cos(h) / R * 180 / math.pi, 6)]
