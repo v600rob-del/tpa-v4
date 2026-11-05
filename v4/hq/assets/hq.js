@@ -202,6 +202,12 @@ async function loadDetails(e,box){
   // the next stop changes as the vehicle moves: ask again while it stays selected
   detailsTimer=setTimeout(()=>{if(state.selected&&state.selected.id===e.id&&box.isConnected)loadDetails(e,box);},20000);
 }
+// 4.17.1 (owner 5 Nov 11:42, train 1R62: title "departed Manchester Piccadilly" while the box said "Arrived at Manchester
+// Oxford Road"): an open box's title follows the vehicle's latest description, like the rest of the box.
+function liveTitle(id,f){const s=state.selected;if(!s||KIDS||s.component!==id)return;
+  const e=f.entities.find(x=>x.id===s.id);if(!e||typeof e.label!=='string'||e.label===s.label)return;
+  s.label=e.label;const t=selected.querySelector('.box-title');
+  if(t&&t.lastChild&&t.lastChild.nodeType===3)t.lastChild.textContent=' '+e.label;}
 function selectEntity(e){
   if(KIDS)return kidsBubble(e);
   state.selected=e;
@@ -1027,7 +1033,7 @@ async function getComponent(id){
     // Once a new manifest has removed a component, ignore late responses.
     if(state.status[id]==='not_installed'||state.parked[id])return;
     if(f.health==='not_installed'){delete state.frames[id];deselectComponent(id);}
-    else state.frames[id]=f;
+    else {state.frames[id]=f;liveTitle(id,f);}
     state.status[id]=f.health;
     if(f.health!=='ready')deselectComponent(id);
     // 4.0.11: a live socket that is still loading this area is asked again soon,
