@@ -1,0 +1,1 @@
+TPA map icons (assets/icons/*.webp): front-on bus and train, made by Rob Burnett (TPA) with ChatGPT image generation, 5 Nov 2026; cleaned and sized for TPA. Originals: v4/design/icons (private).

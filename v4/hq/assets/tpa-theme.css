@@ -111,3 +111,7 @@ h1 em{color:var(--amber)}
 /* 4.21.0: the detailed train pictures sit on a light "showroom" panel, bigger than the old drawings */
 .detail-picture.photo{height:auto;aspect-ratio:9/5;padding:6px;background:radial-gradient(ellipse at 50% 35%,#ffffff 0,#eef2f7 60%,#dfe5ed 100%);border-color:#cfd8e3}
 .detail-picture.photo img{display:block;width:100%;height:100%;object-fit:contain}
+
+/* 4.21.2: the owner's front-on bus and train pictures sit inside the frame (option B), sized with the zoom like the drawings */
+.review-pin .pic-icon{display:block;width:30px;height:30px;object-fit:contain;pointer-events:none;user-select:none;filter:drop-shadow(0 1px 1px #0007)}
+.marker-layer .review-pin.bus .pic-icon,.marker-layer .review-pin.rail .pic-icon{width:calc(34px*var(--pin-s,1));height:calc(34px*var(--pin-s,1))}

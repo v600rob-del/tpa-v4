@@ -155,6 +155,7 @@ const KID_ART={
   air:'<svg viewBox="0 0 64 48" focusable="false"><path d="M7 24 L3 8 L17 21 Z" fill="#ff6b6b" stroke="#c74343" stroke-width="1.5" stroke-linejoin="round"/><ellipse cx="32" cy="26" rx="27" ry="9.5" fill="#fff" stroke="#3d8bd9" stroke-width="2"/><path d="M25 27 L38 43 L45 43 L39 27 Z" fill="#3d8bd9"/><circle cx="20" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="26" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="32" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="50" cy="21.5" r="3.2" fill="#fff" stroke="#3d8bd9" stroke-width="1.2"/><circle cx="50.8" cy="21.8" r="1.6" fill="#222"/><path d="M48 29 q4 3 8 0" stroke="#7a3b00" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>'
 };
 function kidFlip(e){return e.component==='air'&&e.position?.headingDeg!=null&&e.position.headingDeg>180?'scaleX(-1)':'';}
+const PIC_ICON=Object.freeze({bus:'/assets/icons/bus.webp',rail:'/assets/icons/train.webp'});   // 4.21.2
 function buildArtwork(e){
   const icon=document.createElement('span');icon.className='review-art';icon.setAttribute('aria-hidden','true');
   if(KIDS&&KID_ART[e.component]){
@@ -168,7 +169,11 @@ function buildArtwork(e){
     if(detail){const acc=document.createElementNS('http://www.w3.org/2000/svg','path');acc.setAttribute('d',detail);acc.setAttribute('class','acc');svg.append(acc);}
     // Ships always point up on-screen. Course remains as data, not an icon rotation.
     if(e.component==='air'&&e.position?.headingDeg!=null)svg.style.transform='rotate('+e.position.headingDeg+'deg)';
-    icon.append(svg);
+    // 4.21.2 (owner 5 Nov 20:11-20:15, option B): buses and trains show the owner's front-on picture inside their frame,
+    // so trains no longer need mirroring; the drawing comes back only if the picture cannot load.
+    if(PIC_ICON[e.component]){const img=document.createElement('img');img.className='pic-icon';img.src=PIC_ICON[e.component];img.alt='';
+      img.decoding='async';img.draggable=false;img.addEventListener('error',()=>img.replaceWith(svg),{once:true});icon.append(img);}
+    else icon.append(svg);
   }else{icon.textContent='≋';}
   if(e.component==='rail'||e.component==='bus'){
     const badge=document.createElement('span');badge.className='review-route';
@@ -1273,6 +1278,7 @@ function buildCredits(list){
   const items=el('ul','credit-list');
   for(const c of (Array.isArray(list)?list.slice(0,20):[])){
     const layer=str(c?.layer,40),text=str(c?.text,400);if(!layer||!text)continue;
+    if(c?.kidsOnly===true&&!KIDS)continue;   // 4.21.2 (owner 5 Nov 20:17): Kids sounds credited only in Kids mode, where they play
     const li=el('li','credit-item');li.append(el('strong','',layer));
     const status=str(c?.status,30);if(status)li.append(el('span','credit-status',status));
     li.append(el('p','',text));
