@@ -299,7 +299,10 @@ function estimate(e,now){
     const d=travelled(),h=p.headingDeg*Math.PI/180,R=6371000;
     return {lon:p.lon+d*Math.sin(h)/(R*Math.cos(p.lat*Math.PI/180))*180/Math.PI,lat:p.lat+d*Math.cos(h)/R*180/Math.PI,est:t>=1};
   }
-  const total=(m.arriveAtMs-t0)/1000,f=total>0?Math.min(1,t/total):1;
+  const total=(m.arriveAtMs-t0)/1000,f0=total>0?Math.min(1,t/total):1;
+  // 4.19.0 (owner 5 Nov 14:04, 1D77 into Manchester Victoria: "sped up and stopped abruptly"): optional easing - a train
+  // picks up speed leaving a station it stopped at and slows into one it stops at; still there at the same time
+  const f=m.ease==='both'?0.5-0.5*Math.cos(Math.PI*f0):m.ease==='out'?Math.sin(f0*Math.PI/2):m.ease==='in'?1-Math.cos(f0*Math.PI/2):f0;
   if(m.mode==='path'){
     const end=m.cum[m.cum.length-1],want=m.speedMps?Math.min(end,travelled()/111195):f*end;let i=1;while(i<m.cum.length-1&&m.cum[i]<want)i++;
     const seg=m.cum[i]-m.cum[i-1]||1e-12,q=Math.max(0,Math.min(1,(want-m.cum[i-1])/seg)),a=m.pts[i-1],b=m.pts[i];
@@ -316,7 +319,7 @@ function estimate(e,now){
 //  - sideways or unclear -> the short 2 s slide as before.
 // 4.1.14 (owner 31 Oct 23:18: waited "almost 30 seconds", then "their little speeding thing"): a vehicle
 // waits at most 20 s and catches up at most 40% faster than its own speed; beyond that it fades in.
-const WAIT_MAX_MS=20000,CATCHUP_SHARE=0.4,CATCHUP_MAX_MS=30000;
+const WAIT_MAX_MS=20000,CATCHUP_SHARE=0.4,CATCHUP_MAX_MS=30000,RAIL_SLIDE_MAX=150;
 function metresXY(a,b){const k=Math.cos(a.lat*Math.PI/180);return [(b.lon-a.lon)*k*111195,(b.lat-a.lat)*111195];}
 // 4.2.1: a "timed" track may hold a jump (two points 0.2 s or less apart and over 30 m apart: the engine
 // could not tell which way the vehicle went between two reports). It is drawn as a fade, never a slide.
@@ -356,6 +359,10 @@ function noteNewFrame(f,now,fresh){
     if(e.motion&&e.motion.mode==='timed'){const [tx,ty]=metresXY(was,next);if(Math.hypot(tx,ty)>30&&!REDUCED)blends.set(k,{hop:true,jump:true,t0:now});else blends.delete(k);continue;}   // 4.13.2: the same track again: no correction (it slowed every bus down at each new answer)
     const ahead=estimate(e,now+1000),[mx,my]=ahead?metresXY(next,ahead):[0,0],speed=Math.hypot(mx,my);
     const [gx,gy]=metresXY(was,next),gap=Math.hypot(gx,gy);
+    // 4.19.0 (owner 14:09, 1P77 into Manchester Victoria: "zoomed across the map ... not on visible train lines"): a train is
+    // never slid in a straight line over more than a short way (that cuts across buildings, not along the track): further
+    // than that it fades out and back in where it really is. Other layers keep their own rules.
+    if(e.component==='rail'&&gap>RAIL_SLIDE_MAX&&!REDUCED){blends.set(k,{hop:true,t0:now});continue;}
     if(e.motion&&speed>0.3&&gap>3){
       const ux=mx/speed,uy=my/speed,along=gx*ux+gy*uy,across=Math.abs(gx*uy-gy*ux);
       if(along<0&&across<40&&-along/speed*1000<=WAIT_MAX_MS){blends.set(k,{lon:was.lon,lat:was.lat,t0:now,wait:true,ux,uy});continue;}
@@ -919,7 +926,8 @@ function checkMotion(m,p){
     // 4.1.6 optional speedMps (+ slowToStop): travel along the path at that speed (easing to a
     // stop like "heading") instead of spreading the path evenly until arriveAt. Buses on roads.
     const speed=validNum(m.speedMps)&&m.speedMps>0&&m.speedMps<=350?m.speedMps:null;
-    return {mode:'path',pts,cum,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds,speedMps:speed,slow:speed!==null&&m.slowToStop===true};
+    return {mode:'path',pts,cum,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds,speedMps:speed,slow:speed!==null&&m.slowToStop===true,
+      ease:speed===null&&['in','out','both'].includes(m.ease)?m.ease:null};
   }
   // 4.2.0 "timed" (bus engine 0.7.0, owner 1 Nov 11:37 "option 1"): follow these points, being at each
   // one at its own clock time (seconds since 1970). Lets an engine replay a vehicle's real reported

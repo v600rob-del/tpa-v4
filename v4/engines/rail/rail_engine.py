@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.0.2'
+ENGINE_VERSION = '1.1.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -1110,6 +1110,20 @@ def index_of(stops, stanox: str, after: int = -1):
     return None
 
 
+def calls_at(t: dict, stanox: str) -> bool:
+    """1.1.0: does the train stop at this place (booked), as far as we know? (Without its timetable: a station, yes.)"""
+    uid = train_uid(t)
+    stops = stops_of(uid) if uid else []
+    i = index_of(stops, stanox) if stops else None
+    if i is not None:
+        return i == 0 or i == len(stops) - 1 or stops[i][2] > stops[i][1]
+    return stanox in (STATE['stations'] or {})
+
+
+def easing(starts_still: bool, ends_still: bool):
+    return 'both' if starts_still and ends_still else 'in' if starts_still else 'out' if ends_still else None
+
+
 def plan_onwards(t: dict, now: float):
     """The leg of its booked route the train is on now, when real reports have run out (None otherwise)."""
     if now - t['when'] > ONWARD_LIMIT or t.get('cancelled') or t.get('terminated'):
@@ -1157,8 +1171,10 @@ def plan_onwards(t: dict, now: float):
         end = start + booked
     if start - now > 30 * 60:
         return None
+    stops_after = stops[j][2] > stops[j][1] or j == len(stops) - 1
     return {'from': [here[0], here[1]], 'fromName': here[2], 'to': [there[0], there[1]], 'toName': there[2],
-            'toStanox': there[3], 'start': start, 'end': end, 'idx': j}
+            'toStanox': there[3], 'start': start, 'end': end, 'idx': j,
+            'ease': easing(calls and not drawn, stops_after)}
 
 
 def onward_loop() -> None:
@@ -1587,6 +1603,8 @@ def snapshot(view) -> dict:
                 entity['observedAt'] = iso(leg['start'])
                 entity['motion'] = {'mode': 'path', 'points': path, 'arriveAt': iso(leg['end']),
                                     'maxSeconds': round(min(7700, leg['end'] - leg['start'] + 120))}
+                if leg.get('ease'):
+                    entity['motion']['ease'] = leg['ease']
         elif t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
             key = leg_key(t)
             with LOCK:
@@ -1597,6 +1615,12 @@ def snapshot(view) -> dict:
                 arrive = t.get('arriveBy') or (t['when'] + t['run'] * 60)     # 0.6.0: re-timed by the signals when known
                 entity['motion'] = {'mode': 'path', 'points': path,
                                     'arriveAt': iso(arrive), 'maxSeconds': round(max(60, arrive - t['when']) + 120)}
+                # 1.1.0 (owner 14:04, 1D77 into Manchester Victoria: "sped up and stopped abruptly"): picks up speed leaving
+                # a station it stopped at, slows into one it stops at (booked; HQ 4.19.0 eases, older HQs ignore it)
+                with LOCK:
+                    ease = easing(not t.get('point') and calls_at(t, t.get('stanox', '')), calls_at(t, t.get('nstanox', '')))
+                if ease:
+                    entity['motion']['ease'] = ease
         frame_out['entities'].append(entity)
     with LOCK:
         STATE['drawnOnPlatform'] = on_platform
