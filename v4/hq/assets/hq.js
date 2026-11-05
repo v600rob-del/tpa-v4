@@ -214,6 +214,11 @@ async function loadDetails(e,box){
         box2.classList.add('photo');box2.append(img);}
       else box2.append(svg);
       rows.unshift(box2);}
+    // 4.22.0 (owner 5 Nov 20:51-21:04: "just a generic bus pic for the info box as it looks a bit barren"): the owner's own
+    // picture (Geoff driving a TPA bus, no operator logos) on the same light panel as the trains; left out if it fails.
+    if(e.component==='bus'){const box3=document.createElement('div');box3.className='detail-picture bus photo';
+      const img=document.createElement('img');img.src='/assets/buses/bus.webp';img.alt='Picture of a bus';img.decoding='async';
+      img.addEventListener('error',()=>box3.remove(),{once:true});box3.append(img);rows.unshift(box3);}
     box.replaceChildren(...rows);
   }catch(err){}
   // the next stop changes as the vehicle moves: ask again while it stays selected
