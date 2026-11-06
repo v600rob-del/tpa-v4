@@ -1078,7 +1078,9 @@ async function requestBounded(url,maxBytes,timeoutMs){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{
     const sent=performance.now(),response=await fetch(url,{cache:'no-store',signal:ctl.signal});
-    noteServerTime(response.headers.get('x-tpa-now'),sent,performance.now());
+    // 4.28.0: an answer kept and handed out again (by Cloudflare, after launch) carries an old server time: not for the clock
+    const kept=Number(response.headers.get('age'))>0||/hit/i.test(response.headers.get('cf-cache-status')||'');
+    if(!kept)noteServerTime(response.headers.get('x-tpa-now'),sent,performance.now());
     if(!response.ok || Number(response.headers.get('content-length'))>maxBytes)throw Error('unavailable');
     const body=await response.text();
     if(new TextEncoder().encode(body).byteLength>maxBytes)throw Error('oversize');
@@ -1089,11 +1091,19 @@ function deselectComponent(id){
   if(state.selected?.component===id){state.selected=null;selected.classList.add('hidden');}
 }
 // 4.0.10: each engine is asked only for what is on screen (plus a margin).
+// 4.28.0 (launch list A1): rounded out to the server's shared squares (as serve_hq.area_query), with the square size,
+// so viewers looking at the same place ask exactly the same question - one answer can then serve them all.
+const SLOT_MS=4000;   // = serve_hq.SHARE_SECONDS
 function viewQuery(){
   let w=-12.5,s=49,e=4.5,n=61.8;
   if(map&&typeof map.getBounds==='function'){const b=map.getBounds().pad(0.2);w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();}
-  const f=v=>clamp(v,-180,180).toFixed(4);
-  return `west=${f(w)}&south=${clamp(s,-85,85).toFixed(4)}&east=${f(e)}&north=${clamp(n,-85,85).toFixed(4)}`;
+  s=clamp(s,-85,85);n=clamp(n,-85,85);w=clamp(w,-180,180);e=clamp(e,-180,180);
+  const g=Math.min(4,Math.max(1/1024,2**Math.floor(Math.log2(Math.max(n-s,1e-4)/4)))),gl=g*2;
+  s=Math.max(-85,Math.floor(s/g)*g);n=Math.min(85,Math.ceil(n/g)*g);w=Math.max(-180,Math.floor(w/gl)*gl);e=Math.min(180,Math.ceil(e/gl)*gl);
+  const f=v=>v.toFixed(4);
+  // and the 4-second time slot by the server's clock: a new question every slot, so a kept answer is never old,
+  // however long a cache in between might keep it (Cloudflare's free plan may keep things for hours)
+  return `west=${f(w)}&south=${f(s)}&east=${f(e)}&north=${f(n)}&cell=${g}&t=${Math.floor(serverNow()/SLOT_MS)}`;
 }
 // 4.0.10: a socket may supply a see-through picture layer (e.g. coloured roads).
 // HQ only places it on the map; the engine decides what the pictures show.

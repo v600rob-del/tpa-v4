@@ -35,7 +35,7 @@ COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp'} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.27.0'
+HQ_VERSION = '4.28.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -214,6 +214,20 @@ SHARED_LOCK = threading.Lock()
 SHARE_STATS = {'asked': 0, 'shared': 0}
 
 
+CELL_SIZES = {2.0 ** -k for k in range(0, 11)} | {2.0, 4.0}     # 1/1024 .. 4 degrees, as the formula below gives
+# 4.28.0 (launch list A1): the launch switch. Off (the default, and always on the password test site): no answer is
+# labelled shareable. On: answers for a page's shared square may be kept by Cloudflare for SHARE_SECONDS, and pictures
+# and fonts for a day - but never anything that came with a password (Authorization header).
+PUBLIC_CACHE = os.environ.get('TPA_HQ_PUBLIC_CACHE', '') == '1'
+MEDIA_KEEP = ('.webp', '.jpg', '.png', '.woff', '.woff2', '.mp3')
+
+
+def current_slot(query):
+    """4.28.0: the page's 4-second time slot (t) is this one or a neighbour - only then may the answer be kept."""
+    m = re.search(r'(?:^|&)t=(\d{1,12})(?:&|$)', query or '')
+    return bool(m) and abs(int(m.group(1)) - int(time.time() / SHARE_SECONDS)) <= 2
+
+
 def area_query(query):
     """The request's view widened to the shared grid; '' if it has no proper view."""
     q = bbox_query(query)
@@ -224,9 +238,20 @@ def area_query(query):
     if not (s < n and w < e):
         return q
     g = min(4.0, max(1 / 1024, 2.0 ** math.floor(math.log2(max(n - s, 1e-4) / 4))))
+    # 4.28.0: a page that has already rounded its view to our squares says which size (cell); keep it exactly
+    # (allowing for the 4 decimal places it sends), so the same question is the same area - for Cloudflare too
+    cell = re.search(r'(?:^|&)cell=([0-9.]{1,14})(?:&|$)', query or '')
+    tol = 0.0
+    if cell:
+        try:
+            c = float(cell.group(1))
+            if c in CELL_SIZES:
+                g, tol = c, 0.2
+        except ValueError:
+            pass
     gl = g * 2                                    # a degree of longitude is about half as long here
-    s2, n2 = max(-85.0, math.floor(s / g) * g), min(85.0, math.ceil(n / g) * g)
-    w2, e2 = max(-180.0, math.floor(w / gl) * gl), min(180.0, math.ceil(e / gl) * gl)
+    s2, n2 = max(-85.0, math.floor(s / g + tol) * g), min(85.0, math.ceil(n / g - tol) * g)
+    w2, e2 = max(-180.0, math.floor(w / gl + tol) * gl), min(180.0, math.ceil(e / gl - tol) * gl)
     return f'?west={w2:.4f}&south={s2:.4f}&east={e2:.4f}&north={n2:.4f}'
 
 
@@ -449,13 +474,17 @@ class HQHandler(SimpleHTTPRequestHandler):
         # 4.1.0: the page's own files are re-checked on every visit (a quick "not modified"
         # answer if unchanged), so an update shows straight away instead of up to 30 min later.
         if urlsplit(self.path).path in PUBLIC and not getattr(self,'_cache_set',False):
-            self.send_header('Cache-Control','no-cache')
+            here=urlsplit(self.path).path
+            if PUBLIC_CACHE and here.endswith(MEDIA_KEEP) and not self.headers.get('Authorization'):
+                self.send_header('Cache-Control','public, max-age=86400')     # 4.28.0: pictures, fonts, sounds
+            else:
+                self.send_header('Cache-Control','no-cache')
         super().end_headers()
-    def reply(self,status,raw,mime):
+    def reply(self,status,raw,mime,cache=None):
         self.send_response(status)
         self.send_header('Content-Type',mime)
         self.send_header('Content-Length',str(len(raw)))
-        self.send_header('Cache-Control','private, max-age=1800' if status==200 else 'no-store');self._cache_set=True
+        self.send_header('Cache-Control',cache or ('private, max-age=1800' if status==200 else 'no-store'));self._cache_set=True
         # 4.13.3 (owner 3 Nov 19:11: his computer's clock was 6.5 s slow, so replayed buses only hopped): the server's
         # time goes with every answer; the page moves vehicles by it, never by the viewer's own clock
         self.send_header('X-TPA-Now',f'{time.time()*1000:.0f}')
@@ -541,7 +570,10 @@ class HQHandler(SimpleHTTPRequestHandler):
                         return raw
                     try:
                         raw=shared_snapshot(comp,split.query,fetch)      # 4.13.0: one answer per area, shared
-                        return self.reply(200,raw,'application/json; charset=utf-8')
+                        share=PUBLIC_CACHE and not self.headers.get('Authorization') and re.search(r'(?:^|&)cell=',split.query or '') \
+                            and current_slot(split.query)
+                        return self.reply(200,raw,'application/json; charset=utf-8',
+                                          f'public, max-age=0, s-maxage={int(SHARE_SECONDS)}' if share else 'no-store')   # 4.28.0
                     except Exception:
                         return self.json_reply(503,{'component':comp,'health':'unavailable','message':'Engine not running or not responding'})
                 if FIXTURE_DIR and parts[5]=='snapshot':
