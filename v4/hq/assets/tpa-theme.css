@@ -134,3 +134,29 @@ h1 em{color:var(--amber)}
 .detail-stops .stop.here{color:var(--green);font-weight:700}
 .detail-stops .stop.here::before{width:8px;height:8px;left:1px;top:.45em;box-shadow:0 0 0 3px #3fd39a33;opacity:1}
 .detail-stops .stop.here .stop-exp{color:var(--green)}
+
+/* ---- 4.26.0 the welcome screen's departure board (owner 6 Nov 12:53: "the flappy coming soon thing ... on the intro") ---- */
+.welcome-ready .flapboard{display:grid;gap:5px;justify-content:stretch;margin:2px 0 4px;padding:9px 10px;border:1px solid var(--line-2);
+  border-radius:8px;background:linear-gradient(#070c15,#04080f);box-shadow:inset 0 1px 0 #ffffff08}
+.flapboard .fb-row{display:grid;grid-template-columns:9px 24px 62px minmax(0,1fr);align-items:center;gap:8px;font-size:11px}
+.flapboard .fb-row[hidden]{display:none}
+.flapboard .fb-lamp{width:8px;height:8px;border-radius:50%;background:var(--amber);box-shadow:0 0 6px #ffb21e88;animation:fb-blink 1s steps(2,start) infinite}
+.flapboard .fb-row[data-state="ready"] .fb-lamp{background:var(--green);box-shadow:0 0 7px #3fd39acc;animation:none}
+.flapboard .fb-row[data-state="late"] .fb-lamp,.flapboard .fb-row[data-state="timetable"] .fb-lamp{animation:none}
+@keyframes fb-blink{to{opacity:.25}}
+.flapboard .fb-icon{width:24px;height:24px;border-radius:6px;background:#162337;animation:none!important;font-size:13px;color:var(--white)}
+.flapboard .fb-row.done .fb-icon{background:#1a3a33;box-shadow:none}
+.flapboard .fb-icon svg{width:17px;height:17px;fill:currentColor}
+.flapboard .fb-icon .pic-icon{display:block;width:22px;height:22px;object-fit:contain}
+.flapboard .fb-name{font-family:var(--tpa-sign);font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--soft);text-align:left}
+.flapboard .fb-row.done .fb-name{color:var(--white)}
+.flapboard .fb-flaps{display:grid;grid-template-columns:repeat(14,minmax(0,1fr));gap:2px}
+.flapboard .fb-flap{display:grid;place-items:center;height:21px;position:relative;overflow:hidden;border:1px solid #223247;border-radius:3px;
+  background:linear-gradient(#141f2e 0 49%,#0b131f 51% 100%);font-family:var(--tpa-sign);font-weight:700;font-size:14px;line-height:1;color:var(--amber)}
+.flapboard .fb-flap::after{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:#03060b}
+.flapboard .fb-flap.turn{animation:fb-turn .08s linear}
+@keyframes fb-turn{0%{transform:scaleY(1)}50%{transform:scaleY(.78)}100%{transform:scaleY(1)}}
+.flapboard .fb-said{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+@media(prefers-reduced-motion:reduce){.flapboard .fb-lamp{animation:none}.flapboard .fb-flap.turn{animation:none}}
+/* 4.26.0: the parade's bus and train pictures fit their frames (they came out huge and cropped) */
+.parade-pin .pic-icon{display:block;width:30px;height:30px;object-fit:contain}

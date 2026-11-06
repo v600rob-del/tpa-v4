@@ -901,9 +901,77 @@ function updatePrep(){
     let n=0;
     for(const [id] of PREP_ITEMS){const row=items[id],want=prepWanted(id);
       const ok=!want||(prepReady(id)&&now>=list.t0+600+800*n);if(want)n++;
-      row.hidden=!want;row.classList.toggle('done',ok);const t=row.querySelector('.prep-tick');t.textContent=ok?'✓':'…';if(!ok)all=false;}
+      row.hidden=!want;row.classList.toggle('done',ok);const t=row.querySelector('.prep-tick');if(t)t.textContent=ok?'✓':'…';if(!ok)all=false;
+      if(list.flaps)flapState(list,id,row,want,ok,now);}
   }
   return all;
+}
+// 4.26.0 (owner 6 Nov 12:53-12:56: "I really love the flappy coming soon thing on the holding page ... Can that be done
+// on the intro 5 seconds page ... for each of the models loading ... with a fun twist? loading turns to arrived or ready.
+// they spin until ready?"): on the welcome screen "Preparing streams" is a split-flap departure board, like the holding
+// page's. A row per layer: lamp, icon, name, flaps. Loading: a loading word, fluttering, lamp blinking. Really ready
+// (same rules and the same one-after-another timing as before): the flaps spin and settle on a ready word, lamp green.
+// Honest: DELAYED when a layer is slow or not answering, TIMETABLE when trains come from the timetable.
+const FLAP_N=14,FLAP_CHARS='ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const FLAP_WORDS=Object.freeze({map:['LOADING','ARRIVED'],road:['WARMING UP','GREEN LIGHT'],bus:['AT THE STOP','ALL ABOARD'],
+  rail:['BOARDING','ON TIME'],air:['TAXIING','CLEARED TO FLY']});
+const FLAP_SLOW_MS=6500;
+const REDUCE_MOTION=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function prepIcon(id){
+  if(PIC_ICON[id]){const img=el('img','pic-icon');img.src=PIC_ICON[id];img.alt='';img.decoding='async';img.draggable=false;
+    img.addEventListener('error',()=>img.replaceWith(ownIcon(id)),{once:true});return img;}
+  return (ICON_PATHS[id]||UI_PATHS[id])?ownIcon(id):document.createTextNode(id==='road'?'≋':'');
+}
+function makeFlapBoard(){
+  const box=el('div','prep-list flapboard');box.setAttribute('role','status');box.setAttribute('aria-live','polite');
+  const items={},cells={};
+  for(const [id,,name] of PREP_ITEMS){
+    const row=el('div','prep-item fb-row');row.dataset.id=id;row.dataset.state='loading';
+    const pic=el('span','prep-icon fb-icon');pic.append(prepIcon(id));
+    const flaps=el('span','fb-flaps');flaps.setAttribute('aria-hidden','true');cells[id]=[];
+    for(let i=0;i<FLAP_N;i++){const c=el('span','fb-flap');flaps.append(c);cells[id].push({c,spin:0,target:' '});}
+    row.append(el('span','fb-lamp'),pic,el('span','prep-name fb-name',name),flaps,el('span','prep-tick fb-said','…'),el('span','fb-said fb-words',''));
+    items[id]=row;box.append(row);
+  }
+  const list={box,items,t0:performance.now(),flaps:cells,words:{}};
+  prepLists.add(list);
+  for(const [id] of PREP_ITEMS)flapWord(list,id,FLAP_WORDS[id][0],true);
+  updatePrep();
+  // the flaps' own clock: turns over while the welcome screen is open (also when it is opened again later)
+  const timer=setInterval(()=>{if(!box.isConnected){clearInterval(timer);return;}if(!box.offsetParent)return;updatePrep();flapTick(list);},REDUCE_MOTION?400:90);
+  return box;
+}
+function flapWord(list,id,word,first){
+  if(list.words[id]===word)return;list.words[id]=word;
+  const text=word.padEnd(FLAP_N).slice(0,FLAP_N);
+  list.flaps[id].forEach((f,i)=>{f.target=text[i];
+    if(REDUCE_MOTION){f.spin=0;f.c.textContent=text[i];}
+    else f.spin=(first?2:3)+i+((Math.random()*3)|0);});   // left to right, like the holding page
+  const row=list.items[id],name=row.querySelector('.fb-name').textContent;
+  row.querySelector('.fb-words').textContent=name+': '+word.toLowerCase()+'. ';
+}
+function flapState(list,id,row,want,ok,now){
+  // On the board: the map, and any layer that has said hello (the layer list says it is up) or has answered. A layer that
+  // is not connected at all stays off (owner 1 Nov); one that is slow or goes quiet says DELAYED instead of vanishing.
+  const live=id==='map'||(state.live[id]&&!state.parked[id]&&state.visible[id]&&!(id==='road'&&!state.frames.road?.overlay));
+  list.seen=list.seen||{};if(want||id==='map'||state.announced?.[id])list.seen[id]=true;
+  const shown=live&&list.seen[id]===true,ready=want&&ok;
+  row.hidden=!shown;
+  if(shown&&!ready){row.classList.remove('done');const t=row.querySelector('.prep-tick');if(t)t.textContent='…';}   // never ticked early
+  const st=ready?(id==='rail'&&state.frames.rail?.scheduled?'timetable':'ready'):now-list.t0>FLAP_SLOW_MS?'late':'loading';
+  row.dataset.state=st;
+  flapWord(list,id,st==='ready'?FLAP_WORDS[id][1]:st==='timetable'?'TIMETABLE':st==='late'?'DELAYED':FLAP_WORDS[id][0],false);
+}
+function flapTick(list){
+  if(REDUCE_MOTION)return;
+  for(const [id,cells] of Object.entries(list.flaps)){
+    const row=list.items[id];if(row.hidden)continue;
+    if(row.dataset.state==='loading'&&Math.random()<0.35){const f=cells[(Math.random()*FLAP_N)|0];if(!f.spin)f.spin=2+((Math.random()*3)|0);}
+    for(const f of cells){
+      if(f.spin>0){f.spin--;f.c.textContent=f.spin?FLAP_CHARS[(Math.random()*FLAP_CHARS.length)|0]:f.target;
+        f.c.classList.remove('turn');void f.c.offsetWidth;f.c.classList.add('turn');}
+      else if(f.c.textContent!==f.target)f.c.textContent=f.target;}
+  }
 }
 function startPreparing(showPanel){
   const t0=performance.now();let panel=null;
@@ -1174,6 +1242,7 @@ async function discover(){
       if(state.parked[id]){
         state.status[id]='unavailable';delete state.frames[id];deselectComponent(id);
       }else if(entry?.status==='ready'){
+        (state.announced||(state.announced={}))[id]=true;   // 4.26.0: said hello - on the welcome board even before its first answer
         // Start all five requests independently rather than awaiting each in series.
         if(state.status[id]==='not_installed')state.status[id]='unavailable';
         if(!(state.live[id]&&pollTimers[id]&&Date.now()-(lastFetch[id]||0)<25000))requests.push(getComponent(id));
@@ -1348,7 +1417,7 @@ function buildWelcome(w,tip,credits){
     for(const t of items)ul.append(el('li','',t));box.append(ul);main.append(box);}
   const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
   // 4.7.0: the streams pulse and turn green; Let's go! appears after enterAfterSeconds (5) from opening
-  const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Preparing streams'),makeReadyList());
+  const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Preparing streams'),makeFlapBoard());   // 4.26.0
   const wait=Number.isFinite(w?.enterAfterSeconds)?clamp(w.enterAfterSeconds,0,10):0;
   if(wait>0){enter.classList.add('waiting');enter.disabled=true;enter.setAttribute('aria-hidden','true');back.dataset.enterAfter=String(wait);}
   back._enter=enter;
