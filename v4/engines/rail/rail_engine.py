@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.4.0'
+ENGINE_VERSION = '1.4.1'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -85,8 +85,12 @@ MAX_SCHEDULE_GZ = 1_500_000_000
 # 0.7.1 (owner 10:39: "platforms-http-502" - the public Overpass service was too busy for one Britain-wide question):
 # Britain is asked for in five strips, from the main service or one of two other free copies of it, and a failure is
 # tried again after 30 minutes (not 6 hours).
-OVERPASS_URLS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter',
-                 'https://overpass.kumi.systems/api/interpreter']
+# 1.4.1 (launch list, owner 6 Nov 14:24): the public servers' own rules (https://wiki.openstreetmap.org/wiki/Overpass_API):
+# private.coffee welcomes any project, so it is asked first; the main server (which asks commercial users to go
+# elsewhere) is only the backup; kumi.systems was private.coffee's old name, the same service twice. We ask 5 times a month.
+OVERPASS_URLS = ['https://overpass.private.coffee/api/interpreter', 'https://overpass-api.de/api/interpreter']
+OVERPASS_BUSY_PAUSE = 30      # the servers ask for 30 seconds' rest after "too busy" (429) or "timed out" (504)
+CONTACT = '+mailto:enquiries@tpalive.co.uk'
 OVERPASS_STRIPS = [(49.8, 51.5), (51.5, 52.5), (52.5, 53.5), (53.5, 55.0), (55.0, 61.0)]
 
 
@@ -233,7 +237,7 @@ def _download(url: str, limit: int, login: str | None = None, timeout: int = 60)
                 new.remove_header('Authorization')
             return new
 
-    headers = {'User-Agent': f'TPA-Train-Engine/{ENGINE_VERSION} (+mailto:tpaprojectuk@gmail.com)',
+    headers = {'User-Agent': f'TPA-Train-Engine/{ENGINE_VERSION} ({CONTACT})',
                'Accept': 'application/json, text/csv, application/zip, */*'}
     if login:
         headers['Authorization'] = 'Basic ' + base64.b64encode(login.encode('utf-8')).decode('ascii')
@@ -736,7 +740,7 @@ def load_platforms() -> bool:
                 problem = f'platforms-http-{exc.code}'
             except Exception as exc:
                 problem = ('platforms-' + type(exc).__name__)[:40]
-            time.sleep(2)
+            time.sleep(OVERPASS_BUSY_PAUSE if problem in ('platforms-http-429', 'platforms-http-504') else 2)
         if got is None:
             with LOCK:
                 STATE['platformsError'] = problem
@@ -960,7 +964,7 @@ def load_schedule() -> bool:
                 return new
         handlers = [SafeRedirect()] + ([urllib.request.ProxyHandler({})] if test else [])
         req = urllib.request.Request(SCHEDULE_SRC, headers={
-            'User-Agent': f'TPA-Train-Engine/{ENGINE_VERSION} (+mailto:tpaprojectuk@gmail.com)',
+            'User-Agent': f'TPA-Train-Engine/{ENGINE_VERSION} ({CONTACT})',
             'Authorization': 'Basic ' + base64.b64encode((USERNAME + ':' + PASSWORD).encode('utf-8')).decode('ascii')})
         with urllib.request.build_opener(*handlers).open(req, timeout=120) as res:
             booked = read_schedule(res, days)
