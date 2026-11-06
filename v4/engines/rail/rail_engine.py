@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.1.0'
+ENGINE_VERSION = '1.1.1'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -982,7 +982,16 @@ DRAWING_OF = {c: k for k, cs in CLASS_DRAWINGS.items() for c in cs}
 CLASS_NAMES = {'800': 'Hitachi Azuma / IET', '390': 'Alstom Pendolino', '220': 'Bombardier Voyager', '150': 'Sprinter',
                '158': 'Express Sprinter', '170': 'Turbostar', '195': 'CAF Civity', '345': 'Aventra', '700': 'Siemens Desiro City',
                '755': 'Stadler FLIRT', '387': 'Bombardier Electrostar', '43': 'InterCity 125 (HST)'}
-POWER = {'D': 'diesel locomotive', 'E': 'electric locomotive', 'ED': 'electro-diesel locomotive'}
+POWER = {'D': 'a diesel locomotive', 'E': 'an electric locomotive', 'ED': 'an electro-diesel locomotive'}
+# 1.1.1 (owner 6 Nov 09:17-09:34, 457 of 767 trains with no type): the timetable's letter and special timing loads
+# (https://wiki.openraildata.com/index.php/CIF_Codes). A class number here goes through the ordinary path below;
+# a tuple is (what to say, which drawing) when it covers several classes.
+DMU_LOADS = {'S': ('Class 150, 153, 155 or 156 · Sprinter', 'c150'), 'V': ('Class 220 or 221 · Bombardier Voyager', 'c220'),
+             'X': '159', '69': '172', 'N': ('Class 165 · Networker Turbo', ''), 'T': ('Class 165 or 166 · Networker Turbo', ''),
+             'A': ('Class 141 to 144 · Pacer', '')}
+EMU_LOADS = {'0': '380', 'E': '458', '506': '350'}
+# DMU "E" means Class 158, 168, 170 or 175: named only for operators that run just one of those
+DMU_E_BY_OPERATOR = {'XC': '170', 'GW': '158', 'CH': '168'}
 
 
 def booked_class(t: dict):
@@ -998,6 +1007,16 @@ def booked_class(t: dict):
     if not entry or entry[0] == '#':
         return '', ''
     power, load = entry
+    if power == 'DMU' and load == 'E':
+        load = DMU_E_BY_OPERATOR.get(ATOC_OF.get(t.get('toc', ''), ''), '')
+        if not load:
+            return 'Class 158 or 170', ''
+    elif power == 'DMU' and load in DMU_LOADS:
+        load = DMU_LOADS[load]
+    elif power in ('EMU', 'EML') and load in EMU_LOADS:
+        load = EMU_LOADS[load]
+    if isinstance(load, tuple):
+        return load
     if power == 'HST':
         return 'Class 43 · ' + CLASS_NAMES['43'], 'c43'
     if re.fullmatch(r'\d{3}', load) and power in ('EMU', 'DMU', 'DEM', 'EML'):
@@ -1006,7 +1025,7 @@ def booked_class(t: dict):
         return f'Class {load}' + (f' · {name}' if name else ''), ('c' + drawing if drawing else '')
     if power in POWER:
         diesel = power == 'D'
-        return 'Hauled by a ' + POWER[power], ('c66' if diesel and kind_of(t)[0] == 'freight' else '')
+        return 'Hauled by ' + POWER[power], ('c66' if diesel and kind_of(t)[0] == 'freight' else '')
     return '', ''
 
 
