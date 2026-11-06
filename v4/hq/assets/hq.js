@@ -199,6 +199,35 @@ async function loadDetails(e,box){
       const v=document.createElement('span');v.className='detail-value';v.textContent=String(row.value||'').slice(0,120);
       line.append(k,v);rows.push(line);}
     if(typeof d.note==='string'&&d.note){const n=document.createElement('small');n.className='detail-note';n.textContent=d.note.slice(0,160);rows.push(n);}
+    // 4.23.0 (owner 6 Nov 09:40-09:41: "This is the Northern (time) service from (start) to (destination). Stopping at ...
+    // those already done in grey, those not yet in green ... then next stop"; "if the stopping at list is large, make it a
+    // scrollable list, within the box"). Generic: any engine may send a summary and its stops (done / here / due).
+    const stops=Array.isArray(d.stops)?d.stops.filter(s=>s&&typeof s.name==='string'&&['done','here','due'].includes(s.state)).slice(0,120):[];
+    const trip=[];
+    if(typeof d.summary==='string'&&d.summary){const p=document.createElement('p');p.className='detail-summary';p.textContent=d.summary.slice(0,200);trip.push(p);}
+    if(stops.length>=2){
+      const when=s=>s.expected&&s.expected!==s.time?`${s.time||''} (expected ${s.expected})`:(s.time||'');
+      const here=stops.find(s=>s.state==='here'),next=stops.find(s=>s.state==='due');
+      const line=document.createElement('p');line.className='detail-next';
+      if(here){const b=document.createElement('b');b.textContent='Now at ';line.append(b,here.name);}
+      if(next){const b=document.createElement('b');b.textContent=(here?' · ':'')+'Next stop: ';line.append(b,`${next.name}, ${when(next)}`.replace(/, $/,''));}
+      if(!here&&!next){const b=document.createElement('b');b.textContent='Journey finished';line.append(b);}
+      trip.push(line);
+      const head=document.createElement('div');head.className='detail-stops-head';head.textContent='Calling at';trip.push(head);
+      const list=document.createElement('ol');list.className='detail-stops';list.setAttribute('aria-label','Calling at');
+      for(const s of stops){const li=document.createElement('li');li.className='stop '+s.state;
+        const t=document.createElement('span');t.className='stop-time';t.textContent=s.time||'';
+        const n=document.createElement('span');n.className='stop-name';n.textContent=s.name.slice(0,40);
+        li.append(t,n);
+        if(s.state==='due'&&s.expected&&s.expected!==s.time){const x=document.createElement('span');x.className='stop-exp';x.textContent='exp '+s.expected;li.append(x);}
+        if(s.state==='here'){const x=document.createElement('span');x.className='stop-exp';x.textContent='here now';li.append(x);}
+        list.append(li);}
+      trip.push(list);
+      // the stop that matters (where it is, or the next one) scrolled into view inside the list, never the page
+      requestAnimationFrame(()=>{const cur=list.querySelector('.stop.here')||list.querySelector('.stop.due');
+        if(cur)list.scrollTop=Math.max(0,cur.offsetTop-24);});
+    }
+    rows.unshift(...trip);
     // 4.16.0 (owner 5 Nov 00:19: "a picture of the type in an information window when you click on each"): only TPA's own drawings
     const wide=e.component==='rail'&&typeof d.picture==='string'&&Object.hasOwn(TRAIN_CLASSES,d.picture);
     const pic=e.component==='rail'&&typeof d.picture==='string'?(wide?TRAIN_CLASSES[d.picture]:Object.hasOwn(RAIL_KINDS,d.picture)?RAIL_KINDS[d.picture]:null):null;

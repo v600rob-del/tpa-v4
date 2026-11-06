@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.1.1'
+ENGINE_VERSION = '1.2.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -1494,6 +1494,57 @@ def kind_of(t: dict):
     return KINDS.get((t.get('headcode') or ' ')[0], ('', ''))
 
 
+def journey(t: dict, now: float):
+    """1.2.0 (owner 6 Nov 09:40: "This is the Northern (time) service from (start) to (destination). Stopping at (list of
+    stops, those already done in grey, those not yet in green ...) then next stop"): a passenger train's booked calls,
+    each marked done / here / due, from its timetable and how far it has got. Caller holds LOCK. None if not known."""
+    if (t.get('headcode') or ' ')[0] not in '129' or t.get('cancelled'):
+        return None
+    uid = train_uid(t)
+    stops = stops_of(uid) if uid else []
+    if len(stops) < 2:
+        return None
+    calls = [i for i in range(len(stops)) if i == 0 or i == len(stops) - 1 or stops[i][2] > stops[i][1]]
+    # how far it has got: everything before `cut` is done; `here` is a call it is standing at
+    leg, here = t.get('vleg'), None
+    if leg and isinstance(leg.get('idx'), int):
+        cut = leg['idx']
+        if now < leg.get('start', 0):                      # still waiting at the place before the next one
+            cut -= 1
+            here = cut
+    else:
+        at = index_of(stops, t.get('stanox', ''))
+        if at is None:
+            return None
+        cut = at + 1
+        if t['event'] == 'ARRIVAL' or t['terminated']:
+            here = at
+    if t['terminated']:
+        here, cut = len(stops) - 1, len(stops) - 1
+    base = uk_midnight(t.get('day') or uk_today())
+    delay = t['minutes'] * 60 * (1 if t['variation'] == 'LATE' else -1 if t['variation'] == 'EARLY' else 0)
+
+    def hhmm(secs):
+        return uk_clock(base + secs)
+    out = []
+    for i in calls:
+        spot = place(stops[i][0])
+        if not spot or not spot[2]:
+            continue
+        booked = stops[i][2] if i == 0 else stops[i][1]
+        state = 'here' if i == here else 'done' if i < cut else 'due'
+        stop = {'name': spot[2][:40], 'time': hhmm(booked), 'state': state}
+        if state == 'due' and abs(delay) >= 120:
+            stop['expected'] = hhmm(booked + delay)
+        out.append(stop)
+    if len(out) < 2:
+        return None
+    first, last = out[0], out[-1]
+    who = OPERATORS.get(t.get('toc', ''), '')
+    summary = f"This is the {who + ' ' if who else ''}{first['time']} service from {first['name']} to {last['name']}."
+    return {'summary': summary[:200], 'stops': out[:120]}
+
+
 def details(entity_id: str) -> dict:
     out = {'component': COMPONENT, 'id': entity_id, 'rows': []}
     tid = entity_id[5:] if entity_id.startswith('rail:') else ''
@@ -1512,6 +1563,10 @@ def details(entity_id: str) -> dict:
     what, drawing = booked_class(t)         # 0.8.0: its actual type, from the timetable
     if drawing:
         out['picture'] = drawing
+    with LOCK:
+        trip = journey(t, time.time())
+    if trip:
+        out.update(trip)
     add('Train', t['headcode'])
     add('Type', kind_of(t)[1])
     add('Train type', what)

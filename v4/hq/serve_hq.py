@@ -35,7 +35,7 @@ COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp'} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.22.1'
+HQ_VERSION = '4.23.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -514,6 +514,17 @@ class HQHandler(SimpleHTTPRequestHandler):
                     body={'component':parts[4],'id':want,'rows':rows}
                     if isinstance(d.get('note'),str):body['note']=d['note'][:160]
                     if isinstance(d.get('picture'),str) and re.fullmatch(r'[a-z0-9-]{1,30}',d['picture']):body['picture']=d['picture']   # 4.16.0
+                    # 4.23.0 (owner 6 Nov 09:40): generic journey - one sentence and the stops in order, each done / here / due
+                    if isinstance(d.get('summary'),str) and d['summary'].strip():body['summary']=d['summary'][:200]
+                    if isinstance(d.get('stops'),list):
+                        stops=[]
+                        for s in d['stops'][:120]:
+                            if not isinstance(s,dict) or s.get('state') not in ('done','here','due') or not isinstance(s.get('name'),str) or not s['name'].strip():continue
+                            item={'name':s['name'][:40],'state':s['state']}
+                            for k in ('time','expected'):
+                                if isinstance(s.get(k),str) and re.fullmatch(r'[0-2]\d:[0-5]\d',s[k]):item[k]=s[k]
+                            stops.append(item)
+                        if len(stops)>=2:body['stops']=stops
                     return self.json_reply(200,body)
                 except Exception:
                     return self.json_reply(503,{'component':parts[4],'id':want,'rows':[],'note':'Details not available right now.'})

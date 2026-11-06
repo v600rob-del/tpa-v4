@@ -116,3 +116,21 @@ h1 em{color:var(--amber)}
 .review-pin .pic-icon{display:block;width:30px;height:30px;object-fit:contain;pointer-events:none;user-select:none;filter:drop-shadow(0 1px 1px #0007)}
 .marker-layer .review-pin.bus .pic-icon,.marker-layer .review-pin.rail .pic-icon{width:calc(34px*var(--pin-s,1));height:calc(34px*var(--pin-s,1))}
 .detail-picture.bus img{mix-blend-mode:multiply}   /* 4.22.1: the bus picture has a white background; it melts into the light panel */
+
+/* ---- 4.23.0 the journey in the vehicle box (owner 6 Nov 09:40): done grey, here + still to come green, scrolls inside ---- */
+.detail-summary{margin:2px 0 6px;font-size:13px;line-height:1.4;color:var(--white)}
+.detail-next{margin:0 0 8px;font-size:12px;line-height:1.4;color:var(--green)}
+.detail-next b{color:#cfe3ef;font-weight:700}
+.detail-stops-head{font-family:var(--tpa-sign);font-weight:700;font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--teal);margin:0 0 3px}
+.detail-stops{position:relative;list-style:none;margin:0 0 8px;padding:4px 6px;max-height:168px;overflow-y:auto;overscroll-behavior:contain;
+  border:1px solid var(--line-2);border-radius:6px;background:#060b14}
+.detail-stops .stop{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.55;padding-left:12px;position:relative}
+.detail-stops .stop::before{content:"";position:absolute;left:2px;top:.55em;width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.8}
+.detail-stops .stop-time{min-width:38px;font-variant-numeric:tabular-nums}
+.detail-stops .stop-name{flex:1}
+.detail-stops .stop-exp{font-size:10px;color:var(--amber)}
+.detail-stops .stop.done{color:#6f8293}
+.detail-stops .stop.due{color:var(--green)}
+.detail-stops .stop.here{color:var(--green);font-weight:700}
+.detail-stops .stop.here::before{width:8px;height:8px;left:1px;top:.45em;box-shadow:0 0 0 3px #3fd39a33;opacity:1}
+.detail-stops .stop.here .stop-exp{color:var(--green)}
