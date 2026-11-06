@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.2.0'
+ENGINE_VERSION = '1.3.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -150,7 +150,7 @@ LOCK = threading.Lock()
 STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': False, 'connectedAt': 0.0,
          'lastMessageAt': 0.0, 'lastError': '' if HAVE_LOGIN else 'no-login', 'authRejectedUntil': 0.0,
          'lastDemandAt': 0.0, 'messages': 0, 'movements': 0, 'unplaced': 0, 'bytes': 0,
-         'points': {}, 'atPoints': 0, 'restored': 0, 'dirty': False, 'savedAt': 0.0,
+         'points': {}, 'atPoints': 0, 'restored': 0, 'startsRestored': 0, 'dirty': False, 'savedAt': 0.0,
          'trackLoaded': False, 'trackError': '', 'cancelledSeen': 0, 'reinstatedSeen': 0,
          'smartSteps': 0, 'smartError': '', 'smartBuiltAt': 0.0, 'tdMessages': 0, 'tdUseful': 0, 'tdMatched': 0,
          'tdRetimed': 0, 'tdArrived': 0, 'tdPlatforms': 0, 'tdBlockedUntil': 0.0, 'tdThisSession': False,
@@ -388,11 +388,16 @@ def save_memory(force: bool = False) -> None:
         if not (STATE['dirty'] or force) or (not force and now - STATE['savedAt'] < SAVE_EVERY):
             return
         keep = {k: v for k, v in STATE['trains'].items() if now - v['when'] < DROP_AFTER}
+        # 1.3.0 (owner 5 Nov 23:37 "very very few with the train pics in" after a restart): train starts too, so a train
+        # Network Rail activated before a restart still knows its timetable (and so its type, picture and stops) after it
+        days = (uk_today(-1), uk_today())
+        starts = {k: list(v) for k, v in ACTIVATED.items() if v[1] in days}
         STATE['dirty'], STATE['savedAt'] = False, now
     try:
         DATA.mkdir(parents=True, exist_ok=True)
         tmp = MEMORY_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'savedAt': now, 'engineVersion': ENGINE_VERSION, 'trains': keep}, separators=(',', ':')), encoding='utf-8')
+        tmp.write_text(json.dumps({'savedAt': now, 'engineVersion': ENGINE_VERSION, 'trains': keep, 'starts': starts},
+                                  separators=(',', ':')), encoding='utf-8')
         tmp.replace(MEMORY_FILE)
     except OSError:
         pass
@@ -406,6 +411,16 @@ def restore_memory() -> int:
         items = saved.get('trains', {}) if isinstance(saved, dict) else {}
     except (OSError, ValueError):
         return 0
+    starts = saved.get('starts', {}) if isinstance(saved, dict) else {}
+    days, back = (uk_today(-1), uk_today()), {}
+    for tid, v in list(starts.items())[:60000] if isinstance(starts, dict) else []:
+        if (isinstance(tid, str) and re.fullmatch(r'[0-9A-Z]{10}', tid) and isinstance(v, list) and len(v) == 2
+                and isinstance(v[0], str) and re.fullmatch(r'[A-Z0-9 ]{6}', v[0]) and v[1] in days):
+            back[tid] = (v[0], v[1])
+    with LOCK:
+        for tid, v in back.items():
+            ACTIVATED.setdefault(tid, v)
+        STATE['startsRestored'] = len(back)
     restored = {}
     for tid, t in list(items.items())[:MAX_TRAINS] if isinstance(items, dict) else []:
         if not (isinstance(tid, str) and re.fullmatch(r'[0-9A-Z]{10}', tid) and isinstance(t, dict)):
@@ -490,6 +505,7 @@ def handle_message(item: dict, now: float) -> None:
             if re.fullmatch(r'[A-Z0-9 ]{6}', uid):
                 ACTIVATED[train_id] = (uid, day if re.fullmatch(r'\d{4}-\d{2}-\d{2}', day) else '')
                 STATE['activations'] += 1
+                STATE['dirty'] = True                 # 1.3.0: train starts are saved with the memory
                 if len(ACTIVATED) > 60000:
                     for k in list(ACTIVATED)[:20000]:
                         ACTIVATED.pop(k, None)
@@ -977,21 +993,32 @@ def schedule_loop() -> None:
 CLASS_DRAWINGS = {'800': ('800', '801', '802', '805', '807', '810'), '390': ('390',), '220': ('220', '221', '222'),
                   '150': ('150', '153', '155', '156'), '158': ('158', '159'), '170': ('168', '170', '171', '172'),
                   '195': ('195', '196', '197', '331', '397'), '345': ('345', '701', '710', '720', '730'),
-                  '700': ('700', '707', '717'), '755': ('231', '745', '755', '756'), '387': ('357', '375', '377', '378', '379', '387')}
+                  '700': ('700', '707', '717'), '755': ('231', '745', '755', '756'), '387': ('357', '375', '377', '378', '379', '387'),
+                  # 1.3.0 (owner 6 Nov 10:24-10:57, second batch of pictures)
+                  '165': ('165', '166'), '777': ('777',), '350': ('350', '360', '444', '450'), '385': ('385',), '323': ('323',),
+                  '185': ('185',), '395': ('395',), '380': ('380',), '333': ('333',)}
 DRAWING_OF = {c: k for k, cs in CLASS_DRAWINGS.items() for c in cs}
 CLASS_NAMES = {'800': 'Hitachi Azuma / IET', '390': 'Alstom Pendolino', '220': 'Bombardier Voyager', '150': 'Sprinter',
                '158': 'Express Sprinter', '170': 'Turbostar', '195': 'CAF Civity', '345': 'Aventra', '700': 'Siemens Desiro City',
-               '755': 'Stadler FLIRT', '387': 'Bombardier Electrostar', '43': 'InterCity 125 (HST)'}
+               '755': 'Stadler FLIRT', '387': 'Bombardier Electrostar', '43': 'InterCity 125 (HST)',
+               '165': 'Networker Turbo', '777': 'Stadler', '350': 'Siemens Desiro', '385': 'Hitachi AT200', '185': 'Siemens Desiro',
+               '395': 'Hitachi Javelin', '380': 'Siemens Desiro', '333': 'CAF'}
 POWER = {'D': 'a diesel locomotive', 'E': 'an electric locomotive', 'ED': 'an electro-diesel locomotive'}
 # 1.1.1 (owner 6 Nov 09:17-09:34, 457 of 767 trains with no type): the timetable's letter and special timing loads
 # (https://wiki.openraildata.com/index.php/CIF_Codes). A class number here goes through the ordinary path below;
 # a tuple is (what to say, which drawing) when it covers several classes.
 DMU_LOADS = {'S': ('Class 150, 153, 155 or 156 · Sprinter', 'c150'), 'V': ('Class 220 or 221 · Bombardier Voyager', 'c220'),
-             'X': '159', '69': '172', 'N': ('Class 165 · Networker Turbo', ''), 'T': ('Class 165 or 166 · Networker Turbo', ''),
+             'X': '159', '69': '172', 'N': ('Class 165 · Networker Turbo', 'c165'), 'T': ('Class 165 or 166 · Networker Turbo', 'c165'),
              'A': ('Class 141 to 144 · Pacer', '')}
 EMU_LOADS = {'0': '380', 'E': '458', '506': '350'}
 # DMU "E" means Class 158, 168, 170 or 175: named only for operators that run just one of those
 DMU_E_BY_OPERATOR = {'XC': '170', 'GW': '158', 'CH': '168'}
+# 1.3.0 (owner 6 Nov 10:17 count: ~9,300 electric trains a day booked with no type): an operator that runs only one kind
+# (TRUST operator code -> class); otherwise say so honestly, with TPA's generic picture for electric trains
+BLANK_EMU_BY_OPERATOR = {'64': '777',    # Merseyrail: all Class 777 since the 507s went
+                         '88': '377'}    # Govia Thameslink: Thameslink (700) and Great Northern (717/387) are booked with
+                                         # their class; the ones booked blank are Southern's Electrostars
+BLANK_DMU_BY_OPERATOR = {'20': '185'}    # TransPennine Express: its diesel units are all Class 185
 
 
 def booked_class(t: dict):
@@ -1007,6 +1034,14 @@ def booked_class(t: dict):
     if not entry or entry[0] == '#':
         return '', ''
     power, load = entry
+    if power in ('EMU', 'EML') and not load:
+        load = BLANK_EMU_BY_OPERATOR.get(t.get('toc', ''), '')
+        if not load:
+            return 'Electric train (type not given)', 'celectric'
+    elif power == 'DMU' and not load:
+        load = BLANK_DMU_BY_OPERATOR.get(t.get('toc', ''), '')
+        if not load:
+            return 'Diesel train (type not given)', ''
     if power == 'DMU' and load == 'E':
         load = DMU_E_BY_OPERATOR.get(ATOC_OF.get(t.get('toc', ''), ''), '')
         if not load:
@@ -1745,7 +1780,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'stationsKnown': len(STATE['stations'] or {}), 'referenceError': STATE['referenceError'],
                                         'lastError': STATE['lastError'], 'trainsTracked': len(STATE['trains']),
                                         'timingPointsKnown': len(STATE['points']), 'movementsAtTimingPoints': STATE['atPoints'],
-                                        'trainsRestoredAtStart': STATE['restored'], 'alwaysOn': ALWAYS_ON,
+                                        'trainsRestoredAtStart': STATE['restored'], 'trainStartsRestored': STATE['startsRestored'], 'alwaysOn': ALWAYS_ON,
                                         'trackMapLoaded': STATE['trackLoaded'], 'trackRoutesKnown': sum(1 for v in ROUTES.values() if v),
                                         'trackRoutesWaiting': len(PENDING), 'trackError': STATE['trackError'],
                                         # 1.0.2 (owner 13:05, 1W16 sat at Stockport): how often no track route is found, with examples

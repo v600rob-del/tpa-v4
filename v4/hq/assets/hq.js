@@ -117,7 +117,10 @@ const RAIL_KINDS=Object.freeze({express: ['M2 12h17c4.5 0 8.3 2.2 10.6 5.6l.6.9c
 // 4.17.0 (owner 5 Nov stage 3): TPA's own side-on drawings of the common British train classes, shown in a train's box
 // once the timetable says what it is (rail engine 0.8.0 sends picture "c800" etc.). 100x26, facing right; amber = the
 // yellow warning panel. Drawn in-house (v4/design/train-classes), no photos or logos.
-const TRAIN_PHOTOS=new Set(['c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66']);   // 4.21.0
+const TRAIN_PHOTOS=new Set(['c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66',   // 4.21.0
+  'c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric']);   // 4.24.0 (owner 6 Nov 10:24-10:58): second batch + a generic electric train
+// 4.24.0: the second batch has no drawing of its own; if a picture fails to load, the nearest first-batch drawing stands in
+const TRAIN_ALIAS=Object.freeze({c165:'c150',c777:'c755',c350:'c387',c385:'c800',c323:'c150',c185:'c158',c395:'c800',c380:'c387',c333:'c195',celectric:'c345'});
 const TRAIN_CLASSES=Object.freeze({
   c800:["M2 8.6Q2 7 3.6 7H68C79 7 89.5 11 95.6 16.8L96 19.4H2ZM77.5 9.3C82.6 9.7 87.2 11.6 90.4 14.4H77.5ZM6 10.2h4.2v3.8h-4.2ZM12.6 10.2h4.2v3.8h-4.2ZM19.2 10.2h4.2v3.8h-4.2ZM25.8 10.2h4.2v3.8h-4.2ZM32.4 10.2h4.2v3.8h-4.2ZM39 10.2h4.2v3.8h-4.2ZM45.6 10.2h4.2v3.8h-4.2ZM52.2 10.2h4.2v3.8h-4.2ZM58.8 10.2h4.2v3.8h-4.2ZM66.5 9.6h1.3v9h-1.3ZM6.1 20.6a1.6 1.6 0 1 0 3.2 0ZM10.7 20.6a1.6 1.6 0 1 0 3.2 0ZM54.1 20.6a1.6 1.6 0 1 0 3.2 0ZM58.7 20.6a1.6 1.6 0 1 0 3.2 0ZM1 22.9h98v1.2H1Z","M91.6 15.6C93.4 16.6 94.8 17.6 95.6 18.6L95.8 19.4H91.6Z"],
   c390:["M2 9.4Q2 6.6 4.8 6.6H72C82 6.6 89 9.4 93.4 13.4Q96.4 16.2 96.6 19.4H2ZM79 8.8C84.6 9.2 88.6 11 91.2 13.6H79ZM6 10.4h3.6v3.2h-3.6ZM12 10.4h3.6v3.2h-3.6ZM18 10.4h3.6v3.2h-3.6ZM24 10.4h3.6v3.2h-3.6ZM30 10.4h3.6v3.2h-3.6ZM36 10.4h3.6v3.2h-3.6ZM42 10.4h3.6v3.2h-3.6ZM48 10.4h3.6v3.2h-3.6ZM54 10.4h3.6v3.2h-3.6ZM60 10.4h3.6v3.2h-3.6ZM68 9.6h1.3v9h-1.3ZM6.1 20.6a1.6 1.6 0 1 0 3.2 0ZM10.7 20.6a1.6 1.6 0 1 0 3.2 0ZM56.1 20.6a1.6 1.6 0 1 0 3.2 0ZM60.7 20.6a1.6 1.6 0 1 0 3.2 0ZM28 6.6l2.6-2.8h7.6l.9.9h-7.6L29.6 6.6ZM34 3.8h1v-1h3v1h1v.6h-5ZM1 22.9h98v1.2H1Z","M92.6 14.2C94.8 16 96 17.6 96.4 19.4H92.6Z"],
@@ -229,8 +232,9 @@ async function loadDetails(e,box){
     }
     rows.unshift(...trip);
     // 4.16.0 (owner 5 Nov 00:19: "a picture of the type in an information window when you click on each"): only TPA's own drawings
-    const wide=e.component==='rail'&&typeof d.picture==='string'&&Object.hasOwn(TRAIN_CLASSES,d.picture);
-    const pic=e.component==='rail'&&typeof d.picture==='string'?(wide?TRAIN_CLASSES[d.picture]:Object.hasOwn(RAIL_KINDS,d.picture)?RAIL_KINDS[d.picture]:null):null;
+    const drawn=typeof d.picture==='string'&&Object.hasOwn(TRAIN_ALIAS,d.picture)?TRAIN_ALIAS[d.picture]:d.picture;
+    const wide=e.component==='rail'&&typeof d.picture==='string'&&Object.hasOwn(TRAIN_CLASSES,drawn);
+    const pic=e.component==='rail'&&typeof d.picture==='string'?(wide?TRAIN_CLASSES[drawn]:Object.hasOwn(RAIL_KINDS,d.picture)?RAIL_KINDS[d.picture]:null):null;
     if(pic){const box2=document.createElement('div');box2.className='detail-picture '+e.component+(wide?' wide':'');
       const svg=document.createElementNS('http://www.w3.org/2000/svg','svg');svg.setAttribute('viewBox',wide?'0 2 100 23':'0 6 32 21');svg.setAttribute('aria-hidden','true');
       const a=document.createElementNS('http://www.w3.org/2000/svg','path');a.setAttribute('d',pic[0]);a.setAttribute('fill-rule','evenodd');svg.append(a);
