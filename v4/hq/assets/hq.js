@@ -434,6 +434,7 @@ function infoText(e,est){
   const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
   if(!state.live[e.component])return e.component.toUpperCase()+' · '+e.quality.toUpperCase()+' · STATIC MOCK POSITION';
   if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
+  if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
   if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   return (e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · may have moved':'');
 }
@@ -831,13 +832,14 @@ const status=$(id+'-source-status'),chip=$(id+'-chip').querySelector('strong'),n
 if(state.parked[id]){status.textContent='Unavailable · coming soon';chip.textContent='SOON';if(n)n.textContent='—';continue;}
 if(state.live[id]){
   // 4.0.10: a real engine is connected. Plain wording; never the word MOCK.
-  const overlay=state.frames[id]?.overlay,notice=state.frames[id]?(state.frames[id].notice||''):(state.notice[id]||'');
+  const overlay=state.frames[id]?.overlay,detail=FULL_VIEW&&state.frames[id]?.noticeDetail?' — '+state.frames[id].noticeDetail:'',
+    notice=(state.frames[id]?(state.frames[id].notice||''):(state.notice[id]||''))+detail,scheduled=state.frames[id]?.scheduled===true;
   const tooFar=overlay&&state.z<overlay.minZoom;
   status.textContent=!state.visible[id]?'Hidden':
     state.status[id]==='ready'?(tooFar?'Zoom in to see '+layerName(id):notice||(overlay?'Live · showing on map':count+' in view')):
     state.status[id]==='stale'?(notice||'Delayed · showing last update'):
     (notice||'Unavailable · will retry');
-  chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?'LIVE':state.status[id]==='stale'?'DELAYED':'OFF AIR';
+  chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?(scheduled?'TIMETABLE':'LIVE'):state.status[id]==='stale'?'DELAYED':'OFF AIR';
   if(n)n.textContent=entries&&!overlay?String(count):'—';continue;}
 status.textContent=!state.visible[id]?'Hidden':state.status[id]==='ready'?count+' MOCK in view':state.status[id]==='unavailable'&&entries?.length?'UNAVAILABLE · stale last-known MOCK':state.status[id]==='stale'&&entries?.length?'STALE · last-known MOCK':({not_installed:'Not connected yet',unavailable:'Unavailable',stale:'Delayed'}[state.status[id]]||state.status[id]);
 chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?'MOCK':state.status[id]==='not_installed'?'EMPTY':state.status[id].toUpperCase();
@@ -960,7 +962,10 @@ if(o&&typeof o==='object'&&o.type==='raster'&&o.tiles===`/api/v4/components/${id
       {from:o.hideFromZoom,tol:validNum(o.hideTolerance)?clamp(o.hideTolerance,0,120):40,
        rgb:o.hideColours.filter(c=>typeof c==='string'&&/^#[0-9a-fA-F]{6}$/.test(c)).slice(0,12).map(c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16)))}:null};
 const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,5000,120000):30000;
-return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<serverNow()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs,groupStacks:f.groupStacks===true};}
+// 4.25.0 (owner 5 Nov 22:05, "belt and braces"): a layer may say it is showing its timetable (scheduled) rather than live
+// reports, and give the real reason for a break (noticeDetail) - shown only on the owner's full page. Generic.
+const noticeDetail=typeof f.noticeDetail==='string'?f.noticeDetail.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,200):'';
+return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<serverNow()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs,groupStacks:f.groupStacks===true,scheduled:f.scheduled===true,noticeDetail};}
 // 4.1.0 optional motion hint from an engine. HQ only does generic arithmetic with it
 // (straight-line "carry on at this speed" or "head for this point by this time");
 // anything malformed is ignored and the vehicle simply stays at its reported position.

@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.3.1'
+ENGINE_VERSION = '1.4.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -109,6 +109,17 @@ MAX_TRAINS = 20000
 MAX_PER_VIEW = 400
 MAX_VIEW_SPAN = 4.0          # degrees of latitude
 DEMAND_WINDOW = max(5, int(os.environ.get('TPA_RAIL_DEMAND_SECONDS', '600') or 600))
+# 1.4.0 (owner 5 Nov 22:05, "belt and braces, Yorkshire style"): after Network Rail refuses the login, try again after
+# 2, 5, then every 10 minutes (was 30), and after the live feed has been away this long, draw timetable trains instead
+def _seconds_list(text, default):
+    try:
+        got = [max(1, int(x)) for x in str(text).split(',') if x.strip()]
+        return got or default
+    except ValueError:
+        return default
+RETRY_AFTER_REFUSAL = _seconds_list(os.environ.get('TPA_RAIL_RETRY_SECONDS', ''), [120, 300, 600])
+TIMETABLE_AFTER = max(1, int(os.environ.get('TPA_RAIL_TIMETABLE_AFTER', '180') or 180))
+STARTED_AT = time.time()
 HEARTBEAT_MS = 15000
 # 0.2.1: on a server set TPA_RAIL_ALWAYS_ON=1 to listen 24/7, so the map is
 # already full when someone opens it. Off by default (PC: only while viewed).
@@ -149,6 +160,7 @@ TIMING_POINTS_FILE = Path(os.environ.get('TPA_RAIL_TIMING_POINTS_FILE') or (Path
 LOCK = threading.Lock()
 STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': False, 'connectedAt': 0.0,
          'lastMessageAt': 0.0, 'lastError': '' if HAVE_LOGIN else 'no-login', 'authRejectedUntil': 0.0,
+         'loginRefusals': 0, 'networkRailSaid': '', 'networkRailSaidAt': 0.0, 'liveLostAt': time.time(),   # 1.4.0
          'lastDemandAt': 0.0, 'messages': 0, 'movements': 0, 'unplaced': 0, 'bytes': 0,
          'points': {}, 'atPoints': 0, 'restored': 0, 'startsRestored': 0, 'dirty': False, 'savedAt': 0.0,
          'trackLoaded': False, 'trackError': '', 'cancelledSeen': 0, 'reinstatedSeen': 0,
@@ -913,6 +925,9 @@ def read_schedule(stream, days: list) -> dict:
                     heads.setdefault(v[3] + '|' + v[4], set()).add((v[1], v[2]))
                     uids.setdefault(v[3] + '|' + v[4], []).append(uid)
         out[d]['#heads'] = {h: list(next(iter(kinds))) for h, kinds in heads.items() if len(kinds) == 1}
+        if d == days[0]:   # 1.4.0: each train's headcode and operator, for timetable trains while the live feed is away
+            out[d]['#headOf'] = {uid: v[3] + '|' + v[4] for uid, v in best[d].items()
+                                 if v[5] and re.fullmatch(r'[0-9][A-Z][0-9]{2}', v[3]) and (uid not in cancelled[d] or v[0] > 1)}
         out[d]['#uidOf'] = {h: u[0] for h, u in uids.items() if len(u) == 1}   # 1.0.0: the one train with that headcode + operator
     return out
 
@@ -921,10 +936,10 @@ def load_schedule() -> bool:
     days = [uk_today(), uk_today(1)]
     try:
         cached = json.loads(CLASSES_FILE.read_text(encoding='utf-8'))
-        if days[1] in cached.get('days', {}) and cached.get('v') == 3:   # made today by this version: use it
+        if days[1] in cached.get('days', {}) and cached.get('v') in (3, 4):   # made today (1.4.0 adds '#headOf'; v3 still fine)
             BOOKED.clear(); BOOKED.update(cached['days'])
             with LOCK:
-                STATE.update(bookedDays=sorted(BOOKED), bookedTrains=max(0, len(BOOKED.get(days[0], {})) - 3), scheduleError='',
+                STATE.update(bookedDays=sorted(BOOKED), bookedTrains=sum(1 for k in BOOKED.get(days[0], {}) if k[:1] != '#'), scheduleError='',
                              scheduleBuiltAt=cached.get('builtAt', 0.0))
             return True
     except (OSError, ValueError, AttributeError, TypeError):
@@ -964,15 +979,15 @@ def load_schedule() -> bool:
     BOOKED.clear(); BOOKED.update(booked)
     built = time.time()
     with LOCK:
-        STATE.update(bookedDays=sorted(BOOKED), bookedTrains=len(booked[days[0]]) - 3, scheduleError='', scheduleBuiltAt=built)
+        STATE.update(bookedDays=sorted(BOOKED), bookedTrains=sum(1 for k in booked[days[0]] if k[:1] != '#'), scheduleError='', scheduleBuiltAt=built)
     try:
         DATA.mkdir(parents=True, exist_ok=True)
         tmp = CLASSES_FILE.with_suffix('.tmp')
-        tmp.write_text(json.dumps({'v': 3, 'builtAt': built, 'days': booked}), encoding='utf-8')
+        tmp.write_text(json.dumps({'v': 4, 'builtAt': built, 'days': booked}), encoding='utf-8')
         tmp.replace(CLASSES_FILE)
     except OSError:
         pass
-    print(f'Timetable ready: {len(booked[days[0]]) - 3} trains booked today, with what each is booked to be and where it goes', flush=True)
+    print(f'Timetable ready: {sum(1 for k in booked[days[0]] if k[:1] != "#")} trains booked today, with what each is booked to be and where it goes', flush=True)
     return True
 
 
@@ -1345,6 +1360,15 @@ def read_frames(sock, buffer: bytearray):
         yield lines[0].strip(), headers, body
 
 
+def note_network_rail_said(headers: dict, body: bytes) -> None:
+    """1.4.0: keep Network Rail's own words when it says no (for the owner: /status, tpa-status and the full page)."""
+    parts = [clean(headers.get('message'), 120), clean(body.decode('utf-8', 'replace').replace('\n', ' '), 120)]
+    said = ' · '.join(p.strip() for p in parts if p and p.strip())[:160]
+    with LOCK:
+        STATE['networkRailSaid'], STATE['networkRailSaidAt'] = said or '(no reason given)', time.time()
+    print('Network Rail said:', said or '(no reason given)', flush=True)
+
+
 def feed_session() -> None:
     """One connection: connect, subscribe, read until nobody is viewing or an error occurs."""
     sock = socket.create_connection((FEED_HOST, FEED_PORT), timeout=20)
@@ -1364,6 +1388,7 @@ def feed_session() -> None:
             buffer += chunk
             for command, headers, body in read_frames(sock, buffer):
                 if command == 'ERROR':
+                    note_network_rail_said(headers, body)
                     raise PermissionError('login-rejected')
                 if command == 'CONNECTED':
                     connected = True
@@ -1374,7 +1399,7 @@ def feed_session() -> None:
         if td_now:
             sock.sendall(frame('SUBSCRIBE', {'id': '2', 'destination': TD_TOPIC, 'ack': 'auto'}))
         with LOCK:
-            STATE.update(connected=True, connectedAt=time.time(), lastMessageAt=time.time(), lastError='')
+            STATE.update(connected=True, connectedAt=time.time(), lastMessageAt=time.time(), lastError='', loginRefusals=0)
         print('Network Rail feed: connected and listening', flush=True)
         sock.settimeout(5)
         last_beat = time.time()
@@ -1406,6 +1431,7 @@ def feed_session() -> None:
                 raise ValueError('frame-too-large')
             for command, headers, body in read_frames(sock, buffer):
                 if command == 'ERROR':
+                    note_network_rail_said(headers, body)
                     raise PermissionError('feed-error')
                 if command != 'MESSAGE':
                     continue
@@ -1421,6 +1447,8 @@ def feed_session() -> None:
                         (handle_td if signalling else handle_message)(item, time.time())
     finally:
         with LOCK:
+            if STATE['connected']:
+                STATE['liveLostAt'] = time.time()     # 1.4.0: how long the live feed has been away
             STATE['connected'] = False
         try:
             sock.close()
@@ -1455,13 +1483,15 @@ def feed_loop() -> None:
                 STATE['lastError'] = str(exc)
                 if td_refused:   # 0.6.0: never let the signalling feed cost us the train reports: carry on without it for 6 hours
                     STATE['tdBlockedUntil'] = time.time() + 6 * 3600
-                else:
-                    STATE['authRejectedUntil'] = time.time() + 1800
+                else:            # 1.4.0: 2, 5, then every 10 minutes (was 30)
+                    wait = RETRY_AFTER_REFUSAL[min(STATE['loginRefusals'], len(RETRY_AFTER_REFUSAL) - 1)]
+                    STATE['loginRefusals'] += 1
+                    STATE['authRejectedUntil'] = time.time() + wait
             if td_refused:
                 print('Network Rail refused the signalling feed - carrying on with train reports only for 6 hours', flush=True)
                 time.sleep(5)
             else:
-                print('Network Rail feed:', exc, '- will not retry for 30 minutes', flush=True)
+                print('Network Rail feed:', exc, f'- trying again in {wait} s', flush=True)
         except (OSError, TimeoutError, ConnectionError, ValueError) as exc:
             with LOCK:
                 STATE['lastError'] = (str(exc) or type(exc).__name__)[:40]
@@ -1542,7 +1572,12 @@ def journey(t: dict, now: float):
     calls = [i for i in range(len(stops)) if i == 0 or i == len(stops) - 1 or stops[i][2] > stops[i][1]]
     # how far it has got: everything before `cut` is done; `here` is a call it is standing at
     leg, here = t.get('vleg'), None
-    if leg and isinstance(leg.get('idx'), int):
+    if t.get('byClock'):                                   # 1.4.0: a timetable train - where the timetable says, by the clock
+        secs = now - uk_midnight(t.get('day') or uk_today())
+        cut = next((i for i in range(len(stops)) if stops[i][1] > secs), len(stops))
+        if 0 < cut <= len(stops) and stops[cut - 1][2] >= secs:
+            here = cut - 1
+    elif leg and isinstance(leg.get('idx'), int):
         cut = leg['idx']
         if now < leg.get('start', 0):                      # still waiting at the place before the next one
             cut -= 1
@@ -1580,7 +1615,125 @@ def journey(t: dict, now: float):
     return {'summary': summary[:200], 'stops': out[:120]}
 
 
+# ---------------------------------------------------------------- 1.4.0 timetable trains while the live feed is away
+# (owner 5 Nov 22:05: "we need a fall back from this, users will think it's not so good")
+ATOC_TO_TRUST = {v: k for k, v in ATOC_OF.items()} | {'SN': '88', 'TL': '88', 'GN': '88', 'SE': '80', 'SW': '84', 'ME': '64',
+                                                       'SR': '60', 'AW': '71', 'CH': '74', 'CC': '79', 'GR': '61', 'VT': '65'}
+TT = {'day': '', 'index': [], 'heads': {}, 'at': 0.0, 'trains': []}
+TT_REFRESH = 10
+
+
+def headcode_of(uid: str) -> tuple:
+    """(headcode, TRUST operator code) for a booked train, or ('', '')."""
+    day = BOOKED.get(uk_today()) or {}
+    got = (day.get('#headOf') or {}).get(uid) or TT['heads'].get(uid) or ''
+    head, _, atoc = got.partition('|')
+    return head, ATOC_TO_TRUST.get(atoc, '')
+
+
+def timetable_mode(now: float) -> bool:
+    """Caller holds LOCK. True while the live feed should be running but has been away a while for a reason."""
+    if STATE['connected'] or not HAVE_LOGIN or not (STATE['lastError'] or STATE['authRejectedUntil'] > now):
+        return False
+    if now - max(STATE['liveLostAt'], STARTED_AT) < TIMETABLE_AFTER:
+        return False
+    return bool((BOOKED.get(uk_today()) or {}).get('#stops'))
+
+
+def timetable_index(today: str) -> list:
+    """Once a day: (first time, last time, uid) for every booked train, read from the ends of its stops."""
+    if TT['day'] == today:
+        return TT['index']
+    day = BOOKED.get(today) or {}
+    index = []
+    for uid, text in (day.get('#stops') or {}).items():
+        try:
+            first, last = text.split(';', 1)[0].split(','), text.rsplit(';', 1)[-1].split(',')
+            index.append((int(first[2]), int(last[1]), uid))
+        except (ValueError, IndexError):
+            continue
+    heads = {}
+    if not day.get('#headOf'):            # a timetable copy made before 1.4.0: the trains whose headcode + operator are unique
+        heads = {u: k for k, u in (day.get('#uidOf') or {}).items()}
+    TT.update(day=today, index=index, heads=heads, at=0.0, trains=[])
+    return index
+
+
+def timetable_trains(now: float) -> list:
+    """Caller holds LOCK. Booked passenger trains running now (by the clock) and where the timetable puts them; a train
+    the live feed still has is left to the live feed. Worked out at most every TT_REFRESH seconds."""
+    if now - TT['at'] < TT_REFRESH:
+        return TT['trains']
+    today = uk_today()
+    secs = now - uk_midnight(today)
+    live = {t.get('uid') for t in STATE['trains'].values() if t.get('uid') and now - t['when'] < DROP_AFTER}
+    out = []
+    for start, end, uid in timetable_index(today):
+        if not (start <= secs <= end) or uid in live:
+            continue
+        head, toc = headcode_of(uid)
+        if head[:1] not in ('1', '2', '9'):
+            continue
+        stops = stops_of(uid)
+        nxt = next((i for i in range(len(stops)) if stops[i][1] > secs), None)
+        if nxt is None or nxt == 0:
+            continue
+        prev = nxt - 1
+        if stops[prev][2] >= secs:          # standing at a place, as booked
+            spot = place(stops[prev][0])
+            if not spot:
+                continue
+            out.append({'uid': uid, 'head': head, 'toc': toc, 'at': (spot[0], spot[1]), 'from': None})
+            continue
+        a, b = prev, nxt                    # between two places: the nearest ones we know on each side
+        while a > 0 and place(stops[a][0]) is None:
+            a -= 1
+        while b < len(stops) - 1 and place(stops[b][0]) is None:
+            b += 1
+        pa, pb = place(stops[a][0]), place(stops[b][0])
+        if not pa or not pb:
+            continue
+        t0, t1 = stops[a][2], stops[b][1]
+        f = min(1.0, max(0.0, (secs - t0) / max(1, t1 - t0)))
+        out.append({'uid': uid, 'head': head, 'toc': toc, 'at': (pa[0] + (pb[0] - pa[0]) * f, pa[1] + (pb[1] - pa[1]) * f),
+                    'from': (pa[0], pa[1]), 'to': (pb[0], pb[1]), 'start': uk_midnight(today) + t0, 'end': uk_midnight(today) + t1,
+                    'ease': easing(stops[a][2] > stops[a][1] or a == 0, stops[b][2] > stops[b][1] or b == len(stops) - 1)})
+    TT.update(at=now, trains=out)
+    return out
+
+
+def timetable_details(entity_id: str) -> dict:
+    out = {'component': COMPONENT, 'id': entity_id, 'rows': []}
+    uid = entity_id[7:].replace('_', ' ')
+    head, toc = headcode_of(uid)
+    if not re.fullmatch(r'[A-Z0-9 ]{6}', uid) or not head:
+        out['note'] = 'This train is not in today\'s timetable.'
+        return out
+    t = {'uid': uid, 'day': uk_today(), 'headcode': head, 'toc': toc, 'byClock': True, 'event': '', 'terminated': False,
+         'minutes': 0, 'variation': '', 'cancelled': False}
+    rows = out['rows']
+
+    def add(label, value):
+        if value:
+            rows.append({'label': label, 'value': str(value)[:120]})
+    what, drawing = booked_class(t)
+    out['picture'] = drawing or kind_of(t)[0]
+    with LOCK:
+        trip = journey(t, time.time())
+    if trip:
+        out.update(trip)
+    add('Train', head)
+    add('Type', kind_of(t)[1])
+    add('Train type', what)
+    add('Operator', OPERATORS.get(toc))
+    add('Status', 'Timetable, not live')
+    out['note'] = 'Shown where the timetable says it should be while the live train feed takes a short break.'
+    return out
+
+
 def details(entity_id: str) -> dict:
+    if entity_id.startswith('rail:TT'):
+        return timetable_details(entity_id)
     out = {'component': COMPONENT, 'id': entity_id, 'rows': []}
     tid = entity_id[5:] if entity_id.startswith('rail:') else ''
     with LOCK:
@@ -1662,11 +1815,25 @@ def snapshot(view) -> dict:
         settle_arrivals(now)
         trains = list(STATE['trains'].items())
         connected_for = now - STATE['connectedAt'] if STATE['connected'] else 0
+        scheduled = timetable_mode(now)
+        booked_now = list(timetable_trains(now)) if scheduled else []
+        said, retry_at = STATE['networkRailSaid'], STATE['authRejectedUntil']
+        away = HAVE_LOGIN and not STATE['connected'] and bool(STATE['lastError'] or retry_at > now)
     frame_out = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
                  'observedAt': iso(now), 'receivedAt': iso(now), 'expiresAt': iso(now + 90),
                  'nextPollAfterMs': 15000, 'attribution': ATTRIBUTION, 'entities': [],
                  # 0.4.3 (owner 4 Nov 11:20: unreadable headcodes where trains sit on top of each other): one badge per pile
                  'groupStacks': True}
+    # 1.4.0 (owner 5 Nov 22:05): visitors get a friendly line; the real reason goes in noticeDetail (the owner's full page)
+    if away:
+        detail = (notice or 'Live train feed away') + (f' · Network Rail said: {said}' if said and notice else '')
+        if retry_at > now:
+            detail += f' · trying again at {uk_clock(retry_at)}'
+        frame_out['noticeDetail'] = detail[:200]
+        notice = 'Live train feed taking a short break · ' + ('showing trains from the timetable' if scheduled else 'back shortly')
+    if scheduled:
+        frame_out.update(health='ready', scheduled=True)
+        h = 'ready'
     if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame_out['notice'] = 'Zoom in to see trains'
         return frame_out
@@ -1731,8 +1898,41 @@ def snapshot(view) -> dict:
                 if ease:
                     entity['motion']['ease'] = ease
         frame_out['entities'].append(entity)
+    # 1.4.0: timetable trains, while the live feed is away
+    room = MAX_PER_VIEW - len(frame_out['entities'])
+    near = []
+    for b in booked_now:
+        lat, lon = b['at']
+        crossing = b['from'] and min(b['from'][0], b['to'][0]) <= n and max(b['from'][0], b['to'][0]) >= s \
+            and min(b['from'][1], b['to'][1]) <= e and max(b['from'][1], b['to'][1]) >= w
+        if (s <= lat <= n and w <= lon <= e) or crossing:
+            near.append(((lat - clat) ** 2 + (lon - clon) ** 2, b))
+    near.sort(key=lambda x: x[0])
+    for _, b in near[:max(0, room)]:
+        t = {'headcode': b['head']}
+        entity = {'id': 'rail:TT' + b['uid'].replace(' ', '_'), 'label': f"Train {b['head']} · timetable, not live",
+                  'badge': b['head'], 'variant': kind_of(t)[0] or None, 'quality': 'estimated', 'observedAt': iso(now)}
+        if b['from'] is None:
+            entity['position'] = dict(zip(('lon', 'lat'), on_track(b['at'][1], b['at'][0])), headingDeg=None)
+        else:
+            key = (round(b['from'][0], 5), round(b['from'][1], 5), round(b['to'][0], 5), round(b['to'][1], 5))
+            with LOCK:
+                path = ROUTES.get(key)
+                if path is None and STATE['trackLoaded'] and key not in PENDING_SET and len(PENDING) < 5000:
+                    PENDING.append(key); PENDING_SET.add(key); ROUTE_WAKE.set()
+            if path:                                   # glides along the real track, as booked
+                entity['position'] = dict(zip(('lon', 'lat'), on_track(b['from'][1], b['from'][0])), headingDeg=None)
+                entity['observedAt'] = iso(b['start'])
+                entity['motion'] = {'mode': 'path', 'points': path, 'arriveAt': iso(b['end']),
+                                    'maxSeconds': round(min(7700, b['end'] - b['start'] + 120))}
+                if b.get('ease'):
+                    entity['motion']['ease'] = b['ease']
+            else:                                      # the track route is still being worked out: where it is now
+                entity['position'] = {'lon': b['at'][1], 'lat': b['at'][0], 'headingDeg': None}
+        frame_out['entities'].append(entity)
     with LOCK:
         STATE['drawnOnPlatform'] = on_platform
+        STATE['timetableTrainsNow'] = len(booked_now)
     if not frame_out['entities'] and h == 'ready' and not notice and connected_for < 600:
         frame_out['notice'] = 'Listening · trains appear as they report at stations'
     elif len(inside) > MAX_PER_VIEW and not notice:
@@ -1779,6 +1979,10 @@ class Handler(BaseHTTPRequestHandler):
                                         'loginConfigured': HAVE_LOGIN, 'connected': STATE['connected'],
                                         'stationsKnown': len(STATE['stations'] or {}), 'referenceError': STATE['referenceError'],
                                         'lastError': STATE['lastError'], 'trainsTracked': len(STATE['trains']),
+                                        'loginRefusals': STATE['loginRefusals'], 'networkRailSaid': STATE['networkRailSaid'],
+                                        'timetableTrainsNow': STATE.get('timetableTrainsNow', 0) if timetable_mode(time.time()) else 0,
+                                        'networkRailSaidAt': iso(STATE['networkRailSaidAt']) if STATE['networkRailSaidAt'] else None,
+                                        'tryingAgainAt': iso(STATE['authRejectedUntil']) if STATE['authRejectedUntil'] > time.time() else None,
                                         'timingPointsKnown': len(STATE['points']), 'movementsAtTimingPoints': STATE['atPoints'],
                                         'trainsRestoredAtStart': STATE['restored'], 'trainStartsRestored': STATE['startsRestored'], 'alwaysOn': ALWAYS_ON,
                                         'trackMapLoaded': STATE['trackLoaded'], 'trackRoutesKnown': sum(1 for v in ROUTES.values() if v),
