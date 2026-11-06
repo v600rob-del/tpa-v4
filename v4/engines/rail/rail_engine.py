@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.3.0'
+ENGINE_VERSION = '1.3.1'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -1041,11 +1041,11 @@ def booked_class(t: dict):
     elif power == 'DMU' and not load:
         load = BLANK_DMU_BY_OPERATOR.get(t.get('toc', ''), '')
         if not load:
-            return 'Diesel train (type not given)', ''
+            return 'Diesel train (type not given)', 'cdiesel'   # 1.3.1 (owner 11:39): TPA's generic diesel picture
     if power == 'DMU' and load == 'E':
         load = DMU_E_BY_OPERATOR.get(ATOC_OF.get(t.get('toc', ''), ''), '')
         if not load:
-            return 'Class 158 or 170', ''
+            return 'Class 158 or 170', 'cdiesel'
     elif power == 'DMU' and load in DMU_LOADS:
         load = DMU_LOADS[load]
     elif power in ('EMU', 'EML') and load in EMU_LOADS:
