@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.10.0'
+ENGINE_VERSION = '0.10.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1565,6 +1565,10 @@ def details(entity_id: str) -> dict:
     except Exception:
         pass
     route = route or v.get('route') or ''
+    # 0.10.1 (owner 10 Nov 13:15, a Hull bus: "adding east midland would confuse a Hull user"): Stagecoach is one name
+    # nationwide; its regional company names ("Stagecoach East Midlands" runs Hull) mean nothing to passengers.
+    if company.lower().startswith('stagecoach'):
+        company = 'Stagecoach'
     first, last = stops[0], stops[-1]
     who = (company + ' ' if company else '') + (f'number {route} ' if route else '')
     out['summary'] = (f'This is the {who}{"coach" if picture == "coach" else "bus"}, the {_clock(first[4])} from {_stop_name(first[1], first[2])} '
