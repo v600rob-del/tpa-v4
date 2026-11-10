@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.11.0'
+ENGINE_VERSION = '0.11.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1527,8 +1527,11 @@ def bus_kind(key: str) -> tuple:
     noc = noc.upper()
     whose, row = fleet_lists.lookup(noc, vehicle, FLEET_LISTS)
     if row:                                        # 0.11.0: an exact match in a published fleet list
+        if not row.get('plate') and noc == 'TFLO':  # 0.11.1: a London bus's id IS its plate (and older kept copies lack it)
+            row = dict(row, plate=fleet_lists.plate(vehicle))
         more = [{'label': label, 'value': str(row.get(k) or '')[:60]}
-                for label, k in (('Model', 'model'), ('Power', 'power'), ('Fleet number', 'fleet'), ('First registered', 'year'))
+                for label, k in (('Model', 'model'), ('Power', 'power'), ('Fleet number', 'fleet'), ('Number plate', 'plate'),
+                                 ('First registered', 'year'))
                 if row.get(k)]
         return row['picture'], f"{row['kind']} (from {whose}'s fleet list)", more
     if noc in KIND_BY_OPERATOR:
@@ -1662,7 +1665,7 @@ def details(entity_id: str) -> dict:
     calls = []
     for i, (st, state) in enumerate(zip(stops, states)):
         booked = st[4] if i == 0 else st[3]
-        stop = {'name': _stop_name(st[1], st[2])[:40], 'state': state, 'time': _clock(booked)}
+        stop = {'name': _stop_name(st[1], st[2])[:80], 'state': state, 'time': _clock(booked)}   # 0.11.1: 80, wrapped by HQ
         if state == 'due' and late is not None and abs(late) >= 2:
             stop['expected'] = _clock(booked + late * 60)
         calls.append(stop)

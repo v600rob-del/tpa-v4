@@ -132,7 +132,9 @@ h1 em{color:var(--amber)}
 .detail-stops .stop{display:flex;gap:8px;align-items:baseline;font-size:12px;line-height:1.55;padding-left:12px;position:relative}
 .detail-stops .stop::before{content:"";position:absolute;left:2px;top:.55em;width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.8}
 .detail-stops .stop-time{min-width:38px;font-variant-numeric:tabular-nums}
-.detail-stops .stop-name{flex:1}
+.detail-stops .stop-name{flex:1;min-width:0;overflow-wrap:anywhere}   /* 4.32.0: long names wrap, never cut */
+/* 4.32.0: a number plate looks like a UK rear plate */
+.detail-value.plate{display:inline-block;justify-self:start;padding:1px 8px;border-radius:3px;background:#f7d117;color:#111;border:1px solid #111;font:700 13px/1.35 'Barlow Semi Condensed',Barlow,sans-serif;letter-spacing:.08em}
 .detail-stops .stop-exp{font-size:10px;color:var(--amber)}
 .detail-stops .stop.done{color:#6f8293}
 .detail-stops .stop.due{color:var(--green)}

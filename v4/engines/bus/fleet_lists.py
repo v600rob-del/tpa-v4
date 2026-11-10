@@ -37,6 +37,12 @@ def norm(text: str) -> str:
     return re.sub(r'[^A-Z0-9]', '', (text or '').upper())
 
 
+def plate(text: str) -> str:
+    """'LJ09KRO' -> 'LJ09 KRO' (today's style of plate); others as written."""
+    n = norm(text)
+    return f'{n[:4]} {n[4:]}' if re.fullmatch(r'[A-Z]{2}\d{2}[A-Z]{3}', n) else (text or '').strip().upper()[:10]
+
+
 def _local(tag: str) -> str:
     return tag.rsplit('}', 1)[-1]
 
@@ -94,7 +100,7 @@ def parse_tfl(raw: bytes) -> dict:
         out[reg] = {'picture': 'dd' if deck == 'double' else 'sd',
                     'kind': 'Double decker' if deck == 'double' else 'Single decker',
                     'model': f'{body} body on a {chassis}' if body and chassis else (body or chassis),
-                    'power': get(r, 'power')[:20], 'fleet': get(r, 'fleet')[:12],
+                    'power': get(r, 'power')[:20], 'fleet': get(r, 'fleet')[:12], 'plate': plate(get(r, 'reg')),
                     'year': get(r, 'year')[:4] if re.fullmatch(r'\d{4}', get(r, 'year')[:4]) else ''}
     return out
 
