@@ -169,6 +169,12 @@ def parse_ey(raw: bytes) -> dict:
             if em and _kind_of(_text(em.group(1))):
                 found = (_text(cell[:em.start()]), _kind_of(_text(em.group(1))))
                 break
+        if not found:              # 0.12.7 (owner's peek 20:38): bus 402's cell is just "Double decker bus" - no model
+            for cell in re.findall(r'<td\b[^>]*>(.*?)</td>', chunk, re.S):
+                words = _text(cell)
+                if re.fullmatch(r'[A-Za-z -]{4,30}', words) and _kind_of(words):
+                    found = ('', _kind_of(words))
+                    break
         if not found or not re.fullmatch(r'[A-Za-z0-9]{1,12}', fleet):
             skipped += 1
             continue
@@ -184,7 +190,7 @@ def parse_ey(raw: bytes) -> dict:
 
 
 parse_ey.skipped = 0
-PARSER_VERSION = 2       # 0.12.6: a kept list read by an older reader is read again at once
+PARSER_VERSION = 3       # 0.12.6: a kept list read by an older reader is read again at once; 3: 0.12.7 (no-model rows)
 
 
 PARSERS = {'tfl': (lambda: TFL_URL, parse_tfl), 'ey': (lambda: EY_URL, parse_ey), 'nct': (lambda: NCT_URL, parse_ey)}
