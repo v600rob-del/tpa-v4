@@ -493,6 +493,13 @@ class Timetable:
                 out.append((sid,) + (tuple(s) if s else (None, None, '', '')) + (arr, dep))
             return out
 
+    def trip_info(self, trip_id):
+        """(route number, bus company name) for one journey; '' where the timetable has none."""
+        with self.lock:
+            row = self.db.execute('SELECT r.short_name, a.name FROM trips t LEFT JOIN routes r ON r.route_id = t.route_id '
+                                  'LEFT JOIN agency a ON a.agency_id = r.agency_id WHERE t.trip_id=?', (trip_id,)).fetchone()
+        return (row[0] or '', row[1] or '') if row else ('', '')
+
     def shape_of(self, trip_id):
         """The route's line [(lon, lat), ...], or [] if the timetable has none for this journey."""
         with self.lock:

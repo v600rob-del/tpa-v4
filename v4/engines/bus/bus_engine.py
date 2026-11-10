@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.8.12'
+ENGINE_VERSION = '0.9.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1500,10 +1500,26 @@ def details(entity_id: str) -> dict:
     if not stops:
         out['note'] = 'Its timetable has no stops listed.'
         return out
+    # 0.9.0 (owner 10 Nov 10:18: "get a similar look to the trains dialogue that opens when clicked"): a sentence
+    # saying which bus it is, and its stops in order - done / here / due - drawn by HQ like a train's calling points.
+    route, company = ('', '')
+    try:
+        route, company = TIMETABLE['tt'].trip_info(trip)
+    except Exception:
+        pass
+    route = route or v.get('route') or ''
     first, last = stops[0], stops[-1]
-    out['rows'].append({'label': 'From', 'value': f'{_stop_name(first[1], first[2])} · left {_clock(first[4])}'[:100]})
-    out['rows'].append({'label': 'To', 'value': f'{_stop_name(last[1], last[2])} · due {_clock(last[3])}'[:100]})
-    # where the bus is shown now (REPLAY_SECONDS behind its reports) along its route
+    who = (company + ' ' if company else '') + (f'number {route} ' if route else '')
+    out['summary'] = (f'This is the {who}bus, the {_clock(first[4])} from {_stop_name(first[1], first[2])} '
+                      f'to {_stop_name(last[1], last[2])}.')[:200]
+    # the moment it is shown at (REPLAY_SECONDS behind its reports), on its journey's own clock
+    shown_clock = None
+    try:
+        started = datetime.fromisoformat(str(v.get('dep') or '').replace('Z', '+00:00')).timestamp()
+        shown_clock = first[4] + (time.time() - REPLAY_SECONDS - started)
+    except (TypeError, ValueError):
+        pass
+    # where the bus is shown now along its route
     shown_m = None
     if f and f[1] and sh is not None:
         r = replay.track(sh, f[1], time.time(), REPLAY_SECONDS)
@@ -1512,13 +1528,60 @@ def details(entity_id: str) -> dict:
             # look near its own reports first (a route can pass the same place twice)
             got = sh.project(lon, lat, max(0.0, f[1][0][1] - 1), f[1][-1][1] + 1) or sh.project(lon, lat)
             shown_m = got[0] if got else None
+    states = []
     if shown_m is not None:
-        nxt = next((st for st in stops if st[0] is not None and st[0] > shown_m + 15), None)
-        if nxt is None:
-            out['rows'].append({'label': 'Next stop', 'value': 'End of the route'})
+        for st in stops:
+            if st[0] is None:
+                states.append(None)
+            else:
+                states.append('done' if st[0] < shown_m - 15 else 'here' if st[0] <= shown_m + 15 else 'due')
+        # a stop that could not be placed on the route takes the state of the next one that could
+        nxt_state = 'due'
+        for i in range(len(states) - 1, -1, -1):
+            if states[i] is None:
+                states[i] = 'done' if nxt_state in ('done', 'here') else 'due'
+            else:
+                nxt_state = states[i]
+    elif shown_clock is not None:
+        states = ['done' if (st[4] if i == 0 else st[3]) < shown_clock else 'due' for i, st in enumerate(stops)]
+    else:
+        states = ['due'] * len(stops)
+    # how late: where it is against when the timetable has it there (only when it is on its route)
+    late = None
+    known = [st for st in stops if st[0] is not None]
+    if shown_m is not None and shown_clock is not None and known:
+        if shown_m <= known[0][0] + 15:
+            due_then = known[0][4]
+        elif shown_m >= known[-1][0]:
+            due_then = known[-1][3]
         else:
-            out['rows'].append({'label': 'Next stop', 'value': f'{_stop_name(nxt[1], nxt[2])} · timetabled {_clock(nxt[3])}'[:100]})
-    out['note'] = 'Times are from the timetable; the bus may be early or late.'
+            due_then = None
+            for a, b in zip(known, known[1:]):
+                if a[0] <= shown_m < b[0]:
+                    if shown_m <= a[0] + 15 or b[0] - a[0] < 1:
+                        due_then = a[4]
+                    else:
+                        due_then = a[4] + (b[3] - a[4]) * (shown_m - a[0]) / (b[0] - a[0])
+                    break
+        if due_then is not None and abs(shown_clock - due_then) <= 90 * 60:
+            late = round((shown_clock - due_then) / 60)
+    if late is not None:
+        out['rows'].append({'label': 'Running', 'value': 'About on time' if abs(late) <= 1 else
+                            f'About {late} min late' if late > 0 else f'About {-late} min early'})
+    calls = []
+    for i, (st, state) in enumerate(zip(stops, states)):
+        booked = st[4] if i == 0 else st[3]
+        stop = {'name': _stop_name(st[1], st[2])[:40], 'state': state, 'time': _clock(booked)}
+        if state == 'due' and late is not None and abs(late) >= 2:
+            stop['expected'] = _clock(booked + late * 60)
+        calls.append(stop)
+    if len(calls) > 120:     # a very long route: keep the part around where the bus is
+        at = next((i for i, c in enumerate(calls) if c['state'] != 'done'), len(calls))
+        cut = max(0, min(at - 10, len(calls) - 120))
+        calls = calls[cut:cut + 120]
+    out['stops'] = calls
+    out['note'] = ('Times are from the timetable; expected times are estimated from where the bus is on its route.'
+                   if late is not None else 'Times are from the timetable; the bus may be early or late.')
     return out
 
 
