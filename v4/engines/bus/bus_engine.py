@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.11.3'
+ENGINE_VERSION = '0.12.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1499,6 +1499,15 @@ FLEET_SCHEMES = {
     'first': {'1': ('sd', 'Articulated single decker (bendy bus)'), '2': ('coach', 'Coach'), '3': ('dd', 'Double decker'),
               '4': ('sd', 'Midi single decker'), '5': ('sd', 'Minibus or small single decker'), '6': ('sd', 'Single decker')},
 }
+# 0.12.0 (owner 10 Nov 16:17 "Yes to 1" = Nottingham): Nottingham City Transport's fleet numbers, from the owner's
+# check at 16:24 - all 258 live buses matched to their timetabled journey (ticket number + route), whose timetable names
+# the kind. Only ranges actually seen; journeys and buses disagreed twice (211, 270), as expected when a depot sends a
+# different bus from the one planned, so the number (the real bus) is used rather than the journey (the plan).
+FLEET_RANGES = {
+    'NCTR': [(96, 97, 'dd', 'Double decker'), (201, 222, 'sd', 'Small single decker'), (251, 292, 'sd', 'Midi single decker'),
+             (355, 358, 'sd', 'Midi single decker'), (401, 542, 'dd', 'Double decker'), (601, 676, 'dd', 'Double decker'),
+             (1002, 1016, 'dd', 'Double decker')],
+}
 # companies seen in the owner's checks (10 Nov), used when the timetable cannot name the company
 GROUP_BY_NOC = {**{n: 'stagecoach' for n in ('SCEM', 'SCSO', 'SCCU', 'SCNE', 'SDVN', 'SCNH', 'SCEK', 'SYRK', 'SCCM', 'SSWL',
                                              'SCGL', 'SCMY')},
@@ -1537,6 +1546,11 @@ def bus_kind(key: str) -> tuple:
         return row['picture'], f"{row['kind']} (from {whose}'s fleet list)", more
     if noc in KIND_BY_OPERATOR:
         return KIND_BY_OPERATOR[noc] + ([],)
+    if noc in FLEET_RANGES and vehicle.isdigit():
+        for low, high, picture, words in FLEET_RANGES[noc]:
+            if low <= int(vehicle) <= high:
+                return picture, f'{words} (from its fleet number)', []
+        return '', KIND_NOT_GIVEN, []
     scheme = FLEET_SCHEMES.get(bus_group(noc))
     fleet = vehicle.rsplit('-', 1)[-1]            # First sends "FBRI-30057"
     if scheme and re.fullmatch(r'\d{5}', fleet) and fleet[0] in scheme:
