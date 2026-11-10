@@ -520,11 +520,14 @@ def fleetlists(live, tfl_raw, ey_raw):
     print('\nNothing was changed. The bus key was not shown.')
 
 
-def ey_peek(raw):
-    """The page around two buses (one found, one not), and its words about copying - so the type and plate can be read."""
+def ey_peek(raw, fleets=('20376', '20313'), url=EY_FLEET):
+    """The page around two buses, and its words about copying - so the type and plate can be read."""
     text = raw.decode('utf-8', 'replace')
-    print(f'\n=== East Yorkshire fleet page, a peek (look only) ===\nSize {len(raw)} bytes')
-    for fleet in ('20376', '20313'):
+    print(f'\n=== Fleet page, a peek (look only): {url} ===\nSize {len(raw)} bytes')
+    rows = len(re.findall(r'<tr\b', text))
+    print(f'Table rows: {rows}; "data-more-info" (East Yorkshire style): {text.count("data-more-info")}; '
+          f'JSON blocks: {len(re.findall(r"<script[^>]*(?:json|__NEXT_DATA__)", text))}')
+    for fleet in fleets:
         at = [m.start() for m in re.finditer(fleet, text)]
         print(f'\n--- fleet number {fleet}: appears {len(at)} times ---')
         if at:
@@ -595,6 +598,12 @@ def main():
         kinds, journeys = txc_kinds(open(sys.argv[sys.argv.index('--txc-file') + 1], 'rb').read())
         print(f'journeys {journeys}  with a type {sum(kinds.values())}  ' + ', '.join(f'{c}/{d} x{n}' for (c, d), n in kinds.most_common()))
         return
+    if '--peek' in sys.argv:                     # part 7 (owner 19:47): any company's fleet page, e.g. Nottingham's
+        i = sys.argv.index('--peek')
+        url, fleets = sys.argv[i + 1], tuple(sys.argv[i + 2:i + 4]) or ('201', '401')
+        if not url.startswith('https://'):
+            sys.exit('Give the page as https://...')
+        return ey_peek(get(url, 50_000_000), fleets, url)
     if '--ey-peek' in sys.argv:                  # part 6: how East Yorkshire's page writes one bus (look only)
         i = sys.argv.index('--ey-peek')
         raw = open(sys.argv[i + 1], 'rb').read() if i + 1 < len(sys.argv) else get(EY_FLEET, 50_000_000)
