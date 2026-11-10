@@ -330,7 +330,8 @@ def calibrate(buses, journeys, nocs):
     by = collections.defaultdict(list)
     for j in journeys:
         if j['kind']:
-            for k in (('t', j['noc'], j['ticket']), ('c', j['noc'], j['code']), ('l', j['noc'], j['line'], j['dep'])):
+            for k in (('tl', j['noc'], j['ticket'], j['line']), ('t', j['noc'], j['ticket']), ('c', j['noc'], j['code']),
+                      ('l', j['noc'], j['line'], j['dep'][:5])):
                 if all(k[2:]) and k[1]:
                     by[k].append(j['kind'])
     print('\n=== Fleet numbers against the timetable (look only) ===')
@@ -344,20 +345,26 @@ def calibrate(buses, journeys, nocs):
     two = collections.defaultdict(collections.Counter)
     one = collections.defaultdict(collections.Counter)
     how = collections.Counter()
+    why = collections.Counter()
+    odd = []
     for noc in nocs:
         mine = [b for b in buses if b['op'] == noc]
         hit = 0
         for b in mine:
-            kinds, way = [], ''
-            for scope in (noc,):      # 12:40 run: matching across companies paired regional buses with London ones
-                for name, k in (('ticket code', ('t', scope, b['ticket'])), ('journey code', ('c', scope, b['dated'])),
-                                ('route + time', ('l', scope, b['line'], b['dep']))):
-                    if all(k[2:]) and by.get(k):
-                        kinds, way = by[k], name + ('' if scope == noc else ' (any company)')
+            kinds, way, seen = [], '', False
+            # 16:22 run (Nottingham, 7 of 258): a ticket number can be shared by several journeys of different kinds,
+            # so each way is tried in turn and the first with ONE kind wins (12:40: always within the same company)
+            for name, k in (('ticket code + route', ('tl', noc, b['ticket'], b['line'])), ('ticket code', ('t', noc, b['ticket'])),
+                            ('journey code', ('c', noc, b['dated'])), ('route + time', ('l', noc, b['line'], b['dep'][:5]))):
+                if all(k[2:]) and by.get(k):
+                    seen = True
+                    if len(set(by[k])) == 1:
+                        kinds, way = by[k], name
                         break
-                if kinds:
-                    break
-            if not kinds or len(set(kinds)) != 1 or not b['num']:
+            if not kinds or not b['num']:
+                why['found, but more than one kind' if seen else 'no journey found'] += 1
+                if len(odd) < 6:
+                    odd.append(f"fleet {b['fleet']} route {b['line'] or '-'} ticket {b['ticket'] or '-'} left {b['dep'] or '-'}")
                 continue
             hit += 1
             how[way] += 1
@@ -370,6 +377,9 @@ def calibrate(buses, journeys, nocs):
         for b in mine[:2]:
             print(f'  live example: fleet {b["fleet"]}, ticket {b["ticket"] or "-"}, journey {b["dated"] or "-"}, route {b["line"] or "-"}, left {b["dep"] or "-"}')
     print('Matched by: ' + (', '.join(f'{k} {v}' for k, v in how.most_common()) or 'nothing'))
+    print('Not matched: ' + (', '.join(f'{k} {v}' for k, v in why.most_common()) or 'none'))
+    for o in odd:
+        print('  not matched, e.g. ' + o)
     print('\n--- By the first digit of the fleet number ---')
     for d in sorted(first):
         print(f'  {d}  ' + ', '.join(f'{k} x{v}' for k, v in first[d].most_common()))
