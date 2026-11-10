@@ -318,12 +318,11 @@ def txc_journeys(raw):
 def calibrate(buses, journeys, nocs):
     """Match live buses to their timetabled journey; count which fleet numbers run which kind of bus.
     Tries, in order: the ticket machine's journey code, the journey's own code, then route + departure time - each
-    first within the company, then (only if the answer is one kind) anywhere in these timetables."""
+    always within the same company."""
     by = collections.defaultdict(list)
     for j in journeys:
         if j['kind']:
-            for k in (('t', j['noc'], j['ticket']), ('c', j['noc'], j['code']), ('l', j['noc'], j['line'], j['dep']),
-                      ('t', '*', j['ticket']), ('c', '*', j['code']), ('l', '*', j['line'], j['dep'])):
+            for k in (('t', j['noc'], j['ticket']), ('c', j['noc'], j['code']), ('l', j['noc'], j['line'], j['dep'])):
                 if all(k[2:]) and k[1]:
                     by[k].append(j['kind'])
     print('\n=== Fleet numbers against the timetable (look only) ===')
@@ -341,7 +340,7 @@ def calibrate(buses, journeys, nocs):
         hit = 0
         for b in mine:
             kinds, way = [], ''
-            for scope in (noc, '*'):
+            for scope in (noc,):      # 12:40 run: matching across companies paired regional buses with London ones
                 for name, k in (('ticket code', ('t', scope, b['ticket'])), ('journey code', ('c', scope, b['dated'])),
                                 ('route + time', ('l', scope, b['line'], b['dep']))):
                     if all(k[2:]) and by.get(k):

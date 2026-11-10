@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.9.1'
+ENGINE_VERSION = '0.10.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1068,6 +1068,7 @@ def open_timetable() -> bool:
     c = new.meta.get('counts', {})
     with LOCK:
         TIMETABLE['tt'] = new
+        GROUP_MEMO.clear()          # 0.10.0: company names may have changed with the new timetable
         STATE['timetable'] = 'ready'
         STATE['timetableDetail'] = (f"{c.get('tripsWithStops', 0)} journeys, {c.get('stopsNaptan', 0) + c.get('stopsOnlyInTimetable', 0)} stops, "
                                     f"{c.get('shapes', 0)} route shapes, built {iso(new.meta.get('builtAt', 0))}")
@@ -1476,13 +1477,54 @@ def trace(entity_id: str) -> dict:
 
 # 0.9.1 (owner 10 Nov 11:12-11:17): no bus in the national feed says what kind it is (tpa-bus-kinds: 28,232 buses, no
 # seats, no vehicle type), so the kind comes from companies that only run one kind. HQ shows the owner's matching picture
-# (dd / sd / coach / mini); anything else gets HQ's typical double decker and an honest "not given".
+# (dd / sd / coach / mini); anything else gets HQ's faded "Type not known" picture.
 KIND_BY_OPERATOR = {'NATX': ('coach', 'Coach')}      # National Express: coaches only
-KIND_NOT_GIVEN = 'Not given (the picture shows a typical bus)'
+KIND_NOT_GIVEN = 'Not known'
+# 0.10.0 (owner 10 Nov 11:49 "every bus seems to be a double decker" -> 12:03 "yes, proceed"): Stagecoach and First number
+# every bus by its kind, the same way across the country (their national numbering schemes, as the public fleet lists
+# group them: Bus Lists on the Web, 10 Nov 2026). Only a plain 5-digit fleet number counts; anything else is "not known".
+FLEET_SCHEMES = {
+    'stagecoach': {'1': ('dd', 'Double decker'), '2': ('sd', 'Single decker'), '3': ('sd', 'Midi single decker'),
+                   '4': ('sd', 'Minibus or small single decker'), '5': ('coach', 'Coach'),
+                   '6': ('sd', 'Electric or hydrogen midi single decker'), '7': ('sd', 'Electric or hydrogen single decker'),
+                   '8': ('dd', 'Electric or hydrogen double decker')},
+    'first': {'1': ('sd', 'Articulated single decker (bendy bus)'), '2': ('coach', 'Coach'), '3': ('dd', 'Double decker'),
+              '4': ('sd', 'Midi single decker'), '5': ('sd', 'Minibus or small single decker'), '6': ('sd', 'Single decker')},
+}
+# companies seen in the owner's checks (10 Nov), used when the timetable cannot name the company
+GROUP_BY_NOC = {**{n: 'stagecoach' for n in ('SCEM', 'SCSO', 'SCCU', 'SCNE', 'SDVN', 'SCNH', 'SCEK', 'SYRK', 'SCCM', 'SSWL',
+                                             'SCGL', 'SCMY')},
+                **{n: 'first' for n in ('FBRI', 'FLDS', 'FSYO', 'FESX', 'FECS', 'FYOR')}}
+GROUP_MEMO: dict = {}
+
+
+def bus_group(noc: str) -> str:
+    """'stagecoach', 'first' or '' for a company code: its timetable name first, then the companies we have seen."""
+    if noc not in GROUP_MEMO:
+        name = ''
+        try:
+            name = (TIMETABLE['tt'].company_name(noc) if TIMETABLE['tt'] is not None else '').strip().lower()
+        except Exception:
+            name = ''
+        group = 'stagecoach' if name.startswith('stagecoach') else 'first' if re.match(r'first( |$)', name) else ''
+        if len(GROUP_MEMO) > 2000:
+            GROUP_MEMO.clear()
+        GROUP_MEMO[noc] = group or GROUP_BY_NOC.get(noc, '')
+    return GROUP_MEMO[noc]
 
 
 def bus_kind(key: str) -> tuple:
-    return KIND_BY_OPERATOR.get(key.split(':', 1)[0].upper(), ('', KIND_NOT_GIVEN))
+    """(picture, words for the box) for one bus: dd / sd / coach / '' (not known)."""
+    noc, _, vehicle = key.partition(':')
+    noc = noc.upper()
+    if noc in KIND_BY_OPERATOR:
+        return KIND_BY_OPERATOR[noc]
+    scheme = FLEET_SCHEMES.get(bus_group(noc))
+    fleet = vehicle.rsplit('-', 1)[-1]            # First sends "FBRI-30057"
+    if scheme and re.fullmatch(r'\d{5}', fleet) and fleet[0] in scheme:
+        picture, words = scheme[fleet[0]]
+        return picture, f'{words} (from its fleet number)'
+    return '', KIND_NOT_GIVEN
 
 
 def details(entity_id: str) -> dict:

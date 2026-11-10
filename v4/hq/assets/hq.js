@@ -253,8 +253,11 @@ async function loadDetails(e,box){
     // 4.29.0 (owner 10 Nov 11:07-11:17: "the same standard as the trains, with nicely rendered ones"): the owner's four
     // generic pictures - the engine names one when it knows the kind (a coach company); otherwise a typical double decker.
     if(e.component==='bus'){const box3=document.createElement('div');box3.className='detail-picture bus photo';
-      const kind=typeof d.picture==='string'&&Object.hasOwn(BUS_PICTURES,d.picture)?d.picture:'dd';
-      const img=document.createElement('img');img.src='/assets/buses/'+kind+'.webp';img.alt=BUS_PICTURES[kind];img.decoding='async';
+      // 4.30.0 (owner 10 Nov 11:49: "every bus seems to be a double decker"; option A): when the kind is not known, a faded
+      // picture with a "Type not known" tag - never a guess dressed up as fact.
+      const known=typeof d.picture==='string'&&Object.hasOwn(BUS_PICTURES,d.picture),kind=known?d.picture:'sd';
+      const img=document.createElement('img');img.src='/assets/buses/'+kind+'.webp';img.alt=known?BUS_PICTURES[kind]:'Picture of a bus (type not known)';img.decoding='async';
+      if(!known){box3.classList.add('unknown');const tag=document.createElement('span');tag.className='pic-tag';tag.textContent='Type not known';box3.append(tag);}
       img.addEventListener('error',()=>box3.remove(),{once:true});box3.append(img);rows.unshift(box3);}
     box.replaceChildren(...rows);
   }catch(err){}

@@ -116,6 +116,11 @@ h1 em{color:var(--amber)}
 .review-pin .pic-icon{display:block;width:30px;height:30px;object-fit:contain;pointer-events:none;user-select:none;filter:drop-shadow(0 1px 1px #0007)}
 .marker-layer .review-pin.bus .pic-icon,.marker-layer .review-pin.rail .pic-icon{width:calc(34px*var(--pin-s,1));height:calc(34px*var(--pin-s,1))}
 .detail-picture.bus img{mix-blend-mode:multiply}   /* 4.22.1: the bus picture has a white background; it melts into the light panel */
+.detail-picture.bus{position:relative}
+/* 4.30.0: kind of bus not known - a faded, grey picture and a small tag, so it never looks like a fact */
+.detail-picture.bus.unknown img{filter:grayscale(1) contrast(.7);opacity:.38}
+.detail-picture .pic-tag{position:absolute;left:8px;top:8px;padding:3px 7px;border-radius:4px;background:#0d1626e0;color:var(--amber);
+  font:600 10px/1.2 'Barlow Semi Condensed',Barlow,sans-serif;letter-spacing:.08em;text-transform:uppercase}
 
 /* ---- 4.23.0 the journey in the vehicle box (owner 6 Nov 09:40): done grey, here + still to come green, scrolls inside ---- */
 .detail-summary{margin:2px 0 6px;font-size:13px;line-height:1.4;color:var(--white)}

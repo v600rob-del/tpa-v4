@@ -493,6 +493,12 @@ class Timetable:
                 out.append((sid,) + (tuple(s) if s else (None, None, '', '')) + (arr, dep))
             return out
 
+    def company_name(self, noc):
+        """The bus company's name for a National Operator Code (from the timetable), or ''."""
+        with self.lock:
+            row = self.db.execute('SELECT name FROM agency WHERE noc=? LIMIT 1', ((noc or '').upper(),)).fetchone()
+        return (row[0] or '') if row else ''
+
     def trip_info(self, trip_id):
         """(route number, bus company name) for one journey; '' where the timetable has none."""
         with self.lock:
