@@ -314,3 +314,11 @@ body.vector-ready .vector-map{z-index:4}
 /* 4.12.0: "Report this" (testing phase) */
 .map-selection button.report-button{position:static;width:auto;height:auto;align-self:flex-start;font:700 12px/1.2 system-ui,sans-serif;padding:6px 11px;border:1px solid #9cc7d880;border-radius:999px;color:#cfe6f0;background:#ffffff0d}
 .report-text{width:100%;font:12px/1.4 ui-monospace,Consolas,monospace;background:#071323;color:#cfe6f0;border:1px solid #365e72;border-radius:8px;padding:8px}
+
+/* 4.34.0 which aircraft to show (owner 10 Nov 22:32), and military planes in their own colour */
+.air-filter{display:flex;gap:4px;margin:-3px 0 9px 50px}
+.air-filter button{flex:1;padding:4px 6px;border:1px solid #26374a;border-radius:999px;background:transparent;color:#89a0b5;font-size:10px;font-weight:700;letter-spacing:.02em}
+.air-filter button:hover{background:#ffffff09;color:#cfe3f2}
+.air-filter button[aria-pressed="true"]{background:#144359;border-color:#2f7fa3;color:#c9f1ff}
+.air-filter button:focus-visible{outline:2px solid white;outline-offset:1px}
+.marker-layer .review-pin.air.k-military:not(.bus):not(.rail){background:#3d4a2c;color:#d8e6a8;border-color:#8a9a5b}

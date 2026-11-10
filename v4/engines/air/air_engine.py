@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.6.0'
+ENGINE_VERSION = '0.6.2'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -153,6 +153,7 @@ def parse(payload: dict, fetched: float) -> list[dict]:
             heading = finite(a.get('true_heading'))
         gs = finite(a.get('gs'))   # ground speed, knots
         speed = round(gs * 0.514444, 1) if gs is not None and 0 < gs < 1000 else None
+        flags = int(finite(a.get('dbFlags')) or 0)
         out.append({'hex': hexid, 'lat': round(lat, 5), 'lon': round(lon, 5), 'speed': speed,
                     'heading': round(heading % 360, 1) if heading is not None else None,
                     'flight': clean(a.get('flight'), 10), 'reg': clean(a.get('r'), 12), 'type': clean(a.get('t'), 8),
@@ -163,7 +164,13 @@ def parse(payload: dict, fetched: float) -> list[dict]:
                     'climb': finite(a.get('baro_rate', a.get('geom_rate'))),
                     'squawk': clean(a.get('squawk'), 4), 'emergency': clean(a.get('emergency'), 20).lower(),
                     'desc': clean(a.get('desc'), 60), 'operator': clean(a.get('ownOp'), 60), 'year': clean(a.get('year'), 4),
-                    'category': clean(a.get('category'), 2).upper()})
+                    'category': clean(a.get('category'), 2).upper(),
+                    # 0.6.2 (owner 22:32): ADSB.lol's database flags - 1 military, 4 privacy address (PIA), 8 owner asked trackers
+                    # to hide it (LADD) - plus airspeed, the height set on the autopilot and how the position was found
+                    'military': bool(flags & 1), 'private': bool(flags & 12),
+                    'ias': finite(a.get('ias')), 'tas': finite(a.get('tas')),
+                    'selAlt': finite(a.get('nav_altitude_mcp', a.get('nav_altitude_fms'))),
+                    'source': clean(a.get('type'), 12).lower()})
     return out
 
 
@@ -330,7 +337,8 @@ SCHEMA = """
     CREATE TABLE airline(icao TEXT PRIMARY KEY, name TEXT, iata TEXT);
     CREATE TABLE airport(icao TEXT PRIMARY KEY, name TEXT, iata TEXT, place TEXT, country TEXT, lat REAL, lon REAL);
     CREATE TABLE route(callsign TEXT PRIMARY KEY, number TEXT, airline TEXT, airports TEXT);
-    CREATE TABLE aircraft(hex TEXT PRIMARY KEY, reg TEXT, model TEXT, operator TEXT, private INTEGER, year TEXT, type TEXT);"""
+    CREATE TABLE aircraft(hex TEXT PRIMARY KEY, reg TEXT, model TEXT, operator TEXT, private INTEGER, year TEXT, type TEXT, maker TEXT);"""
+STANDING_FILE = 'standing-v2.sqlite'     # 0.6.2: v2 adds the maker; the old file is used until the new one is built
 
 
 def build_standing(stream, out_path: str) -> dict:
@@ -359,8 +367,8 @@ def build_standing(stream, out_path: str) -> dict:
                     db.execute('INSERT OR REPLACE INTO route VALUES (?,?,?,?)',
                                (g('Callsign', 10).upper(), g('Number', 8), g('AirlineCode', 4).upper(), g('AirportCodes', 60).upper()))
                 elif kind == 'aircraft' and g('ICAO'):
-                    db.execute('INSERT OR REPLACE INTO aircraft VALUES (?,?,?,?,?,?,?)', (g('ICAO', 6).lower(), g('Registration', 12), g('ManufacturerAndModel'),
-                               g('Operator'), 1 if g('IsPrivateOperator') == '1' else 0, g('YearBuilt', 4), g('ModelICAO', 4).upper()))
+                    db.execute('INSERT OR REPLACE INTO aircraft VALUES (?,?,?,?,?,?,?,?)', (g('ICAO', 6).lower(), g('Registration', 12), g('ManufacturerAndModel'),
+                               g('Operator'), 1 if g('IsPrivateOperator') == '1' else 0, g('YearBuilt', 4), g('ModelICAO', 4).upper(), g('Manufacturer', 60)))
                 else:
                     continue
                 counts[kind] += 1
@@ -375,7 +383,10 @@ def build_standing(stream, out_path: str) -> dict:
 
 def standing_keeper() -> None:
     """Keeps the standing data at most a month old; tries again a day later if a download fails."""
-    path = os.path.join(DATA_DIR, 'standing.sqlite')
+    path = os.path.join(DATA_DIR, STANDING_FILE)
+    old = os.path.join(DATA_DIR, 'standing.sqlite')
+    if not os.path.exists(path) and os.path.exists(old):
+        STANDING.update(path=old, builtAt=os.path.getmtime(old))      # routes and names keep working while v2 is built
     while True:
         age = time.time() - os.path.getmtime(path) if os.path.exists(path) else None
         if age is not None:
@@ -526,6 +537,24 @@ def details(entity_id: str) -> dict:
         add('Speed', f"{round(a['knots'] * 1.15078):,} mph · {a['knots']:,} knots")
     if a['heading'] is not None and not a['ground']:
         add('Heading', f"{COMPASS[int((a['heading'] + 22.5) % 360 // 45)]} ({round(a['heading']) % 360}°)")
+    kind, kind_words, kind_from = plane_kind(a)
+    # 0.6.2 (owner 22:32 "For everyone: Kind"): the kind is shown to everyone; where it came from is in More details
+    add('Kind', kind_words, more=False)
+    if kind_from:
+        add('Kind from', kind_from[0].upper() + kind_from[1:])
+    add('Type code', (a['type'] or known[5] or '').upper())
+    maker = lookup('SELECT maker FROM aircraft WHERE hex=?', (a['hex'],))
+    if maker and maker[0] and known[1]:
+        add('Manufacturer', maker[0])
+    speeds = [f'{round(a[k]):,} knots {k.upper()}' for k in ('ias', 'tas') if a.get(k) is not None and 0 < a[k] < 1000]
+    add('Airspeed', ' · '.join(speeds))
+    if a.get('selAlt') is not None and 0 < a['selAlt'] < 60000 and not a['ground']:
+        add('Selected height', f"{int(round(a['selAlt'] / 100) * 100):,} ft (set on the autopilot)")
+    add('Position from', SOURCES.get(a.get('source') or '', ''))
+    if a.get('private'):
+        add('Privacy', "The owner asked trackers to hide it: shown on this page only")
+    if kind:
+        out['picture'] = kind
     add('Squawk', sq)
     add('ICAO code', a['hex'].upper())
     cat = a.get('category') or ''
@@ -560,12 +589,68 @@ def details(entity_id: str) -> dict:
     return out
 
 
+# 0.6.1 plane kinds (owner 10 Nov 21:24: "plane kinds"; 22:19 the owner makes the box pictures). Type codes are ICAO's.
+WIDEBODY = {'A332', 'A333', 'A338', 'A339', 'A342', 'A343', 'A345', 'A346', 'A359', 'A35K', 'A388', 'B744', 'B748', 'B762', 'B763',
+            'B764', 'B772', 'B77L', 'B77W', 'B778', 'B779', 'B788', 'B789', 'B78X', 'MD11', 'A306', 'A30B', 'A310', 'IL96', 'B74S'}
+AIRLINER = {'A318', 'A319', 'A320', 'A321', 'A19N', 'A20N', 'A21N', 'B731', 'B732', 'B733', 'B734', 'B735', 'B736', 'B737', 'B738',
+            'B739', 'B37M', 'B38M', 'B39M', 'B3XM', 'B752', 'B753', 'B712', 'E170', 'E175', 'E190', 'E195', 'E290', 'E295', 'BCS1',
+            'BCS3', 'CRJ1', 'CRJ2', 'CRJ7', 'CRJ9', 'CRJX', 'RJ85', 'RJ1H', 'B461', 'B462', 'B463', 'F70', 'F100', 'E135', 'E145',
+            'SU95', 'C919', 'MD82', 'MD83', 'MD87', 'MD88', 'MD90'}
+TURBOPROP = {'AT43', 'AT45', 'AT46', 'AT72', 'AT73', 'AT75', 'AT76', 'DH8A', 'DH8B', 'DH8C', 'DH8D', 'SF34', 'SB20', 'JS31', 'JS32',
+             'JS41', 'D328', 'B190', 'F50', 'SW4', 'L410', 'DHC6', 'BN2P', 'TRIS', 'C212'}
+BIZJET = {'C25A', 'C25B', 'C25C', 'C25M', 'C501', 'C510', 'C525', 'C550', 'C560', 'C56X', 'C650', 'C680', 'C68A', 'C700', 'C750',
+          'CL30', 'CL35', 'CL60', 'GL5T', 'GL6T', 'GL7T', 'GLEX', 'GLF4', 'GLF5', 'GLF6', 'G150', 'G280', 'E35L', 'E50P', 'E55P',
+          'E545', 'E550', 'F2TH', 'F900', 'FA7X', 'FA8X', 'FA6X', 'FA50', 'LJ35', 'LJ40', 'LJ45', 'LJ60', 'LJ75', 'H25B', 'H25C',
+          'PC24', 'PRM1', 'HDJT', 'SF50', 'BE40', 'ASTR', 'GALX'}
+LIGHT = {'C150', 'C152', 'C162', 'C170', 'C172', 'C177', 'C182', 'C206', 'C210', 'C208', 'PA18', 'PA22', 'PA24', 'PA28', 'P28A',
+         'P28B', 'P28R', 'P28T', 'PA32', 'PA34', 'PA38', 'PA44', 'PA46', 'DA20', 'DA40', 'DA42', 'DA62', 'SR20', 'SR22', 'BE33',
+         'BE35', 'BE36', 'BE55', 'BE58', 'BE9L', 'BE20', 'B350', 'PC12', 'TBM7', 'TBM8', 'TBM9', 'AA5', 'RV6', 'RV7', 'RV8', 'RV9',
+         'RV10', 'C42', 'EV97', 'TOBA', 'TB20', 'TAMP', 'M20P', 'M20T', 'J3', 'CUB', 'DR40', 'AP22', 'P92', 'SIRA', 'G115'}
+HELICOPTER = {'EC20', 'EC30', 'EC35', 'EC45', 'EC55', 'EC75', 'EC25', 'AS50', 'AS55', 'AS65', 'AS32', 'A109', 'A119', 'A139', 'A149',
+              'A169', 'A189', 'AW09', 'B06', 'B407', 'B429', 'B412', 'R22', 'R44', 'R66', 'S76', 'S92', 'H160', 'H175', 'NH90',
+              'EH10', 'MI8', 'GAZL', 'LYNX', 'H64', 'H47', 'H60', 'EXPL', 'B505'}
+GLIDER = {'GLID', 'DG80', 'DUOD', 'ASK2', 'ASW2', 'LS8', 'DISC', 'VENT'}
+CARGO_AIRLINES = {'DHK', 'BCS', 'DAE', 'DHX', 'FDX', 'UPS', 'CLX', 'GTI', 'ABX', 'ATN', 'ABR', 'SWN', 'BOX', 'GEC', 'CKS', 'NCA',
+                  'MPH', 'TAY', 'QAC', 'CAO', 'CKK', 'KZR', 'ICV', 'AHK', 'LCO', 'MSX', 'NPT', 'EXS'}
+KIND_WORDS = {'military': 'Military', 'cargo': 'Cargo plane', 'helicopter': 'Helicopter', 'glider': 'Glider', 'widebody': 'Large airliner',
+              'airliner': 'Airliner', 'turboprop': 'Propeller airliner', 'bizjet': 'Business jet', 'light': 'Light aircraft'}
+
+
+def plane_kind(a) -> tuple:
+    """(kind, words, where it came from) - or ('', 'Not known', '') when there is nothing to go on. Never a guess."""
+    t, cat, call = (a.get('type') or '').upper(), a.get('category') or '', (a.get('flight') or '').upper()
+    if a.get('military'):
+        return 'military', KIND_WORDS['military'], 'from the aircraft database'
+    reported = 'from what it reports'
+    if cat == 'A7' or t in HELICOPTER:
+        return 'helicopter', KIND_WORDS['helicopter'], reported if cat == 'A7' else 'from its type code'
+    if cat == 'B1' or t in GLIDER:
+        return 'glider', KIND_WORDS['glider'], reported if cat == 'B1' else 'from its type code'
+    if cat in ('B2', 'B6', 'B7'):
+        return 'other', {'B2': 'Balloon', 'B6': 'Drone', 'B7': 'Space vehicle'}[cat], reported
+    if cat == 'B4':
+        return 'light', 'Microlight', reported
+    if re.match(r'^[A-Z]{3}\d', call) and call[:3] in CARGO_AIRLINES:
+        return 'cargo', KIND_WORDS['cargo'], 'cargo airline'
+    for kind, codes in (('widebody', WIDEBODY), ('airliner', AIRLINER), ('turboprop', TURBOPROP), ('bizjet', BIZJET), ('light', LIGHT)):
+        if t in codes:
+            return kind, KIND_WORDS[kind], 'from its type code'
+    by_cat = {'A1': 'light', 'A3': 'airliner', 'A4': 'airliner', 'A5': 'widebody'}.get(cat)
+    if by_cat:
+        return by_cat, KIND_WORDS[by_cat], reported
+    return '', 'Not known', ''
+
+
 # ADS-B "emitter category" (what kind of aircraft the plane says it is)
 CATEGORY = {'A1': 'light aircraft', 'A2': 'small aircraft', 'A3': 'large aircraft', 'A4': 'large aircraft, strong wake',
             'A5': 'heavy aircraft', 'A6': 'high performance', 'A7': 'helicopter', 'B1': 'glider', 'B2': 'balloon',
             'B3': 'parachutists', 'B4': 'microlight', 'B6': 'drone', 'B7': 'space vehicle', 'C1': 'emergency vehicle',
             'C2': 'airport vehicle', 'C3': 'obstacle'}
 NEAR_AIRPORT_NM = 12
+SOURCES = {'adsb_icao': "The plane's own GPS (ADS-B)", 'adsb_icao_nt': "The plane's own GPS (ADS-B)", 'adsb_other': "The plane's own GPS (ADS-B)",
+           'mlat': 'Worked out by ground stations (MLAT)', 'tisb_icao': 'Passed on by air traffic radar (TIS-B)', 'tisb_other': 'Passed on by air traffic radar (TIS-B)',
+           'tisb_trackfile': 'Passed on by air traffic radar (TIS-B)', 'adsr_icao': 'Relayed (ADS-R)', 'adsr_other': 'Relayed (ADS-R)',
+           'adsc': 'By satellite (ADS-C)', 'mode_s': 'No position from the plane itself', 'other': ''}
 
 
 def short_airport(icao: str) -> str:
@@ -749,6 +834,11 @@ def snapshot(view) -> dict:
         entity = {'id': 'air:' + a['hex'], 'label': label_for(a)[:160],
                   'position': {'lon': a['lon'], 'lat': a['lat'], 'headingDeg': a['heading']},
                   'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(a['reported'])}
+        kind = plane_kind(a)[0]
+        if kind:
+            entity['variant'] = kind          # 0.6.1: its own map icon
+        if a.get('private'):
+            entity['private'] = True          # 0.6.2 (owner 22:32): not drawn on the public page; the owner's /full shows it
         # 0.2.0: speed + track let the map carry the aircraft forward smoothly between
         # reports (shown as "estimated"), for at most a minute after the real report.
         if a['heading'] is not None and a.get('speed') and a['speed'] >= 5:

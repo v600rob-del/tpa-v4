@@ -83,9 +83,12 @@ function drawFallback(){const {w,h}=dims(),scale=Math.min(2,window.devicePixelRa
 ctx.fillStyle='#e8eeea';for(const shape of state.geo.land){if(shape.length<3)continue;ctx.beginPath();shape.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.closePath();ctx.fill();}
 ctx.strokeStyle='#86acb1';ctx.lineWidth=1;for(const seg of state.geo.coastlines){ctx.beginPath();seg.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.stroke();}
 for(const [name,lon,lat] of POI){const [x,y]=pixel(lon,lat);if(x<0||x>w||y<0||y>h)continue;if(state.z<7&&!['Beverley','Hull','York','Leeds','London','Edinburgh','Glasgow','Cardiff','Belfast'].includes(name))continue;ctx.font='600 12px system-ui';ctx.strokeStyle='#e8eeea';ctx.lineWidth=3;ctx.strokeText(name,x+5,y-5);ctx.fillStyle='#2b555c';ctx.fillText(name,x+5,y-5);}}
+// 4.34.0 (owner 10 Nov 22:32: "a button to filter between normal and just military, or both"); kept in this browser
+let airShow=(()=>{try{const v=localStorage.getItem('tpa-air-show');return ['all','normal','military'].includes(v)?v:'all';}catch(_){return 'all';}})();
+function airShown(e){return e.component!=='air'||airShow==='all'||(airShow==='military')===(e.variant==='military');}
 function listEntities(){return IDS.flatMap(id=>{
   if(!state.visible[id]||state.status[id]==='not_installed')return [];
-  const entities=state.frames[id]?.entities||[];
+  const entities=(state.frames[id]?.entities||[]).filter(airShown);
   // A failed/stale component may keep its last-known markers, but never appear current.
   return state.status[id]==='ready'?entities:entities.map(e=>({...e,quality:'stale'}));
 });}
@@ -137,7 +140,21 @@ const TRAIN_CLASSES=Object.freeze({
   c387:["M2 7.6H89C93.4 7.6 95.6 9.8 96 12.6V19.4H2ZM87.6 9.4h3.6v4.4h-3.6ZM92.2 9.6c1.4.4 2.4 1.6 2.8 4.2h-2.8ZM5 10.2h4.6v3.8h-4.6ZM12.6 10.2h4.6v3.8h-4.6ZM20.2 10.2h4.6v3.8h-4.6ZM35.4 10.2h4.6v3.8h-4.6ZM43 10.2h4.6v3.8h-4.6ZM50.6 10.2h4.6v3.8h-4.6ZM65.8 10.2h4.6v3.8h-4.6ZM73.4 10.2h4.6v3.8h-4.6ZM28 9.6h1.3v9h-1.3ZM58 9.6h1.3v9h-1.3ZM6.1 20.6a1.6 1.6 0 1 0 3.2 0ZM10.7 20.6a1.6 1.6 0 1 0 3.2 0ZM74.1 20.6a1.6 1.6 0 1 0 3.2 0ZM78.7 20.6a1.6 1.6 0 1 0 3.2 0ZM1 22.9h98v1.2H1Z","M86.8 15.6H96v3.8H86.8Z"],
   c66:["M2 9H91.4Q93.4 9 94.2 10.4L96 13V19.4H2ZM20 9V7.4h22V9ZM48 9V8h10v1ZM88 10.6h3.6l1.8 2.8H88ZM4 10.6h3.6v2.8H4ZM12 11h18v1H12ZM12 13h18v1H12ZM12 15h18v1H12ZM40 11h16v5H40ZM60 11h18v1H60ZM60 13h18v1H60ZM84 10.4h1.2v8H84ZM12.1 20.6a1.6 1.6 0 1 0 3.2 0ZM16.7 20.6a1.6 1.6 0 1 0 3.2 0ZM72.1 20.6a1.6 1.6 0 1 0 3.2 0ZM76.7 20.6a1.6 1.6 0 1 0 3.2 0ZM1 22.9h98v1.2H1Z","M90 15H96v4.4H90Z"]
 });
-function artPair(e){return (e.component==='rail'&&typeof e.variant==='string'&&Object.hasOwn(RAIL_KINDS,e.variant)&&RAIL_KINDS[e.variant])||ICON_PATHS[e.component];}
+// 4.34.0 (owner 10 Nov 22:19: "simple stand ins" until his own): a top-down drawing for each kind of plane, nose up, so it
+// still turns to its heading. The air engine (0.6.1) sends the kind as "variant"; an unknown kind keeps the usual plane.
+const AIR_KINDS=Object.freeze({
+  airliner:['M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z',''],
+  widebody:['M16 .8c1.6 0 2.5 2 2.5 4.4v6.4l12.7 7.5v3.4l-12.7-4.1v6.8l4.4 3.1v2.6L16 29.4l-6.9 1.5v-2.6l4.4-3.1v-6.8L.8 22.5v-3.4l12.7-7.5V5.2C13.5 2.8 14.4.8 16 .8Z','M7 15.6h2.6v3.6H7ZM22.4 15.6H25v3.6h-2.6Z'],
+  turboprop:['M15 2.4h2c.8 0 1.3 1.2 1.3 2.6v5.4H29c.6 0 1 .4 1 1v2.4c0 .6-.4 1-1 1H18.3v9h4.4c.5 0 .8.3.8.8v1.6c0 .5-.3.8-.8.8H9.3c-.5 0-.8-.3-.8-.8v-1.6c0-.5.3-.8.8-.8h4.4v-9H3c-.6 0-1-.4-1-1v-2.4c0-.6.4-1 1-1h10.7V5c0-1.4.5-2.6 1.3-2.6Z','M6.4 8.2h4.4v1.4H6.4ZM21.2 8.2h4.4v1.4h-4.4Z'],
+  bizjet:['M16 2c.9 0 1.6 1.4 1.6 3.2V13l9.4 6v2.4l-9.4-3.4v5.4l3.4 2.4v2l-5-1.2-5 1.2v-2l3.4-2.4V18L5 21.4V19l9.4-6V5.2C14.4 3.4 15.1 2 16 2Z','M12.4 19.6h1.8v3.6h-1.8ZM17.8 19.6h1.8v3.6h-1.8Z'],
+  light:['M15.2 4.4h1.6c.5 0 .8.6.8 1.4v3.6H28c.6 0 1 .4 1 1v2c0 .6-.4 1-1 1H17.6v9.2H22c.5 0 .8.3.8.8v1.4c0 .5-.3.8-.8.8H10c-.5 0-.8-.3-.8-.8v-1.4c0-.5.3-.8.8-.8h4.4v-9.2H4c-.6 0-1-.4-1-1v-2c0-.6.4-1 1-1h10.4V5.8c0-.8.3-1.4.8-1.4Z','M12.6 2.6h6.8v1.3h-6.8Z'],
+  helicopter:['M16 6.4c2.8 0 4.6 2.5 4.6 5.8s-1.8 6.4-4.6 6.4-4.6-3.1-4.6-6.4 1.8-5.8 4.6-5.8ZM15.2 18h1.6v9.4h-1.6ZM12.6 26.4h6.8v1.6h-6.8Z','M3.6 10.8l24.8 2.4-.1 1.3-24.8-2.4ZM16.6 1.2l-1.2 24.8-1.3-.1 1.2-24.8Z'],
+  cargo:['M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z','M14.7 13h2.6v4.4h-2.6Z'],
+  military:['M15 2.4h2c.8 0 1.3 1.2 1.3 2.6v5.4H29c.6 0 1 .4 1 1v2.4c0 .6-.4 1-1 1H18.3v9h4.4c.5 0 .8.3.8.8v1.6c0 .5-.3.8-.8.8H9.3c-.5 0-.8-.3-.8-.8v-1.6c0-.5.3-.8.8-.8h4.4v-9H3c-.6 0-1-.4-1-1v-2.4c0-.6.4-1 1-1h10.7V5c0-1.4.5-2.6 1.3-2.6Z','M3.6 8.2H7v1.4H3.6ZM8.4 8.2h3.4v1.4H8.4ZM20.2 8.2h3.4v1.4h-3.4ZM25 8.2h3.4v1.4H25Z'],
+  glider:['M15.4 4h1.2c.4 0 .6.8.6 1.8V12h13.3v1.6H17.2v12.2h3.6v1.4h-9.6v-1.4h3.6V13.6H1.5V12h13.3V5.8c0-1 .2-1.8.6-1.8Z',''],
+  other:['M16 4a8 8 0 1 1 0 16 8 8 0 0 1 0-16ZM14 21h4v5h-4Z','']});
+function artPair(e){return (e.component==='rail'&&typeof e.variant==='string'&&Object.hasOwn(RAIL_KINDS,e.variant)&&RAIL_KINDS[e.variant])||
+  (e.component==='air'&&typeof e.variant==='string'&&Object.hasOwn(AIR_KINDS,e.variant)&&AIR_KINDS[e.variant])||ICON_PATHS[e.component];}
 const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
 function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋'}[id]||'•';}
 // 4.15.1 (owner 3 Nov 22:01: "get the whole site glittered", all in house): the side menu, the vehicle box, the welcome
@@ -547,7 +564,7 @@ function markers(){
     // a side-on train faces the way it is going (west-ish: mirrored), and keeps facing that way when it stops
     if(e.component==='rail'&&!KIDS){const a=estimate(e,now+2000);if(a){const mx=metresXY(pos,a)[0];if(Math.abs(mx)>2){if(FACE.size>5000)FACE.clear();FACE.set(k,mx<0);}}}
     const faceLeft=e.component==='rail'&&FACE.get(k)===true;
-    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&e.variant==='military'?' k-military':''}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
     // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
     // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
     const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id;
@@ -1036,8 +1053,11 @@ function paint(){if(pending)return;pending=true;requestAnimationFrame(()=>{pendi
 function validNum(n){return typeof n==='number'&&Number.isFinite(n);}
 function checkFrame(id,f){if(!f||typeof f!=='object'||Array.isArray(f)||f.component!==id||f.contractVersion!=='1.0'||!['ready','stale','unavailable','not_installed'].includes(f.health)||typeof f.receivedAt!=='string'||!Number.isFinite(Date.parse(f.receivedAt))||typeof f.expiresAt!=='string'||!Number.isFinite(Date.parse(f.expiresAt))||Date.parse(f.expiresAt)<Date.parse(f.receivedAt)||typeof f.attribution!=='string'||f.attribution.length>256||!Array.isArray(f.entities)||f.entities.length>10000)throw Error('Invalid component v1 envelope');
 const ids=new Set(),entities=[];for(const e of f.entities){if(!e||typeof e.id!=='string'||!e.id||e.id.length>128||ids.has(e.id)||typeof e.label!=='string'||e.label.length>160||!['observed','estimated','stale'].includes(e.quality)||!Number.isFinite(Date.parse(e.observedAt)))throw Error('Invalid entity');ids.add(e.id);
+// 4.34.0 (owner 10 Nov 22:32: "hide them is for regular users, the admin/dev page should show them"): planes whose owners
+// asked trackers to hide them are left out of the public page; the owner's /full page shows them.
+if(e.private===true&&USER_VIEW)continue;
 const p=e.position;if(p!==null&&(!p||!validNum(p.lon)||!validNum(p.lat)||Math.abs(p.lon)>180||Math.abs(p.lat)>90||(p.headingDeg!=null&&(!validNum(p.headingDeg)||p.headingDeg<0||p.headingDeg>360))))throw Error('Invalid point');const position=p===null?null:{lon:p.lon,lat:p.lat,headingDeg:p.headingDeg??null};
-entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,variant:typeof e.variant==='string'&&/^[a-z0-9-]{1,30}$/.test(e.variant)?e.variant:null,position,motion:checkMotion(e.motion,position)});}
+entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,variant:typeof e.variant==='string'&&/^[a-z0-9-]{1,30}$/.test(e.variant)?e.variant:null,private:e.private===true,position,motion:checkMotion(e.motion,position)});}
 // 4.0.10 optional extras: a short notice, and a see-through picture layer served
 // only from this socket's own same-origin tile path. Anything else is ignored.
 const notice=typeof f.notice==='string'?f.notice.slice(0,120):'';
@@ -1614,6 +1634,10 @@ async function loadSiteConfig(){
   startPreparing(!(welcome&&cfg.welcome?.enabled===true&&!seen));   // 4.6.0: returning visitors get the short panel
 }
 if(!KIDS)ownIconsInPage();
+for(const b of document.querySelectorAll('.air-filter button')){
+  b.setAttribute('aria-pressed',String(b.dataset.air===airShow));
+  b.addEventListener('click',()=>{airShow=b.dataset.air;try{localStorage.setItem('tpa-air-show',airShow);}catch(_){}
+    for(const o of document.querySelectorAll('.air-filter button'))o.setAttribute('aria-pressed',String(o===b));paint();});}
 paint();discover();beginMap();setInterval(discover,30000);
 // 4.0.11: also check every 10 s, but only while a live layer is still connecting.
 setInterval(()=>{if(IDS.some(id=>state.live[id]&&!state.parked[id]&&state.status[id]!=='ready'))discover();},10000);
