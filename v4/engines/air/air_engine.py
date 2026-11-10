@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.6.2'
+ENGINE_VERSION = '0.6.3'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -612,16 +612,37 @@ HELICOPTER = {'EC20', 'EC30', 'EC35', 'EC45', 'EC55', 'EC75', 'EC25', 'AS50', 'A
 GLIDER = {'GLID', 'DG80', 'DUOD', 'ASK2', 'ASW2', 'LS8', 'DISC', 'VENT'}
 CARGO_AIRLINES = {'DHK', 'BCS', 'DAE', 'DHX', 'FDX', 'UPS', 'CLX', 'GTI', 'ABX', 'ATN', 'ABR', 'SWN', 'BOX', 'GEC', 'CKS', 'NCA',
                   'MPH', 'TAY', 'QAC', 'CAO', 'CKK', 'KZR', 'ICV', 'AHK', 'LCO', 'MSX', 'NPT', 'EXS'}
-KIND_WORDS = {'military': 'Military', 'cargo': 'Cargo plane', 'helicopter': 'Helicopter', 'glider': 'Glider', 'widebody': 'Large airliner',
+# 0.6.3 (owner 10 Nov 23:21: "Split for military please and include military helicopters. I would also like police/air
+# ambulance/coastguard under a seperate filter"). Military by type code; emergency services by the callsigns the CAA gives
+# them (CAP 413 / SARG policy 130): Police UKP, Helimed HLE, Coastguard SRD, British Rescue SRG.
+MIL_FIGHTER = {'EUFI', 'F35', 'F35A', 'F35B', 'F35C', 'TOR', 'F16', 'F15', 'F15E', 'F18H', 'F18S', 'F22', 'HAWK', 'T45', 'RFAL', 'A10',
+               'JAS39', 'GRIF', 'M2000', 'M346', 'L39', 'F5', 'F4', 'MIR2', 'AJET', 'T38', 'F2', 'SU27', 'MG29'}
+MIL_TANKER = {'K35R', 'K35E', 'KC10', 'K46', 'KC46', 'A332', 'A3ST', 'MRTT', 'KC2', 'K767', 'B762'}
+MIL_TRANSPORT = {'A400', 'C17', 'C130', 'C30J', 'C295', 'CN35', 'C160', 'C5M', 'C5', 'C27J', 'KC39', 'C2', 'B462', 'B752', 'D228',
+                 'BE20', 'B350', 'C750', 'GLF5', 'GLEX', 'A319', 'A320', 'A321', 'B737', 'B738', 'C40', 'C32', 'A124', 'IL76', 'C12'}
+MIL_SURVEILLANCE = {'E3TF', 'E3CF', 'E737', 'E7', 'P8', 'RC35', 'R135', 'U2', 'RQ4', 'Q4', 'MQ9', 'Q9', 'E8', 'P3', 'E2', 'SHAD', 'E6',
+                    'GLF4', 'G550', 'MQ1', 'HRON', 'WK45', 'PROT'}
+SERVICES = {'UKP': ('police', 'Police'), 'HLE': ('ambulance', 'Air ambulance'), 'SRD': ('coastguard', 'Coastguard'),
+            'SRG': ('coastguard', 'Coastguard')}
+KIND_WORDS = {'military': 'Military', 'mil-fighter': 'Military fast jet', 'mil-tanker': 'Military tanker',
+              'mil-transport': 'Military transport', 'mil-helicopter': 'Military helicopter', 'mil-surveillance': 'Military surveillance', 'cargo': 'Cargo plane', 'helicopter': 'Helicopter', 'glider': 'Glider', 'widebody': 'Large airliner',
               'airliner': 'Airliner', 'turboprop': 'Propeller airliner', 'bizjet': 'Business jet', 'light': 'Light aircraft'}
 
 
 def plane_kind(a) -> tuple:
     """(kind, words, where it came from) - or ('', 'Not known', '') when there is nothing to go on. Never a guess."""
     t, cat, call = (a.get('type') or '').upper(), a.get('category') or '', (a.get('flight') or '').upper()
-    if a.get('military'):
-        return 'military', KIND_WORDS['military'], 'from the aircraft database'
+    if re.match(r'^[A-Z]{3}\d', call) and call[:3] in SERVICES:
+        return SERVICES[call[:3]] + ('from its callsign',)
     reported = 'from what it reports'
+    if a.get('military'):
+        if cat == 'A7' or t in HELICOPTER:
+            kind = 'mil-helicopter'
+        else:
+            kind = next((k for k, codes in (('mil-fighter', MIL_FIGHTER), ('mil-surveillance', MIL_SURVEILLANCE),
+                                            ('mil-tanker', MIL_TANKER), ('mil-transport', MIL_TRANSPORT)) if t in codes), '')
+            kind = kind or ('mil-fighter' if cat == 'A6' else 'military')
+        return kind, KIND_WORDS[kind], 'from the aircraft database' + (' and its type code' if t and kind != 'military' else '')
     if cat == 'A7' or t in HELICOPTER:
         return 'helicopter', KIND_WORDS['helicopter'], reported if cat == 'A7' else 'from its type code'
     if cat == 'B1' or t in GLIDER:

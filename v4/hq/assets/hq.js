@@ -84,8 +84,11 @@ ctx.fillStyle='#e8eeea';for(const shape of state.geo.land){if(shape.length<3)con
 ctx.strokeStyle='#86acb1';ctx.lineWidth=1;for(const seg of state.geo.coastlines){ctx.beginPath();seg.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.stroke();}
 for(const [name,lon,lat] of POI){const [x,y]=pixel(lon,lat);if(x<0||x>w||y<0||y>h)continue;if(state.z<7&&!['Beverley','Hull','York','Leeds','London','Edinburgh','Glasgow','Cardiff','Belfast'].includes(name))continue;ctx.font='600 12px system-ui';ctx.strokeStyle='#e8eeea';ctx.lineWidth=3;ctx.strokeText(name,x+5,y-5);ctx.fillStyle='#2b555c';ctx.fillText(name,x+5,y-5);}}
 // 4.34.0 (owner 10 Nov 22:32: "a button to filter between normal and just military, or both"); kept in this browser
-let airShow=(()=>{try{const v=localStorage.getItem('tpa-air-show');return ['all','normal','military'].includes(v)?v:'all';}catch(_){return 'all';}})();
-function airShown(e){return e.component!=='air'||airShow==='all'||(airShow==='military')===(e.variant==='military');}
+let airShow=(()=>{try{const v=localStorage.getItem('tpa-air-show');return ['all','normal','military','services'].includes(v)?v:'all';}catch(_){return 'all';}})();
+// 4.35.0 (owner 23:21): police / air ambulance / coastguard under a filter of their own, and in "All" (and Non-military)
+function isMilitary(e){return e.variant==='military'||(typeof e.variant==='string'&&e.variant.startsWith('mil-'));}
+function isService(e){return e.variant==='police'||e.variant==='ambulance'||e.variant==='coastguard';}
+function airShown(e){return e.component!=='air'||airShow==='all'||(airShow==='military'?isMilitary(e):airShow==='services'?isService(e):!isMilitary(e));}
 function listEntities(){return IDS.flatMap(id=>{
   if(!state.visible[id]||state.status[id]==='not_installed')return [];
   const entities=(state.frames[id]?.entities||[]).filter(airShown);
@@ -142,6 +145,7 @@ const TRAIN_CLASSES=Object.freeze({
 });
 // 4.34.0 (owner 10 Nov 22:19: "simple stand ins" until his own): a top-down drawing for each kind of plane, nose up, so it
 // still turns to its heading. The air engine (0.6.1) sends the kind as "variant"; an unknown kind keeps the usual plane.
+const AIR_KINDS_ALIAS={};
 const AIR_KINDS=Object.freeze({
   airliner:['M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z',''],
   widebody:['M16 .8c1.6 0 2.5 2 2.5 4.4v6.4l12.7 7.5v3.4l-12.7-4.1v6.8l4.4 3.1v2.6L16 29.4l-6.9 1.5v-2.6l4.4-3.1v-6.8L.8 22.5v-3.4l12.7-7.5V5.2C13.5 2.8 14.4.8 16 .8Z','M7 15.6h2.6v3.6H7ZM22.4 15.6H25v3.6h-2.6Z'],
@@ -151,10 +155,19 @@ const AIR_KINDS=Object.freeze({
   helicopter:['M16 6.4c2.8 0 4.6 2.5 4.6 5.8s-1.8 6.4-4.6 6.4-4.6-3.1-4.6-6.4 1.8-5.8 4.6-5.8ZM15.2 18h1.6v9.4h-1.6ZM12.6 26.4h6.8v1.6h-6.8Z','M3.6 10.8l24.8 2.4-.1 1.3-24.8-2.4ZM16.6 1.2l-1.2 24.8-1.3-.1 1.2-24.8Z'],
   cargo:['M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z','M14.7 13h2.6v4.4h-2.6Z'],
   military:['M15 2.4h2c.8 0 1.3 1.2 1.3 2.6v5.4H29c.6 0 1 .4 1 1v2.4c0 .6-.4 1-1 1H18.3v9h4.4c.5 0 .8.3.8.8v1.6c0 .5-.3.8-.8.8H9.3c-.5 0-.8-.3-.8-.8v-1.6c0-.5.3-.8.8-.8h4.4v-9H3c-.6 0-1-.4-1-1v-2.4c0-.6.4-1 1-1h10.7V5c0-1.4.5-2.6 1.3-2.6Z','M3.6 8.2H7v1.4H3.6ZM8.4 8.2h3.4v1.4H8.4ZM20.2 8.2h3.4v1.4h-3.4ZM25 8.2h3.4v1.4H25Z'],
+  // 4.35.0 (owner 23:21: "Split for military ... include military helicopters"; police / air ambulance / coastguard)
+  'mil-fighter':['M16 1.5c.9 0 1.5 1.6 1.5 3.6v6.3l11 12.4v2.4l-11-4.4v2.6l3.3 3.2v1.9L16 28l-4.8 1.5v-1.9l3.3-3.2v-2.6l-11 4.4v-2.4l11-12.4V5.1c0-2 .6-3.6 1.5-3.6Z',''],
+  'mil-tanker':['M16 .8c1.6 0 2.5 2 2.5 4.4v6.4l12.7 7.5v3.4l-12.7-4.1v6.8l4.4 3.1v2.6L16 29.4l-6.9 1.5v-2.6l4.4-3.1v-6.8L.8 22.5v-3.4l12.7-7.5V5.2C13.5 2.8 14.4.8 16 .8Z','M15.4 29h1.2v2.6h-1.2ZM4.6 21.4h1.2v3H4.6ZM26.2 21.4h1.2v3h-1.2Z'],
+  'mil-transport':null,'mil-helicopter':null,
+  'mil-surveillance':['M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z','M16 15.2a3.6 3.6 0 1 1 0 7.2 3.6 3.6 0 0 1 0-7.2Z'],
+  police:null,ambulance:null,coastguard:null,
   glider:['M15.4 4h1.2c.4 0 .6.8.6 1.8V12h13.3v1.6H17.2v12.2h3.6v1.4h-9.6v-1.4h3.6V13.6H1.5V12h13.3V5.8c0-1 .2-1.8.6-1.8Z',''],
   other:['M16 4a8 8 0 1 1 0 16 8 8 0 0 1 0-16ZM14 21h4v5h-4Z','']});
+for(const [k,v] of [['mil-transport','military'],['mil-helicopter','helicopter'],['police','helicopter'],['ambulance','helicopter'],['coastguard','helicopter']])
+  AIR_KINDS_ALIAS[k]=v;
+function airArt(v){const a=Object.hasOwn(AIR_KINDS_ALIAS,v)?AIR_KINDS_ALIAS[v]:v;return Object.hasOwn(AIR_KINDS,a)&&AIR_KINDS[a]?AIR_KINDS[a]:null;}
 function artPair(e){return (e.component==='rail'&&typeof e.variant==='string'&&Object.hasOwn(RAIL_KINDS,e.variant)&&RAIL_KINDS[e.variant])||
-  (e.component==='air'&&typeof e.variant==='string'&&Object.hasOwn(AIR_KINDS,e.variant)&&AIR_KINDS[e.variant])||ICON_PATHS[e.component];}
+  (e.component==='air'&&typeof e.variant==='string'&&airArt(e.variant))||ICON_PATHS[e.component];}
 const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
 function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋'}[id]||'•';}
 // 4.15.1 (owner 3 Nov 22:01: "get the whole site glittered", all in house): the side menu, the vehicle box, the welcome
@@ -564,7 +577,7 @@ function markers(){
     // a side-on train faces the way it is going (west-ish: mirrored), and keeps facing that way when it stops
     if(e.component==='rail'&&!KIDS){const a=estimate(e,now+2000);if(a){const mx=metresXY(pos,a)[0];if(Math.abs(mx)>2){if(FACE.size>5000)FACE.clear();FACE.set(k,mx<0);}}}
     const faceLeft=e.component==='rail'&&FACE.get(k)===true;
-    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&e.variant==='military'?' k-military':''}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&isMilitary(e)?' k-military':''}${e.component==='air'&&isService(e)?' k-'+e.variant:''}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
     // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
     // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
     const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id;
