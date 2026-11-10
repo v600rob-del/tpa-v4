@@ -249,6 +249,13 @@ def live_buses(xml):
                 b['dated'] = t
             elif n == 'JourneyCode':
                 b['ticket'] = t
+        # 16:20 (Nottingham): everything packed in one journey code, e.g.
+        # 1073-NT79-In-18078-NT3300GE0341-2026-11-10T10:25:00-2026-11-10 = ticket number, route, direction, ..., departure
+        packed = re.match(r'^(\d+)-[A-Z]*?(\w+)-(?:In|Out|I|O)-.*?\d{4}-\d\d-\d\dT(\d\d:\d\d:\d\d)', b['dated'])
+        if packed:
+            b['ticket'] = b['ticket'] or packed.group(1)
+            b['line'] = b['line'] or packed.group(2).lower()
+            b['dep'] = b['dep'] or packed.group(3)
         num = re.sub(r'\D', '', b['fleet'].split('-')[-1])
         if not num or not re.fullmatch(r'[A-Z]*-?\d+', b['fleet'].upper()):
             num = re.sub(r'\D', '', b['uid'])
@@ -335,6 +342,7 @@ def calibrate(buses, journeys, nocs):
         print(f'  timetable example: company {j["noc"] or "-"}, ticket {j["ticket"] or "-"}, code {j["code"] or "-"}, route {j["line"] or "-"}, leaves {j["dep"] or "-"}, kind {j["kind"]}')
     first = collections.defaultdict(collections.Counter)
     two = collections.defaultdict(collections.Counter)
+    one = collections.defaultdict(collections.Counter)
     how = collections.Counter()
     for noc in nocs:
         mine = [b for b in buses if b['op'] == noc]
@@ -353,8 +361,9 @@ def calibrate(buses, journeys, nocs):
                 continue
             hit += 1
             how[way] += 1
-            first[b['num'][0]][kinds[0]] += 1
-            two[b['num'][:2]][kinds[0]] += 1
+            first[b['num'][0] + 'x' * (len(b['num']) - 1)][kinds[0]] += 1
+            two[b['num'][:2] + 'x' * (len(b['num']) - 2)][kinds[0]] += 1
+            one[b['num']][kinds[0]] += 1
         has = lambda f: sum(1 for b in mine if b[f])
         print(f'{noc:<6} live buses {len(mine):>5}  (ticket code {has("ticket")}, journey code {has("dated")}, start time {has("dep")})'
               f'   matched with a type {hit:>5}')
@@ -363,10 +372,12 @@ def calibrate(buses, journeys, nocs):
     print('Matched by: ' + (', '.join(f'{k} {v}' for k, v in how.most_common()) or 'nothing'))
     print('\n--- By the first digit of the fleet number ---')
     for d in sorted(first):
-        print(f'  {d}xxxx  ' + ', '.join(f'{k} x{v}' for k, v in first[d].most_common()))
+        print(f'  {d}  ' + ', '.join(f'{k} x{v}' for k, v in first[d].most_common()))
     print('\n--- By the first two digits ---')
     for d in sorted(two):
-        print(f'  {d}xxx  ' + ', '.join(f'{k} x{v}' for k, v in two[d].most_common()))
+        print(f'  {d}  ' + ', '.join(f'{k} x{v}' for k, v in two[d].most_common()))
+    print('\n--- Each bus (fleet number: kind of the journey it is running) ---')
+    print('  ' + '  '.join(f'{n}:{"/".join(one[n])}' for n in sorted(one, key=lambda x: (len(x), x))))
     print('\nNothing was changed. The bus key was not shown.')
 
 
