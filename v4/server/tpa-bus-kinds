@@ -15,6 +15,7 @@ company, fetched through the BODS timetable API with the same key; still look on
   sudo python3 tpa-bus-kinds --timetables          (or: --timetables FYOR,TFLO to choose companies)
   python3 tpa-bus-kinds --txc-file some.zip         (test)
 Part 3: --fleet lists the fleet numbers each company sends (look only).
+Part 4: --calibrate [NOC,NOC] matches live buses to their timetabled journeys and counts which fleet numbers run which kind.
 """
 import json
 import collections
@@ -211,6 +212,155 @@ def get(url, limit=LIMIT):
     return raw
 
 
+# ---- part 4 (owner 12:03 "yes, proceed"): prove the fleet-number rules before the engine trusts them -------------
+STAGECOACH = ('SCEM', 'SCSO', 'SCCU', 'SCNE', 'SDVN', 'SCNH', 'SCEK', 'SYRK', 'SCCM', 'SSWL', 'SCGL', 'SCMY')
+
+
+def uk_hms(iso):
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    try:
+        return datetime.fromisoformat(iso.strip().replace('Z', '+00:00')).astimezone(ZoneInfo('Europe/London')).strftime('%H:%M:%S')
+    except ValueError:
+        return ''
+
+
+def live_buses(xml):
+    """[{op, fleet, line, dep, dated, ticket}] from the live national file."""
+    out = []
+    for _e, elem in iterparse(xml):
+        if local(elem.tag) != 'VehicleActivity':
+            continue
+        b = {'op': '', 'fleet': '', 'uid': '', 'line': '', 'dep': '', 'dated': '', 'ticket': ''}
+        for c in elem.iter():
+            n, t = local(c.tag), (c.text or '').strip()
+            if n == 'OperatorRef' and not b['op']:
+                b['op'] = t.upper()
+            elif n == 'VehicleRef':
+                b['fleet'] = t
+            elif n == 'VehicleUniqueId':
+                b['uid'] = t
+            elif n == 'PublishedLineName':
+                b['line'] = t.lower()
+            elif n == 'OriginAimedDepartureTime':
+                b['dep'] = uk_hms(t)
+            elif n == 'DatedVehicleJourneyRef':
+                b['dated'] = t
+            elif n == 'JourneyCode':
+                b['ticket'] = t
+        num = re.sub(r'\D', '', b['fleet'].split('-')[-1])
+        if not num or not re.fullmatch(r'[A-Z]*-?\d+', b['fleet'].upper()):
+            num = re.sub(r'\D', '', b['uid'])
+        b['num'] = num
+        out.append(b)
+        elem.clear()
+    return out
+
+
+def txc_journeys(raw):
+    """[{noc, code, ticket, line, dep, kind}] from TransXChange (zip, zips in a zip, or one file)."""
+    out = []
+
+    def one(xml):
+        lines, ops, js = {}, {}, []
+        for _e, el in iterparse(xml):
+            n = local(el.tag)
+            if n == 'Line':
+                lines[el.get('id', '')] = next((x.text or '' for x in el.iter() if local(x.tag) == 'LineName'), '').strip().lower()
+            elif n in ('Operator', 'LicensedOperator'):
+                ops[el.get('id', '')] = next((x.text or '' for x in el.iter() if local(x.tag) == 'NationalOperatorCode'), '').strip().upper()
+            elif n == 'VehicleJourney':
+                j = {'code': '', 'ticket': '', 'line': '', 'dep': '', 'kind': '', 'op': ''}
+                for x in el.iter():
+                    m, t = local(x.tag), (x.text or '').strip()
+                    if m == 'VehicleJourneyCode':
+                        j['code'] = t
+                    elif m == 'JourneyCode':
+                        j['ticket'] = t
+                    elif m == 'LineRef':
+                        j['line'] = t
+                    elif m == 'DepartureTime':
+                        j['dep'] = t
+                    elif m == 'OperatorRef':
+                        j['op'] = t
+                for vt in (x for x in el.iter() if local(x.tag) == 'VehicleType'):
+                    d = next((y.text or '' for y in vt.iter() if local(y.tag) == 'Description'), '').strip()
+                    c = next((y.text or '' for y in vt.iter() if local(y.tag) == 'VehicleTypeCode'), '').strip()
+                    j['kind'] = (d or c)[:40]
+                js.append(j)
+                el.clear()
+        only = next(iter(ops.values()), '') if len(set(ops.values())) == 1 else ''
+        for j in js:
+            j['noc'] = ops.get(j.pop('op'), '') or only
+            j['line'] = lines.get(j['line'], j['line']).lower()
+            out.append(j)
+    if raw[:2] == b'PK':
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            for name in zf.namelist():
+                if name.lower().endswith('.xml'):
+                    with zf.open(name) as x:
+                        one(x)
+                elif name.lower().endswith('.zip'):
+                    out.extend(txc_journeys(zf.read(name)))
+    else:
+        one(io.BytesIO(raw))
+    return out
+
+
+def calibrate(buses, journeys, nocs):
+    """Match live buses to their timetabled journey; count which fleet numbers run which kind of bus."""
+    by = collections.defaultdict(list)
+    for j in journeys:
+        if j['kind']:
+            for k in (('t', j['noc'], j['ticket']), ('c', j['noc'], j['code']), ('l', j['noc'], j['line'], j['dep'])):
+                if all(k[1:]):
+                    by[k].append(j['kind'])
+    print('\n=== Fleet numbers against the timetable (look only) ===')
+    print(f'Timetable journeys read: {len(journeys)}, naming a type: {sum(1 for j in journeys if j["kind"])}')
+    first = collections.defaultdict(collections.Counter)
+    two = collections.defaultdict(collections.Counter)
+    for noc in nocs:
+        mine = [b for b in buses if b['op'] == noc]
+        hit = 0
+        for b in mine:
+            kinds = (by.get(('t', noc, b['ticket'])) or by.get(('c', noc, b['dated'])) or
+                     by.get(('l', noc, b['line'], b['dep'])) or [])
+            if not kinds or len(set(kinds)) != 1 or not b['num']:
+                continue
+            hit += 1
+            first[b['num'][0]][kinds[0]] += 1
+            two[b['num'][:2]][kinds[0]] += 1
+        print(f'{noc:<6} live buses {len(mine):>5}   matched to a journey with a type {hit:>5}')
+    print('\n--- By the first digit of the fleet number ---')
+    for d in sorted(first):
+        print(f'  {d}xxxx  ' + ', '.join(f'{k} x{v}' for k, v in first[d].most_common()))
+    print('\n--- By the first two digits ---')
+    for d in sorted(two):
+        print(f'  {d}xxx  ' + ', '.join(f'{k} x{v}' for k, v in two[d].most_common()))
+    print('\nNothing was changed. The bus key was not shown.')
+
+
+def fetch_txc_for(nocs, k):
+    journeys = []
+    for noc in nocs:
+        try:
+            listing = json.loads(get(API + '?' + urlencode({'noc': noc, 'status': 'published', 'limit': 25, 'api_key': k}), 5_000_000))
+        except Exception as exc:
+            print(f'{noc:<6} timetable list failed: {type(exc).__name__}', flush=True)
+            continue
+        sets = [d for d in listing.get('results') or [] if noc in [str(x).upper() for x in (d.get('noc') or [])]]
+        print(f'{noc:<6} datasets listed {len(listing.get("results") or [])}, for this company {len(sets)}', flush=True)
+        for ds in sets[:3]:
+            url = ds.get('url') or ''
+            try:
+                got = txc_journeys(get(url + ('&' if '?' in url else '?') + urlencode({'api_key': k})))
+                print(f'       {str(ds.get("name") or "")[:60]}: {len(got)} journeys', flush=True)
+                journeys.extend(got)
+            except Exception as exc:
+                print(f'       {str(ds.get("name") or "")[:60]}: could not read ({type(exc).__name__})', flush=True)
+    return journeys
+
+
 def timetables(nocs):
     k = key()
     print(f'\n=== Timetable files: do they name the kind of bus? (look only) ===')
@@ -239,6 +389,24 @@ def main():
         kinds, journeys = txc_kinds(open(sys.argv[sys.argv.index('--txc-file') + 1], 'rb').read())
         print(f'journeys {journeys}  with a type {sum(kinds.values())}  ' + ', '.join(f'{c}/{d} x{n}' for (c, d), n in kinds.most_common()))
         return
+    if '--calibrate-files' in sys.argv:          # test: live file, timetable file, companies
+        i = sys.argv.index('--calibrate-files')
+        live, txc, nocs = sys.argv[i + 1], sys.argv[i + 2], sys.argv[i + 3].split(',')
+        with zipfile.ZipFile(live) as zf, zf.open(zf.namelist()[0]) as x:
+            buses = live_buses(x)
+        return calibrate(buses, txc_journeys(open(txc, 'rb').read()), nocs)
+    if '--calibrate' in sys.argv:
+        i = sys.argv.index('--calibrate')
+        nocs = [n.strip().upper() for n in sys.argv[i + 1].split(',')] if i + 1 < len(sys.argv) else list(STAGECOACH)
+        k = key()
+        print('Downloading the national bus file once (about a minute)...', flush=True)
+        raw = get(URL + '?' + urlencode({'api_key': k}), 400 * 1024 * 1024)
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            with zf.open(next(n for n in zf.namelist() if n.lower().endswith('.xml'))) as x:
+                buses = live_buses(x)
+        del raw
+        print(f'Live buses: {len(buses)}. Now the timetables, company by company (a few minutes)...', flush=True)
+        return calibrate(buses, fetch_txc_for(nocs, k), nocs)
     if '--timetables' in sys.argv:
         i = sys.argv.index('--timetables')
         pick = sys.argv[i + 1].split(',') if i + 1 < len(sys.argv) else list(BIGGEST)
