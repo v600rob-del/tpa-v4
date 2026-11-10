@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.5.8'
+ENGINE_VERSION = '0.6.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -162,7 +162,8 @@ def parse(payload: dict, fetched: float) -> list[dict]:
                     'knots': round(gs) if gs is not None and 0 <= gs < 1000 else None,
                     'climb': finite(a.get('baro_rate', a.get('geom_rate'))),
                     'squawk': clean(a.get('squawk'), 4), 'emergency': clean(a.get('emergency'), 20).lower(),
-                    'desc': clean(a.get('desc'), 60), 'operator': clean(a.get('ownOp'), 60), 'year': clean(a.get('year'), 4)})
+                    'desc': clean(a.get('desc'), 60), 'operator': clean(a.get('ownOp'), 60), 'year': clean(a.get('year'), 4),
+                    'category': clean(a.get('category'), 2).upper()})
     return out
 
 
@@ -464,25 +465,31 @@ def details(entity_id: str) -> dict:
         return out
     rows = out['rows']
 
-    def add(label, value):
+    # 0.6.0 (owner 10 Nov 21:24: "information available by click, but not all at once, so the casual map user isnt
+    # overwhelmed"): rows marked 'more' are for enthusiasts, behind "More details" in the box.
+    def add(label, value, more=True):
         if value:
-            rows.append({'label': label, 'value': str(value)[:120]})
+            rows.append({'label': label, 'value': str(value)[:120], **({'more': True} if more else {})})
     sq = a.get('squawk') or ''
     if sq in EMERGENCY:
-        add('Emergency', EMERGENCY[sq])
+        add('Emergency', EMERGENCY[sq], more=False)
     elif a.get('emergency') and a['emergency'] != 'none':
-        add('Emergency', 'Declared (' + a['emergency'] + ')')
+        add('Emergency', 'Declared (' + a['emergency'] + ')', more=False)
     call = (a.get('flight') or '').upper()
     route = lookup('SELECT number, airline, airports FROM route WHERE callsign=?', (call,)) if call else None
     code = (route[1] if route and route[1] else call[:3]) if re.match(r'^[A-Z]{3}\d', call) else ''
     airline = lookup('SELECT name, iata FROM airline WHERE icao=?', (code,)) if code else None
+    flight_name = call
     if airline:
         add('Airline', airline[0])
         number = route[0] if route and route[0] else call[3:]
         add('Flight', f'{airline[1]} {number} ({call})' if airline[1] and re.match(r'^\d', number) else call)
+        if airline[1] and re.match(r'^\d', number):
+            flight_name = airline[1] + number
     elif call:
         add('Flight', call)
     shown_route = False
+    stops = []
     if route and route[2] and route[2] != 'UNKNOWN':
         stops = [x for x in route[2].split('-') if re.fullmatch(r'[A-Z0-9]{3,4}', x)][:5]
         # 0.5.3 (owner 4 Nov 23:36: TOM4MJ landed at Manchester, the box said Gatwick to Corfu): flight numbers are reused,
@@ -498,7 +505,8 @@ def details(entity_id: str) -> dict:
         known = ('', '', '', 0, '', '')            # out of date: the plane says it is something else
     # ADSB.lol's name is in capitals ("BOEING 777-300ER"): "Boeing 777-300ER", model numbers left alone
     desc = ' '.join(w.capitalize() if w.isalpha() and w.isupper() and len(w) > 2 else w for w in (a.get('desc') or '').split())
-    add('Aircraft', desc or known[1] or a['type'])
+    aircraft = desc or known[1] or a['type']
+    add('Aircraft', aircraft, more=False)
     operator = a.get('operator') or ('Private' if known[3] else known[2])
     if operator and not (airline and operator.lower() == airline[0].lower()):
         add('Operator', operator)
@@ -515,12 +523,119 @@ def details(entity_id: str) -> dict:
         else:
             add('Height', f"{a['alt']:,} ft · {how}")
     if a.get('knots') is not None and (not a['ground'] or a['knots'] >= 10):
-        add('Speed', f"{round(a['knots'] * 1.15078):,} mph")
+        add('Speed', f"{round(a['knots'] * 1.15078):,} mph · {a['knots']:,} knots")
     if a['heading'] is not None and not a['ground']:
         add('Heading', f"{COMPASS[int((a['heading'] + 22.5) % 360 // 45)]} ({round(a['heading']) % 360}°)")
+    add('Squawk', sq)
+    add('ICAO code', a['hex'].upper())
+    cat = a.get('category') or ''
+    add('Kind code', f'{cat} ({CATEGORY[cat]})' if cat in CATEGORY else cat)
+    ago = max(0, round(time.time() - a['reported'])) if a.get('reported') else None
+    if ago is not None:
+        add('Last report', f'{ago} second{"" if ago == 1 else "s"} ago')
+    # 0.6.0: the sentence, what it is doing, and how far along it is - for everyone
+    reg = a['reg'] or known[0]
+    if airline and flight_name:
+        who = f'{airline[0]} flight {flight_name}'
+    elif call and call.replace('-', '') != (reg or '').replace('-', ''):
+        who = f'flight {call}'
+    elif aircraft:
+        who = f'{"an" if aircraft[:1].upper() in "AEIOU" else "a"} {aircraft}' + (f' ({reg})' if reg else '')
+    else:
+        who = f'aircraft {reg or a["hex"].upper()}'
+    trip = ''
+    if shown_route:
+        trip = f', from {short_airport(stops[0])}' + (f' via {", ".join(short_airport(x) for x in stops[1:-1])}' if len(stops) > 2 else '') \
+               + f' to {short_airport(stops[-1])}'
+    out['summary'] = f'This is {who}{trip}.'
+    doing = doing_words(a, stops if shown_route else [])
+    if doing:
+        out['doing'] = doing
+    if shown_route and len(stops) == 2 and not a['ground']:
+        progress = progress_words(a, stops)
+        if progress:
+            out['progress'] = progress
     if shown_route:
         out['note'] = 'Route: the one this flight number usually flies (Virtual Radar Server data).'
     return out
+
+
+# ADS-B "emitter category" (what kind of aircraft the plane says it is)
+CATEGORY = {'A1': 'light aircraft', 'A2': 'small aircraft', 'A3': 'large aircraft', 'A4': 'large aircraft, strong wake',
+            'A5': 'heavy aircraft', 'A6': 'high performance', 'A7': 'helicopter', 'B1': 'glider', 'B2': 'balloon',
+            'B3': 'parachutists', 'B4': 'microlight', 'B6': 'drone', 'B7': 'space vehicle', 'C1': 'emergency vehicle',
+            'C2': 'airport vehicle', 'C3': 'obstacle'}
+NEAR_AIRPORT_NM = 12
+
+
+def short_airport(icao: str) -> str:
+    return re.sub(r' \([A-Z0-9]{3}\)$', '', airport_name(icao))
+
+
+def airport_spot(icao: str):
+    row = lookup('SELECT lat, lon FROM airport WHERE icao=?', (icao,))
+    return row if row and row[0] is not None and row[1] is not None else None
+
+
+def nearest_airport(lat, lon, within_nm, prefer=()):
+    """(icao) of a passenger airport within reach: one of `prefer` (the flight's own airports) first, else the nearest."""
+    for icao in prefer:
+        spot = airport_spot(icao)
+        if spot and nm_between(lat, lon, spot[0], spot[1]) <= within_nm * 2:
+            return icao
+    k = math.cos(math.radians(lat)) ** 2
+    row = lookup("SELECT icao, lat, lon FROM airport WHERE iata != '' AND lat BETWEEN ? AND ? AND lon BETWEEN ? AND ? "
+                 "ORDER BY (lat - ?) * (lat - ?) + (lon - ?) * (lon - ?) * ? LIMIT 1",
+                 (lat - 0.5, lat + 0.5, lon - 0.8, lon + 0.8, lat, lat, lon, lon, k))
+    if row and row[1] is not None and nm_between(lat, lon, row[1], row[2]) <= within_nm:
+        return row[0]
+    return None
+
+
+def doing_words(a, stops) -> str:
+    """0.6.0: what the plane is doing, in words: cruising, climbing, coming in to land at ..., on the ground at ..."""
+    alt, climb = a['alt'], a.get('climb')
+    if a['ground']:
+        here = nearest_airport(a['lat'], a['lon'], 3)
+        return f'On the ground at {short_airport(here)}' if here else 'On the ground'
+    if alt is None:
+        return ''
+    up, down = climb is not None and climb >= 300, climb is not None and climb <= -300
+    if alt < APPROACH_FEET and (up or down):
+        here = nearest_airport(a['lat'], a['lon'], NEAR_AIRPORT_NM, (stops[:1] if up else stops[-1:]))
+        if here:
+            return f'Just taken off from {short_airport(here)}' if up else f'Coming in to land at {short_airport(here)}'
+    if alt < LOW_FEET:
+        return f'Flying low, below {LOW_FEET:,} ft'
+    if up:
+        return f'Climbing through {alt:,} ft'
+    if down:
+        return f'Descending through {alt:,} ft'
+    return f'Cruising at {alt:,} ft' if alt >= 20000 else f'Flying level at {alt:,} ft'
+
+
+def _miles(nm: float) -> str:
+    m = nm * 1.15078
+    if m < 5:
+        return 'under 5'
+    return f'{int(round(m / (10 if m >= 100 else 5)) * (10 if m >= 100 else 5)):,}'
+
+
+def progress_words(a, stops) -> str:
+    """0.6.0: "About halfway: 210 miles flown, 190 to go" (straight-line miles from and to the two airports)."""
+    start, end = airport_spot(stops[0]), airport_spot(stops[-1])
+    if not start or not end:
+        return ''
+    flown, left = nm_between(start[0], start[1], a['lat'], a['lon']), nm_between(a['lat'], a['lon'], end[0], end[1])
+    if flown + left <= 0:
+        return ''
+    f = flown / (flown + left)
+    for limit, words in ((0.1, 'Just set off'), (0.3, 'About a quarter of the way'), (0.43, 'About a third of the way'),
+                         (0.57, 'About halfway'), (0.7, 'About two-thirds of the way'), (0.9, 'About three-quarters of the way'),
+                         (2, 'Nearly there')):
+        if f < limit:
+            break
+    return f'{words}: {_miles(flown)} miles flown, {_miles(left)} to go'
 
 
 LOW_FEET = 1000

@@ -188,22 +188,33 @@ function buildArtwork(e){
   return icon;
 }
 let detailsTimer=0;
+// 4.33.0 (owner 10 Nov 21:24: planes are "used much more by dedicated plane enthusiasts ... information available by click,
+// but not all at once, so the casual map user isnt overwhelmed"): rows an engine marks 'more' sit behind "More details".
+// Closed at first; once opened it stays open for the next box (kept in this browser, if it allows).
+let moreOpen=(()=>{try{return localStorage.getItem('tpa-more-details')==='1';}catch(_){return false;}})();
 async function loadDetails(e,box){
   clearTimeout(detailsTimer);
   if(!state.live[e.component])return;
   try{
     const r=await fetch(`/api/v4/components/${e.component}/details?id=${encodeURIComponent(e.id)}`,{cache:'no-store'});
-    if(!r.ok){box.replaceChildren();return;}      // engines without details (aircraft, trains for now): nothing extra
+    if(!r.ok){box.replaceChildren();return;}      // an engine without details: nothing extra
     const d=await r.json();
     if(!state.selected||state.selected.id!==e.id||!box.isConnected)return;
-    const rows=[];
-    for(const row of Array.isArray(d.rows)?d.rows.slice(0,12):[]){
+    const rows=[],more=[];
+    for(const row of Array.isArray(d.rows)?d.rows.slice(0,24):[]){
       const line=document.createElement('div');line.className='detail-row';
       const k=document.createElement('span');k.className='detail-label';k.textContent=String(row.label||'').slice(0,30);
       const v=document.createElement('span');v.className='detail-value';v.textContent=String(row.value||'').slice(0,120);
       // 4.32.0 (owner 14:19 "match ... registration plates to buses"): a number plate looks like one
       if(row.label==='Number plate'&&/^[A-Z0-9 ]{2,10}$/.test(v.textContent))v.classList.add('plate');
-      line.append(k,v);rows.push(line);}
+      line.append(k,v);(row.more===true?more:rows).push(line);}
+    if(more.length){
+      const btn=document.createElement('button');btn.type='button';btn.className='detail-more-btn';
+      const sect=document.createElement('div');sect.className='detail-more';sect.id='tpa-detail-more';sect.append(...more);
+      btn.setAttribute('aria-controls',sect.id);
+      const show=()=>{btn.textContent=moreOpen?'Fewer details \u25b4':'More details \u25be';btn.setAttribute('aria-expanded',String(moreOpen));sect.hidden=!moreOpen;};
+      btn.addEventListener('click',ev=>{ev.stopPropagation();moreOpen=!moreOpen;try{localStorage.setItem('tpa-more-details',moreOpen?'1':'0');}catch(_){}show();});
+      show();rows.push(btn,sect);}
     if(typeof d.note==='string'&&d.note){const n=document.createElement('small');n.className='detail-note';n.textContent=d.note.slice(0,160);rows.push(n);}
     // 4.23.0 (owner 6 Nov 09:40-09:41: "This is the Northern (time) service from (start) to (destination). Stopping at ...
     // those already done in grey, those not yet in green ... then next stop"; "if the stopping at list is large, make it a
@@ -211,6 +222,9 @@ async function loadDetails(e,box){
     const stops=Array.isArray(d.stops)?d.stops.filter(s=>s&&typeof s.name==='string'&&['done','here','due'].includes(s.state)).slice(0,120):[];   // names up to 80 letters, wrapped
     const trip=[];
     if(typeof d.summary==='string'&&d.summary){const p=document.createElement('p');p.className='detail-summary';p.textContent=d.summary.slice(0,200);trip.push(p);}
+    // 4.33.0: what it is doing ("Coming in to land at Leeds Bradford") and how far along ("About halfway: ...")
+    for(const [key,cls] of [['doing','detail-doing'],['progress','detail-progress']])
+      if(typeof d[key]==='string'&&d[key]){const p=document.createElement('p');p.className=cls;p.textContent=d[key].slice(0,120);trip.push(p);}
     if(stops.length>=2){
       const when=s=>s.expected&&s.expected!==s.time?`${s.time||''} (expected ${s.expected})`:(s.time||'');
       const here=stops.find(s=>s.state==='here'),next=stops.find(s=>s.state==='due');
