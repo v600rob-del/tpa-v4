@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.12.0'
+ENGINE_VERSION = '0.12.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1504,8 +1504,10 @@ FLEET_SCHEMES = {
 # the kind. Only ranges actually seen; journeys and buses disagreed twice (211, 270), as expected when a depot sends a
 # different bus from the one planned, so the number (the real bus) is used rather than the journey (the plan).
 FLEET_RANGES = {
-    'NCTR': [(96, 97, 'dd', 'Double decker'), (201, 222, 'sd', 'Small single decker'), (251, 292, 'sd', 'Midi single decker'),
-             (355, 358, 'sd', 'Midi single decker'), (401, 542, 'dd', 'Double decker'), (601, 676, 'dd', 'Double decker'),
+    # 0.12.1 (owner 16:43, NCT's own list: 201 is a 12 m Yutong E12, 356 an Optare Solo): the timetable's SMSD / MIDI
+    # codes don't say the size of the real bus, so every Nottingham single decker is just "Single decker"
+    'NCTR': [(96, 97, 'dd', 'Double decker'), (201, 222, 'sd', 'Single decker'), (251, 292, 'sd', 'Single decker'),
+             (355, 358, 'sd', 'Single decker'), (401, 542, 'dd', 'Double decker'), (601, 676, 'dd', 'Double decker'),
              (1002, 1016, 'dd', 'Double decker')],
 }
 # companies seen in the owner's checks (10 Nov), used when the timetable cannot name the company
