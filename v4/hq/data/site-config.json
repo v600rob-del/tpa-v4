@@ -22,7 +22,7 @@
       "TPA is for interest only. Positions can be late, missing or wrong, so please don't rely on it for travel plans or anything safety-related; check with your operator.",
       "Your privacy: no accounts, no cookies, no adverts and no tracking. TPA doesn't record who you are or where you are; your browser only remembers small settings, like having seen this screen. The street map loads from OpenFreeMap, which sets no cookies.",
       "If you email us, we only use your message to reply. Get in touch: enquiries@tpalive.co.uk",
-      "Built from open data: Department for Transport (bus locations, timetables and stops), Network Rail, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
+      "Built from open data: Department for Transport (bus locations, timetables and stops), Transport for London (bus fleet), Network Rail, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
       "Test version: anything marked MOCK is a pretend example · © 2026 Rob Burnett"
     ],
     "enterLabel": "Let's go!",
@@ -51,10 +51,10 @@
     },
     {
       "layer": "Buses",
-      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS) (Open Government Licence). Bus stops: NaPTAN, DfT (OGL). Road shapes: © OpenStreetMap contributors (ODbL, via Geofabrik); backup: contains OS data © Crown copyright and database right 2026 (OS Open Roads, OGL). Between reports, positions along the road are estimated for up to 90 seconds.",
+      "text": "Bus data sourced via the Department for Transport's Bus Open Data Service (BODS) (Open Government Licence). Stops: NaPTAN, DfT (OGL). Roads: © OpenStreetMap contributors (ODbL, via Geofabrik); backup: contains OS data © Crown copyright and database right 2026 (OGL). London bus types: TfL's bus fleet list, Powered by TfL Open Data. Positions between reports are estimated.",
       "url": "https://www.bus-data.dft.gov.uk",
       "status": "Live in test",
-      "short": "BODS (DfT)"
+      "short": "BODS (DfT) · TfL"
     },
     {
       "layer": "Trains",

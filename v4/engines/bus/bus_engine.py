@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.10.1'
+ENGINE_VERSION = '0.11.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -144,6 +144,14 @@ MATCH_SAMPLE = 400
 _spec = importlib.util.spec_from_file_location('tpa_bus_replay', Path(__file__).resolve().parent / 'replay.py')
 replay = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(replay)
+_spec = importlib.util.spec_from_file_location('tpa_bus_fleet_lists', Path(__file__).resolve().parent / 'fleet_lists.py')
+fleet_lists = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(fleet_lists)
+# 0.11.0 (owner 10 Nov 13:33-13:36: "Proper identification for bus types"): published fleet lists (fleet_lists.py).
+# TfL's is on; East Yorkshire's waits for their permission (TPA_BUS_FLEET_LISTS=tfl,ey).
+FLEET_LISTS = [n for n in (os.environ.get('TPA_BUS_FLEET_LISTS', 'tfl') or '').replace(' ', '').lower().split(',')
+               if n in fleet_lists.SOURCES]
+FLEET_STATUS: dict = {}
 # 0.7.0 (owner 1 Nov 11:37: "option 1. remember the goal is about the user experience"): buses matched
 # to their timetabled journey are replayed REPLAY_SECONDS behind real time along their real route,
 # between the positions they really reported (replay.py). Unmatched buses move as before.
@@ -1514,17 +1522,38 @@ def bus_group(noc: str) -> str:
 
 
 def bus_kind(key: str) -> tuple:
-    """(picture, words for the box) for one bus: dd / sd / coach / '' (not known)."""
+    """(picture, words for the box, more rows) for one bus: dd / sd / coach / mini / '' (not known)."""
     noc, _, vehicle = key.partition(':')
     noc = noc.upper()
+    whose, row = fleet_lists.lookup(noc, vehicle, FLEET_LISTS)
+    if row:                                        # 0.11.0: an exact match in a published fleet list
+        more = [{'label': label, 'value': str(row.get(k) or '')[:60]}
+                for label, k in (('Model', 'model'), ('Power', 'power'), ('Fleet number', 'fleet'), ('First registered', 'year'))
+                if row.get(k)]
+        return row['picture'], f"{row['kind']} (from {whose}'s fleet list)", more
     if noc in KIND_BY_OPERATOR:
-        return KIND_BY_OPERATOR[noc]
+        return KIND_BY_OPERATOR[noc] + ([],)
     scheme = FLEET_SCHEMES.get(bus_group(noc))
     fleet = vehicle.rsplit('-', 1)[-1]            # First sends "FBRI-30057"
     if scheme and re.fullmatch(r'\d{5}', fleet) and fleet[0] in scheme:
         picture, words = scheme[fleet[0]]
-        return picture, f'{words} (from its fleet number)'
-    return '', KIND_NOT_GIVEN
+        return picture, f'{words} (from its fleet number)', []
+    return '', KIND_NOT_GIVEN, []
+
+
+def fleet_keeper() -> None:
+    """0.11.0: the fleet lists kept on disk are used at once; on the server they are refreshed about weekly."""
+    fleet_lists.load(DATA_DIR)
+    if TIMETABLE_MODE != 'download' or not FLEET_LISTS:
+        return
+    time.sleep(float(os.environ.get('TPA_BUS_FLEET_START_DELAY', '300')))
+
+    def note(**kw):
+        with LOCK:
+            FLEET_STATUS[kw['name']] = {'buses': kw['rows'], 'error': kw['error']}
+    while True:
+        fleet_lists.refresh(DATA_DIR, FLEET_LISTS, download, note)
+        time.sleep(6 * 3600)
 
 
 def details(entity_id: str) -> dict:
@@ -1535,10 +1564,11 @@ def details(entity_id: str) -> dict:
     if v is None:
         out['note'] = 'This bus is no longer reporting.'
         return out
-    picture, kind = bus_kind(key)
+    picture, kind, more = bus_kind(key)
     if picture:
         out['picture'] = picture
     out['rows'].append({'label': 'Bus type', 'value': kind})
+    out['rows'].extend(more)
     with JOURNEY_LOCK:
         trip = (TRIPS.get(key) or (None, None))[1]
         f = FOLLOW.get(key)
@@ -1853,6 +1883,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'timetable': STATE.get('timetable'), 'timetableDetail': STATE.get('timetableDetail'),
                                         'timetableUpdate': STATE.get('timetableUpdate'), 'timetableError': STATE.get('timetableError'),
                                         'timetableMatch': STATE.get('timetableMatch'), 'replaySeconds': REPLAY_SECONDS,
+                                        'fleetLists': {'on': FLEET_LISTS, 'have': fleet_lists.counts(), 'last': dict(FLEET_STATUS)},
                                         'journeyRound': STATE.get('journeyRound'),
                                         'replayMemo': {'made': STATE.get('replayMemoMade', 0), 'reused': STATE.get('replayMemoHits', 0)},
                                         'cpuSeconds': meter_summary(),
@@ -1932,6 +1963,7 @@ def main() -> None:
     threading.Thread(target=poller, daemon=True).start()
     threading.Thread(target=road_keeper, daemon=True).start()
     threading.Thread(target=timetable_keeper, daemon=True).start()
+    threading.Thread(target=fleet_keeper, daemon=True).start()
     threading.Thread(target=match_counter, daemon=True).start()
     threading.Thread(target=journey_worker, daemon=True).start()
     threading.Thread(target=path_worker, daemon=True).start()
