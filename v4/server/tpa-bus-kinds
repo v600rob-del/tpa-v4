@@ -8,7 +8,14 @@ seats, wheelchair spaces, occupancy and anything naming a vehicle type. Changes 
 
 Run on the server:  sudo python3 tpa-bus-kinds
 Test with a saved file:  python3 tpa-bus-kinds --file bulk.zip
+
+Part 2 (owner 11:12: the live feed sends no seats at all): --timetables looks in each big company's own timetable
+files (TransXChange), which may name the vehicle type for each journey (Operational/VehicleType). One dataset per
+company, fetched through the BODS timetable API with the same key; still look only.
+  sudo python3 tpa-bus-kinds --timetables          (or: --timetables FYOR,TFLO to choose companies)
+  python3 tpa-bus-kinds --txc-file some.zip         (test)
 """
+import json
 import collections
 import io
 import re
@@ -118,7 +125,89 @@ def report(buses, paths, values, ops, op_with, bands):
     print('\nNothing was changed. The bus key was not shown.')
 
 
+API = 'https://data.bus-data.dft.gov.uk/api/v1/dataset/'
+BIGGEST = ('TFLO', 'WMBL', 'BNSM', 'FBRI', 'SCEM', 'BNML', 'GNEL', 'SCSO', 'NATX', 'SDVN', 'AMSY', 'SYRK', 'FLDS',
+           'FSYO', 'EYMS', 'NCTR', 'TBTN', 'ARBB', 'FYOR', 'TDTR')
+LIMIT = 300 * 1024 * 1024
+
+
+def txc_kinds(stream_or_zip):
+    """Counter of vehicle types named in TransXChange: (code, description) -> journeys; plus journeys seen."""
+    kinds, journeys = collections.Counter(), 0
+
+    def one(xml):
+        nonlocal journeys
+        for _e, el in iterparse(xml):
+            n = local(el.tag)
+            if n == 'VehicleJourney':
+                journeys += 1
+                el.clear()
+            elif n == 'VehicleType':
+                code = desc = ''
+                for c in el.iter():
+                    if local(c.tag) == 'VehicleTypeCode':
+                        code = (c.text or '').strip()[:20]
+                    elif local(c.tag) == 'Description':
+                        desc = (c.text or '').strip()[:40]
+                kinds[(code, desc)] += 1
+    raw = stream_or_zip
+    if raw[:2] == b'PK':
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            for name in zf.namelist():
+                if name.lower().endswith('.xml'):
+                    with zf.open(name) as x:
+                        one(x)
+                elif name.lower().endswith('.zip'):
+                    inner_kinds, inner_journeys = txc_kinds(zf.read(name))
+                    kinds.update(inner_kinds)
+                    journeys += inner_journeys
+    else:
+        one(io.BytesIO(raw))
+    return kinds, journeys
+
+
+def get(url, limit=LIMIT):
+    req = Request(url, headers={'User-Agent': 'TPA-Bus-Kinds-Check/1.1 (+mailto:enquiries@tpalive.co.uk)'})
+    with urlopen(req, timeout=180) as res:
+        raw = res.read(limit + 1)
+    if len(raw) > limit:
+        raise ValueError('bigger than 300 MB - skipped')
+    return raw
+
+
+def timetables(nocs):
+    k = key()
+    print(f'\n=== Timetable files: do they name the kind of bus? (look only) ===')
+    print('One timetable dataset per company; journeys that name a vehicle type, and the commonest types.\n', flush=True)
+    for noc in nocs:
+        try:
+            listing = json.loads(get(API + '?' + urlencode({'noc': noc, 'status': 'published', 'limit': 5, 'api_key': k}), 5_000_000))
+            sets = listing.get('results') or []
+            if not sets:
+                print(f'{noc:<6} no timetable dataset found')
+                continue
+            ds = sets[0]
+            url = ds.get('url') or ''
+            url = url + ('&' if '?' in url else '?') + urlencode({'api_key': k}) if 'api_key' not in url else url
+            kinds, journeys = txc_kinds(get(url))
+            named = sum(kinds.values())
+            common = ', '.join(f'{c or "-"}/{d or "-"} x{n}' for (c, d), n in kinds.most_common(6)) or 'none named'
+            print(f'{noc:<6} {str(ds.get("operator_name") or "")[:28]:<28} journeys {journeys:>6}  with a type {named:>6}  {common}', flush=True)
+        except Exception as exc:
+            print(f'{noc:<6} could not check: {type(exc).__name__} {str(exc)[:60].replace(k, "<key>")}', flush=True)
+    print('\nNothing was changed. The bus key was not shown.')
+
+
 def main():
+    if '--txc-file' in sys.argv:
+        kinds, journeys = txc_kinds(open(sys.argv[sys.argv.index('--txc-file') + 1], 'rb').read())
+        print(f'journeys {journeys}  with a type {sum(kinds.values())}  ' + ', '.join(f'{c}/{d} x{n}' for (c, d), n in kinds.most_common()))
+        return
+    if '--timetables' in sys.argv:
+        i = sys.argv.index('--timetables')
+        pick = sys.argv[i + 1].split(',') if i + 1 < len(sys.argv) else list(BIGGEST)
+        timetables([p.strip().upper() for p in pick if p.strip()])
+        return
     if '--file' in sys.argv:
         raw = open(sys.argv[sys.argv.index('--file') + 1], 'rb').read()
     else:
