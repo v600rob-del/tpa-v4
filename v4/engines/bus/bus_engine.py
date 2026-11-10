@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.11.1'
+ENGINE_VERSION = '0.11.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1529,6 +1529,7 @@ def bus_kind(key: str) -> tuple:
     if row:                                        # 0.11.0: an exact match in a published fleet list
         if not row.get('plate') and noc == 'TFLO':  # 0.11.1: a London bus's id IS its plate (and older kept copies lack it)
             row = dict(row, plate=fleet_lists.plate(vehicle))
+        row = dict(row, model=fleet_lists.tidy_model(row.get('model', '')))
         more = [{'label': label, 'value': str(row.get(k) or '')[:60]}
                 for label, k in (('Model', 'model'), ('Power', 'power'), ('Fleet number', 'fleet'), ('Number plate', 'plate'),
                                  ('First registered', 'year'))

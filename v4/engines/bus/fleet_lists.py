@@ -78,6 +78,21 @@ def xlsx_rows(raw: bytes) -> list:
     return rows
 
 
+def model_words(body: str, chassis: str) -> str:
+    """0.11.2 (owner 14:49, T321: "ADL Enviro 400 body on a ADL Enviro 400"): one name when the bus is built in one
+    piece; "an" before a vowel."""
+    body, chassis = body.strip(), chassis.strip()
+    if not body or not chassis or body.lower() == chassis.lower():
+        return body or chassis
+    return f"{body} body on {'an' if chassis[:1].upper() in 'AEIOU' else 'a'} {chassis}"
+
+
+def tidy_model(model: str) -> str:
+    """The same for a model already kept on disk by 0.11.0/0.11.1."""
+    m = re.fullmatch(r'(.+) body on an? (.+)', model or '')
+    return model_words(m.group(1), m.group(2)) if m else (model or '')
+
+
 def parse_tfl(raw: bytes) -> dict:
     """number plate -> {picture, kind, model, power, fleet, year}."""
     rows = xlsx_rows(raw)
@@ -99,7 +114,7 @@ def parse_tfl(raw: bytes) -> dict:
         body, chassis = get(r, 'body')[:40], get(r, 'chassis')[:40]
         out[reg] = {'picture': 'dd' if deck == 'double' else 'sd',
                     'kind': 'Double decker' if deck == 'double' else 'Single decker',
-                    'model': f'{body} body on a {chassis}' if body and chassis else (body or chassis),
+                    'model': model_words(body, chassis),
                     'power': get(r, 'power')[:20], 'fleet': get(r, 'fleet')[:12], 'plate': plate(get(r, 'reg')),
                     'year': get(r, 'year')[:4] if re.fullmatch(r'\d{4}', get(r, 'year')[:4]) else ''}
     return out
