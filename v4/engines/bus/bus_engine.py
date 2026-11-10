@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.12.2'
+ENGINE_VERSION = '0.12.3'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -233,6 +233,25 @@ def departure(vals: dict) -> str:
     return ''
 
 
+# 0.12.3 (owner's trace 17:47: every Nottingham bus "origin": "", "dest": "NT3300RU0116"): Nottingham sends no OriginRef
+# and puts "NT" before its stop codes. A real UK stop code (NaPTAN ATCO) always starts with three digits, so two letters
+# in front of one are dropped; the starting stop is the one packed into the journey code, before the departure.
+PACKED_ORIGIN = re.compile(r'^\d+-[^-]+-(?:In|Out|I|O)-[^-]*-([A-Z0-9]{4,20})-\d{4}-\d\d-\d\dT')
+
+
+def stop_code(text: str) -> str:
+    code = clean(text or '', 20)
+    return code[2:] if re.fullmatch(r'[A-Z]{2}\d{3}[0-9A-Z]{1,15}', code) else code
+
+
+def origin_stop(vals: dict) -> str:
+    sent = stop_code(vals.get('OriginRef', ''))
+    if sent:
+        return sent
+    m = PACKED_ORIGIN.match(vals.get('DatedVehicleJourneyRef', '') or '')
+    return stop_code(m.group(1)) if m else ''
+
+
 FIELDS = ('Latitude', 'Longitude', 'LineRef', 'PublishedLineName', 'VehicleRef', 'OperatorRef',
           'DestinationName', 'RecordedAtTime', 'Bearing') + ('DatedVehicleJourneyRef', 'OriginRef', 'DestinationRef',
           'OriginAimedDepartureTime', 'BlockRef')
@@ -314,8 +333,8 @@ def parse_siri_xml(stream) -> list[dict]:
                     'route': clean(vals.get('PublishedLineName') or vals.get('LineRef') or '', 12),
                     'destination': clean(vals.get('DestinationName', ''), 80).replace('_', ' '), 'recorded': when,
                     'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
-                    'origin': clean(vals.get('OriginRef', ''), 20), 'dep': departure(vals),
-                    'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)})
+                    'origin': origin_stop(vals), 'dep': departure(vals),
+                    'dest': stop_code(vals.get('DestinationRef', '')), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)})
     return merge_twins(out)
 
 
@@ -402,8 +421,8 @@ def _activity(block: bytes, out: list, seen: set, prefix: bytes = b'') -> None:
          'route': clean(vals.get('PublishedLineName') or vals.get('LineRef') or '', 12),
          'destination': clean(vals.get('DestinationName', ''), 80).replace('_', ' '), 'recorded': when,
          'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
-         'origin': clean(vals.get('OriginRef', ''), 20), 'dep': departure(vals),
-         'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)}
+         'origin': origin_stop(vals), 'dep': departure(vals),
+         'dest': stop_code(vals.get('DestinationRef', '')), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)}
     out.append(v)
     if same[1] and same[2]:
         _THIS_READ[same] = dict(v)
