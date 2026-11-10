@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.12.1'
+ENGINE_VERSION = '0.12.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -214,6 +214,25 @@ def clean(text: str, limit: int) -> str:
     return (text if text.isprintable() else _CTRL.sub(' ', text)).strip()[:limit]
 
 
+# 0.12.2 (owner 17:26, Nottingham: "most buses appear with little to no information"): Nottingham sends no
+# OriginAimedDepartureTime; the departure is packed into its journey code instead, e.g.
+# 1073-NT79-In-18078-NT3300GE0341-2026-11-10T10:25:00-2026-11-10 (UK clock time, no zone). Without it no timetable match.
+PACKED_DEPARTURE = re.compile(r'-(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?=[-+Z]|$)')
+
+
+def departure(vals: dict) -> str:
+    sent = clean(vals.get('OriginAimedDepartureTime', ''), 32)
+    if sent:
+        return sent
+    m = PACKED_DEPARTURE.search(vals.get('DatedVehicleJourneyRef', '') or '')
+    if m:
+        try:
+            return datetime.fromisoformat(m.group(1)).replace(tzinfo=timetable.LONDON).isoformat()
+        except ValueError:
+            pass
+    return ''
+
+
 FIELDS = ('Latitude', 'Longitude', 'LineRef', 'PublishedLineName', 'VehicleRef', 'OperatorRef',
           'DestinationName', 'RecordedAtTime', 'Bearing') + ('DatedVehicleJourneyRef', 'OriginRef', 'DestinationRef',
           'OriginAimedDepartureTime', 'BlockRef')
@@ -295,7 +314,7 @@ def parse_siri_xml(stream) -> list[dict]:
                     'route': clean(vals.get('PublishedLineName') or vals.get('LineRef') or '', 12),
                     'destination': clean(vals.get('DestinationName', ''), 80).replace('_', ' '), 'recorded': when,
                     'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
-                    'origin': clean(vals.get('OriginRef', ''), 20), 'dep': clean(vals.get('OriginAimedDepartureTime', ''), 32),
+                    'origin': clean(vals.get('OriginRef', ''), 20), 'dep': departure(vals),
                     'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)})
     return merge_twins(out)
 
@@ -383,7 +402,7 @@ def _activity(block: bytes, out: list, seen: set, prefix: bytes = b'') -> None:
          'route': clean(vals.get('PublishedLineName') or vals.get('LineRef') or '', 12),
          'destination': clean(vals.get('DestinationName', ''), 80).replace('_', ' '), 'recorded': when,
          'jd': sum(bit for name, bit in JOURNEY_BITS.items() if vals.get(name)),
-         'origin': clean(vals.get('OriginRef', ''), 20), 'dep': clean(vals.get('OriginAimedDepartureTime', ''), 32),
+         'origin': clean(vals.get('OriginRef', ''), 20), 'dep': departure(vals),
          'dest': clean(vals.get('DestinationRef', ''), 20), 'jref': clean(vals.get('DatedVehicleJourneyRef', ''), 30)}
     out.append(v)
     if same[1] and same[2]:
@@ -1532,7 +1551,32 @@ def bus_group(noc: str) -> str:
     return GROUP_MEMO[noc]
 
 
+def plate_in_id(vehicle: str) -> tuple:
+    """0.12.2 (owner 17:26): some companies' own bus ID holds today's style of number plate (AA99 AAA):
+    trentbarton "0105_-_YX66_WLP" (fleet 0105), National Express "BV23ZVF", Bee Network "ML76_HRE", First Cymru
+    "FCYM-SN15ABK", London "LF75OYN". -> (plate, fleet number or ''). Only that exact plate shape counts."""
+    parts = [p for p in re.split(r'_-_|-', vehicle or '') if p]
+    for i, part in enumerate(parts):
+        n = re.sub(r'[^A-Z0-9]', '', part.upper())
+        if re.fullmatch(r'[A-Z]{2}\d{2}[A-Z]{3}', n):
+            fleet = parts[0] if i == 1 and re.fullmatch(r'\d{1,6}', parts[0]) else ''
+            return f'{n[:4]} {n[4:]}', fleet
+    return '', ''
+
+
 def bus_kind(key: str) -> tuple:
+    """(picture, words for the box, more rows) for one bus; adds the plate when the bus's own ID holds one."""
+    picture, words, more = _bus_kind(key)
+    plate, fleet = plate_in_id(key.partition(':')[2])
+    labels = {r['label'] for r in more}
+    if fleet and 'Fleet number' not in labels:
+        more = more + [{'label': 'Fleet number', 'value': fleet}]
+    if plate and 'Number plate' not in labels:
+        more = more + [{'label': 'Number plate', 'value': plate}]
+    return picture, words, more
+
+
+def _bus_kind(key: str) -> tuple:
     """(picture, words for the box, more rows) for one bus: dd / sd / coach / mini / '' (not known)."""
     noc, _, vehicle = key.partition(':')
     noc = noc.upper()
@@ -1620,7 +1664,8 @@ def details(entity_id: str) -> dict:
     if company.lower().startswith('stagecoach'):
         company = 'Stagecoach'
     first, last = stops[0], stops[-1]
-    who = (company + ' ' if company else '') + (f'number {route} ' if route else '')
+    # 0.12.2 (owner 17:26: "the trentbarton number TWO bus"): a named route (TWO, indigo, skylink) has no "number"
+    who = (company + ' ' if company else '') + ((f'number {route} ' if re.search(r'\d', route) else f'{route} ') if route else '')
     out['summary'] = (f'This is the {who}{"coach" if picture == "coach" else "bus"}, the {_clock(first[4])} from {_stop_name(first[1], first[2])} '
                       f'to {_stop_name(last[1], last[2])}.')[:200]
     # the moment it is shown at (REPLAY_SECONDS behind its reports), on its journey's own clock
