@@ -26,7 +26,12 @@ from xml.etree.ElementTree import iterparse
 
 TFL_URL = 'https://content.tfl.gov.uk/fleet-list-annual-audit-report-31-march-2026.xlsx'   # renamed each year
 EY_URL = 'https://www.eastyorkshirebuses.co.uk/fleet-list'
-SOURCES = {'tfl': ('TFLO', 'TfL'), 'ey': ('EYMS', 'East Yorkshire')}   # list -> (company code, whose list)
+# 0.12.5 (owner 19:47-19:50): Nottingham City Transport's page uses the same website kit as East Yorkshire's (owner's
+# peek: 552 rows with data-more-info, "vehicle-information__plate", "Single decker bus"), so the same reader reads it.
+# Test site only until permission (launch list: "Must do before launch").
+NCT_URL = 'https://www.nctx.co.uk/fleet-list'
+SOURCES = {'tfl': ('TFLO', 'TfL'), 'ey': ('EYMS', 'East Yorkshire'),
+           'nct': ('NCTR', 'Nottingham City Transport')}   # list -> (company code, whose list)
 MAX_BYTES = 50_000_000
 REFRESH_DAYS = 7
 LOCK = threading.Lock()
@@ -147,7 +152,7 @@ def parse_ey(raw: bytes) -> dict:
     return out
 
 
-PARSERS = {'tfl': (lambda: TFL_URL, parse_tfl), 'ey': (lambda: EY_URL, parse_ey)}
+PARSERS = {'tfl': (lambda: TFL_URL, parse_tfl), 'ey': (lambda: EY_URL, parse_ey), 'nct': (lambda: NCT_URL, parse_ey)}
 
 
 def load(data_dir: Path) -> None:
