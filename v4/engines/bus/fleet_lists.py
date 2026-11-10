@@ -84,6 +84,9 @@ def model_words(body: str, chassis: str) -> str:
     body, chassis = body.strip(), chassis.strip()
     if not body or not chassis or body.lower() == chassis.lower():
         return body or chassis
+    # 0.11.3 (owner 15:01, 36652: "ADL Enviro 200 MMC body on an ADL Enviro 200"): one name inside the other = one bus
+    if body.lower().startswith(chassis.lower()) or chassis.lower().startswith(body.lower()):
+        return max(body, chassis, key=len)
     return f"{body} body on {'an' if chassis[:1].upper() in 'AEIOU' else 'a'} {chassis}"
 
 
