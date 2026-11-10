@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""tpa-bus-kinds: LOOK ONLY. Which buses say what kind of bus they are? (owner 10 Nov 11:08: "as much info as we
+can at this stage to determine getting the right pics to the right buses")
+
+Downloads the national BODS bus file ONCE (the same file the bus engine fetches every minute, with the same key from
+/etc/tpa/bus.env), then lists every piece of information the buses send and how many buses send it - especially
+seats, wheelchair spaces, occupancy and anything naming a vehicle type. Changes nothing; never prints the key.
+
+Run on the server:  sudo python3 tpa-bus-kinds
+Test with a saved file:  python3 tpa-bus-kinds --file bulk.zip
+"""
+import collections
+import io
+import re
+import sys
+import zipfile
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from xml.etree.ElementTree import iterparse
+
+URL = 'https://data.bus-data.dft.gov.uk/avl/download/bulk_archive'
+HINT = re.compile(r'capacity|occupancy|seat|wheelchair|vehicletype|vehiclefeature|feature|model|deck|vehicle(unique)?id|fleet|registration', re.I)
+SKIP = re.compile(r'^(Latitude|Longitude|Bearing|RecordedAtTime|ValidUntilTime|ItemIdentifier|BlockRef|Delay)$')
+
+
+def key():
+    for line in open('/etc/tpa/bus.env'):
+        k, _, v = line.strip().partition('=')
+        if k.strip() == 'TPA_BODS_API_KEY':
+            return v.strip().strip('"\'')
+    sys.exit('No bus key found in /etc/tpa/bus.env - nothing was downloaded.')
+
+
+def local(tag):
+    return tag.rsplit('}', 1)[-1]
+
+
+def seats_band(n):
+    return 'up to 20 (minibus?)' if n <= 20 else '21-35' if n <= 35 else '36-50 (single decker?)' if n <= 50 else '51+ (double decker?)'
+
+
+def survey(xml):
+    buses = 0
+    paths = collections.Counter()                 # field -> buses sending it
+    values = collections.defaultdict(collections.Counter)
+    ops = collections.Counter()
+    op_with = collections.defaultdict(collections.Counter)    # operator -> field -> buses
+    bands = collections.defaultdict(collections.Counter)      # operator -> seat band -> buses
+    stack = []
+    for event, elem in iterparse(xml, events=('start', 'end')):
+        name = local(elem.tag)
+        if event == 'start':
+            stack.append(name)
+            continue
+        stack.pop()
+        if name != 'VehicleActivity':
+            continue
+        buses += 1
+        seen, op, seated = set(), '', None
+
+        def walk(e, path):
+            nonlocal op, seated
+            for c in e:
+                n = local(c.tag)
+                p = path + '/' + n if path else n
+                if len(c):
+                    walk(c, p)
+                    continue
+                if SKIP.match(n):
+                    continue
+                seen.add(p)
+                text = (c.text or '').strip()
+                if n == 'OperatorRef' and not op:
+                    op = text[:20]
+                if HINT.search(n) and text:
+                    values[p][text[:40]] += 1
+                if n == 'SeatedCapacity' and text.isdigit():
+                    seated = int(text)
+        walk(elem, '')
+        op = op or '(none)'
+        ops[op] += 1
+        for p in seen:
+            paths[p] += 1
+            if HINT.search(p.rsplit('/', 1)[-1]):
+                op_with[op][p] += 1
+        if seated is not None:
+            bands[op][seats_band(seated)] += 1
+        elem.clear()
+    return buses, paths, values, ops, op_with, bands
+
+
+def report(buses, paths, values, ops, op_with, bands):
+    pc = lambda n: f'{n:>6} ({100 * n / max(1, buses):.0f}%)'
+    print(f'\n=== TPA bus kinds check (look only) ===\nBuses in the national file: {buses}\n')
+    print('--- Every field the buses send, and how many buses send it ---')
+    for p, n in sorted(paths.items(), key=lambda x: -x[1]):
+        print(f'{pc(n)}  {p}')
+    print('\n--- Fields that might tell us the kind of bus: their commonest values ---')
+    hint_paths = [p for p in values if not re.search(r'VehicleRef$|VehicleUniqueId$', p)]
+    if not hint_paths:
+        print('(none)')
+    for p in sorted(hint_paths, key=lambda x: -paths[x]):
+        common = ', '.join(f'{v} x{n}' for v, n in values[p].most_common(12))
+        print(f'{p}  [{len(values[p])} different]: {common}')
+    print('\n--- Seats per bus (SeatedCapacity), all operators ---')
+    total = collections.Counter()
+    for b in bands.values():
+        total.update(b)
+    for band in ('up to 20 (minibus?)', '21-35', '36-50 (single decker?)', '51+ (double decker?)'):
+        print(f'{pc(total[band])}  {band}')
+    print(f'{pc(sum(total.values()))}  buses sending seats at all')
+    print('\n--- Biggest 40 operators: buses, and how many send seats ---')
+    for op, n in ops.most_common(40):
+        s = sum(bands[op].values())
+        short = {'up to 20 (minibus?)': 'mini', '21-35': 'small', '36-50 (single decker?)': 'single', '51+ (double decker?)': 'double'}
+        detail = ', '.join(f'{short[k]} {v}' for k, v in sorted(bands[op].items(), key=lambda x: list(short).index(x[0])))
+        print(f'{op:<12} {n:>5} buses   seats from {s:>5} ({100 * s / n:.0f}%)  {detail}')
+    print('\nNothing was changed. The bus key was not shown.')
+
+
+def main():
+    if '--file' in sys.argv:
+        raw = open(sys.argv[sys.argv.index('--file') + 1], 'rb').read()
+    else:
+        print('Downloading the national bus file once (about a minute)...', flush=True)
+        req = Request(URL + '?' + urlencode({'api_key': key()}),
+                      headers={'User-Agent': 'TPA-Bus-Kinds-Check/1.0 (+mailto:enquiries@tpalive.co.uk)'})
+        with urlopen(req, timeout=120) as res:
+            raw = res.read(400 * 1024 * 1024)
+    if raw[:2] == b'PK':
+        with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+            name = next(n for n in zf.namelist() if n.lower().endswith('.xml'))
+            with zf.open(name) as xml:
+                result = survey(xml)
+    else:
+        result = survey(io.BytesIO(raw))
+    report(*result)
+
+
+if __name__ == '__main__':
+    main()
