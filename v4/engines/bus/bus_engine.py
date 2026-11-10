@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.9.0'
+ENGINE_VERSION = '0.9.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1474,6 +1474,17 @@ def trace(entity_id: str) -> dict:
     return out
 
 
+# 0.9.1 (owner 10 Nov 11:12-11:17): no bus in the national feed says what kind it is (tpa-bus-kinds: 28,232 buses, no
+# seats, no vehicle type), so the kind comes from companies that only run one kind. HQ shows the owner's matching picture
+# (dd / sd / coach / mini); anything else gets HQ's typical double decker and an honest "not given".
+KIND_BY_OPERATOR = {'NATX': ('coach', 'Coach')}      # National Express: coaches only
+KIND_NOT_GIVEN = 'Not given (the picture shows a typical bus)'
+
+
+def bus_kind(key: str) -> tuple:
+    return KIND_BY_OPERATOR.get(key.split(':', 1)[0].upper(), ('', KIND_NOT_GIVEN))
+
+
 def details(entity_id: str) -> dict:
     out = {'component': COMPONENT, 'id': entity_id, 'rows': []}
     key = entity_id[4:] if entity_id.startswith('bus:') else ''
@@ -1482,6 +1493,10 @@ def details(entity_id: str) -> dict:
     if v is None:
         out['note'] = 'This bus is no longer reporting.'
         return out
+    picture, kind = bus_kind(key)
+    if picture:
+        out['picture'] = picture
+    out['rows'].append({'label': 'Bus type', 'value': kind})
     with JOURNEY_LOCK:
         trip = (TRIPS.get(key) or (None, None))[1]
         f = FOLLOW.get(key)
@@ -1510,7 +1525,7 @@ def details(entity_id: str) -> dict:
     route = route or v.get('route') or ''
     first, last = stops[0], stops[-1]
     who = (company + ' ' if company else '') + (f'number {route} ' if route else '')
-    out['summary'] = (f'This is the {who}bus, the {_clock(first[4])} from {_stop_name(first[1], first[2])} '
+    out['summary'] = (f'This is the {who}{"coach" if picture == "coach" else "bus"}, the {_clock(first[4])} from {_stop_name(first[1], first[2])} '
                       f'to {_stop_name(last[1], last[2])}.')[:200]
     # the moment it is shown at (REPLAY_SECONDS behind its reports), on its journey's own clock
     shown_clock = None

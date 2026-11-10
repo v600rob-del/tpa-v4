@@ -117,6 +117,7 @@ const RAIL_KINDS=Object.freeze({express: ['M2 12h17c4.5 0 8.3 2.2 10.6 5.6l.6.9c
 // 4.17.0 (owner 5 Nov stage 3): TPA's own side-on drawings of the common British train classes, shown in a train's box
 // once the timetable says what it is (rail engine 0.8.0 sends picture "c800" etc.). 100x26, facing right; amber = the
 // yellow warning panel. Drawn in-house (v4/design/train-classes), no photos or logos.
+const BUS_PICTURES={dd:'Picture of a double-decker bus',sd:'Picture of a single-decker bus',coach:'Picture of a coach',mini:'Picture of a minibus'};   // 4.29.0
 const TRAIN_PHOTOS=new Set(['c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66',   // 4.21.0
   'c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel']);   // 4.24.0 (owner 6 Nov 10:24-10:58): second batch + a generic electric train
 // 4.24.0: the second batch has no drawing of its own; if a picture fails to load, the nearest first-batch drawing stands in
@@ -249,8 +250,11 @@ async function loadDetails(e,box){
       rows.unshift(box2);}
     // 4.22.0 (owner 5 Nov 20:51-21:04: "just a generic bus pic for the info box as it looks a bit barren"): the owner's own
     // picture (Geoff driving a TPA bus, no operator logos) on the same light panel as the trains; left out if it fails.
+    // 4.29.0 (owner 10 Nov 11:07-11:17: "the same standard as the trains, with nicely rendered ones"): the owner's four
+    // generic pictures - the engine names one when it knows the kind (a coach company); otherwise a typical double decker.
     if(e.component==='bus'){const box3=document.createElement('div');box3.className='detail-picture bus photo';
-      const img=document.createElement('img');img.src='/assets/buses/bus.webp';img.alt='Picture of a bus';img.decoding='async';
+      const kind=typeof d.picture==='string'&&Object.hasOwn(BUS_PICTURES,d.picture)?d.picture:'dd';
+      const img=document.createElement('img');img.src='/assets/buses/'+kind+'.webp';img.alt=BUS_PICTURES[kind];img.decoding='async';
       img.addEventListener('error',()=>box3.remove(),{once:true});box3.append(img);rows.unshift(box3);}
     box.replaceChildren(...rows);
   }catch(err){}
