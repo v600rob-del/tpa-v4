@@ -499,6 +499,29 @@ def fleetlists(live, tfl_raw, ey_raw):
     print('\nNothing was changed. The bus key was not shown.')
 
 
+def ey_peek(raw):
+    """The page around two buses (one found, one not), and its words about copying - so the type and plate can be read."""
+    text = raw.decode('utf-8', 'replace')
+    print(f'\n=== East Yorkshire fleet page, a peek (look only) ===\nSize {len(raw)} bytes')
+    for fleet in ('20376', '20313'):
+        at = [m.start() for m in re.finditer(fleet, text)]
+        print(f'\n--- fleet number {fleet}: appears {len(at)} times ---')
+        if at:
+            a = at[0]
+            row = text.rfind('<tr', 0, a)
+            end = text.find('</tr>', a)
+            chunk = text[row if row >= 0 and a - row < 4000 else a - 1500: (end + 5 if 0 <= end - a < 4000 else a + 2500)]
+            print(re.sub(r'\s+', ' ', chunk)[:3500])
+    plates = sorted(set(re.findall(r'\b[A-Z]{2}\d{2}\s?[A-Z]{3}\b', text)))
+    print(f'\nNumber plates written in the page: {len(plates)}, e.g. ' + ' '.join(plates[:10]))
+    alts = collections.Counter(re.findall(r'(?:alt|title|aria-label)="([^"]{2,40})"', text))
+    print('Picture labels in the page: ' + ', '.join(f'{k} x{v}' for k, v in alts.most_common(15)))
+    for word in ('copyright', 'terms', 'reproduc', 'permission'):
+        for m in list(re.finditer(word, text, re.I))[:2]:
+            print(f'"{word}": ' + re.sub(r'<[^>]+>', ' ', re.sub(r'\s+', ' ', text[max(0, m.start() - 150): m.start() + 200])).strip()[:300])
+    print('\nNothing was changed.')
+
+
 def fetch_txc_for(nocs, k):
     """Every timetable dataset listed for these companies, each read once (the service lists a whole group's)."""
     journeys, done = [], set()
@@ -551,6 +574,10 @@ def main():
         kinds, journeys = txc_kinds(open(sys.argv[sys.argv.index('--txc-file') + 1], 'rb').read())
         print(f'journeys {journeys}  with a type {sum(kinds.values())}  ' + ', '.join(f'{c}/{d} x{n}' for (c, d), n in kinds.most_common()))
         return
+    if '--ey-peek' in sys.argv:                  # part 6: how East Yorkshire's page writes one bus (look only)
+        i = sys.argv.index('--ey-peek')
+        raw = open(sys.argv[i + 1], 'rb').read() if i + 1 < len(sys.argv) else get(EY_FLEET, 50_000_000)
+        return ey_peek(raw)
     if '--fleetlists-files' in sys.argv:         # test: live file, TfL .xlsx, East Yorkshire page
         i = sys.argv.index('--fleetlists-files')
         with zipfile.ZipFile(sys.argv[i + 1]) as zf, zf.open(zf.namelist()[0]) as x:
