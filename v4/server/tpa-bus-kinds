@@ -262,15 +262,20 @@ def txc_journeys(raw):
     out = []
 
     def one(xml):
-        lines, ops, js = {}, {}, []
+        lines, ops, services, js = {}, {}, {}, []
         for _e, el in iterparse(xml):
             n = local(el.tag)
             if n == 'Line':
                 lines[el.get('id', '')] = next((x.text or '' for x in el.iter() if local(x.tag) == 'LineName'), '').strip().lower()
             elif n in ('Operator', 'LicensedOperator'):
                 ops[el.get('id', '')] = next((x.text or '' for x in el.iter() if local(x.tag) == 'NationalOperatorCode'), '').strip().upper()
+            elif n == 'Service':      # Stagecoach names the company once per service, not on each journey
+                code = next((x.text or '' for x in el if local(x.tag) == 'ServiceCode'), '').strip()
+                reg = next((x.text or '' for x in el if local(x.tag) == 'RegisteredOperatorRef'), '').strip()
+                if code:
+                    services[code] = reg
             elif n == 'VehicleJourney':
-                j = {'code': '', 'ticket': '', 'line': '', 'dep': '', 'kind': '', 'op': ''}
+                j = {'code': '', 'ticket': '', 'line': '', 'dep': '', 'kind': '', 'op': '', 'svc': ''}
                 for x in el.iter():
                     m, t = local(x.tag), (x.text or '').strip()
                     if m == 'VehicleJourneyCode':
@@ -283,6 +288,8 @@ def txc_journeys(raw):
                         j['dep'] = t
                     elif m == 'OperatorRef':
                         j['op'] = t
+                    elif m == 'ServiceRef':
+                        j['svc'] = t
                 for vt in (x for x in el.iter() if local(x.tag) == 'VehicleType'):
                     d = next((y.text or '' for y in vt.iter() if local(y.tag) == 'Description'), '').strip()
                     c = next((y.text or '' for y in vt.iter() if local(y.tag) == 'VehicleTypeCode'), '').strip()
@@ -291,7 +298,8 @@ def txc_journeys(raw):
                 el.clear()
         only = next(iter(ops.values()), '') if len(set(ops.values())) == 1 else ''
         for j in js:
-            j['noc'] = ops.get(j.pop('op'), '') or only
+            op, svc = j.pop('op'), j.pop('svc')
+            j['noc'] = ops.get(op, '') or ops.get(services.get(svc, ''), '') or only
             j['line'] = lines.get(j['line'], j['line']).lower()
             out.append(j)
     if raw[:2] == b'PK':
@@ -308,29 +316,51 @@ def txc_journeys(raw):
 
 
 def calibrate(buses, journeys, nocs):
-    """Match live buses to their timetabled journey; count which fleet numbers run which kind of bus."""
+    """Match live buses to their timetabled journey; count which fleet numbers run which kind of bus.
+    Tries, in order: the ticket machine's journey code, the journey's own code, then route + departure time - each
+    first within the company, then (only if the answer is one kind) anywhere in these timetables."""
     by = collections.defaultdict(list)
     for j in journeys:
         if j['kind']:
-            for k in (('t', j['noc'], j['ticket']), ('c', j['noc'], j['code']), ('l', j['noc'], j['line'], j['dep'])):
-                if all(k[1:]):
+            for k in (('t', j['noc'], j['ticket']), ('c', j['noc'], j['code']), ('l', j['noc'], j['line'], j['dep']),
+                      ('t', '*', j['ticket']), ('c', '*', j['code']), ('l', '*', j['line'], j['dep'])):
+                if all(k[2:]) and k[1]:
                     by[k].append(j['kind'])
     print('\n=== Fleet numbers against the timetable (look only) ===')
     print(f'Timetable journeys read: {len(journeys)}, naming a type: {sum(1 for j in journeys if j["kind"])}')
+    per = collections.Counter(j['noc'] or '(none)' for j in journeys if j['kind'])
+    print('Journeys naming a type, by company: ' + ', '.join(f'{k} {v}' for k, v in per.most_common(20)))
+    sample = [j for j in journeys if j['kind']][:3]
+    for j in sample:
+        print(f'  timetable example: company {j["noc"] or "-"}, ticket {j["ticket"] or "-"}, code {j["code"] or "-"}, route {j["line"] or "-"}, leaves {j["dep"] or "-"}, kind {j["kind"]}')
     first = collections.defaultdict(collections.Counter)
     two = collections.defaultdict(collections.Counter)
+    how = collections.Counter()
     for noc in nocs:
         mine = [b for b in buses if b['op'] == noc]
         hit = 0
         for b in mine:
-            kinds = (by.get(('t', noc, b['ticket'])) or by.get(('c', noc, b['dated'])) or
-                     by.get(('l', noc, b['line'], b['dep'])) or [])
+            kinds, way = [], ''
+            for scope in (noc, '*'):
+                for name, k in (('ticket code', ('t', scope, b['ticket'])), ('journey code', ('c', scope, b['dated'])),
+                                ('route + time', ('l', scope, b['line'], b['dep']))):
+                    if all(k[2:]) and by.get(k):
+                        kinds, way = by[k], name + ('' if scope == noc else ' (any company)')
+                        break
+                if kinds:
+                    break
             if not kinds or len(set(kinds)) != 1 or not b['num']:
                 continue
             hit += 1
+            how[way] += 1
             first[b['num'][0]][kinds[0]] += 1
             two[b['num'][:2]][kinds[0]] += 1
-        print(f'{noc:<6} live buses {len(mine):>5}   matched to a journey with a type {hit:>5}')
+        has = lambda f: sum(1 for b in mine if b[f])
+        print(f'{noc:<6} live buses {len(mine):>5}  (ticket code {has("ticket")}, journey code {has("dated")}, start time {has("dep")})'
+              f'   matched with a type {hit:>5}')
+        for b in mine[:2]:
+            print(f'  live example: fleet {b["fleet"]}, ticket {b["ticket"] or "-"}, journey {b["dated"] or "-"}, route {b["line"] or "-"}, left {b["dep"] or "-"}')
+    print('Matched by: ' + (', '.join(f'{k} {v}' for k, v in how.most_common()) or 'nothing'))
     print('\n--- By the first digit of the fleet number ---')
     for d in sorted(first):
         print(f'  {d}xxxx  ' + ', '.join(f'{k} x{v}' for k, v in first[d].most_common()))
@@ -341,20 +371,23 @@ def calibrate(buses, journeys, nocs):
 
 
 def fetch_txc_for(nocs, k):
-    journeys = []
+    """Every timetable dataset listed for these companies, each read once (the service lists a whole group's)."""
+    journeys, done = [], set()
     for noc in nocs:
         try:
-            listing = json.loads(get(API + '?' + urlencode({'noc': noc, 'status': 'published', 'limit': 25, 'api_key': k}), 5_000_000))
+            listing = json.loads(get(API + '?' + urlencode({'noc': noc, 'status': 'published', 'limit': 100, 'api_key': k}), 10_000_000))
         except Exception as exc:
             print(f'{noc:<6} timetable list failed: {type(exc).__name__}', flush=True)
             continue
         sets = [d for d in listing.get('results') or [] if noc in [str(x).upper() for x in (d.get('noc') or [])]]
-        print(f'{noc:<6} datasets listed {len(listing.get("results") or [])}, for this company {len(sets)}', flush=True)
-        for ds in sets[:3]:
+        new = [d for d in sets if (d.get('url') or '') not in done]
+        print(f'{noc:<6} datasets for this company {len(sets)}, not yet read {len(new)}', flush=True)
+        for ds in new:
             url = ds.get('url') or ''
+            done.add(url)
             try:
                 got = txc_journeys(get(url + ('&' if '?' in url else '?') + urlencode({'api_key': k})))
-                print(f'       {str(ds.get("name") or "")[:60]}: {len(got)} journeys', flush=True)
+                print(f'       {str(ds.get("name") or "")[:60]}: {len(got)} journeys, {sum(1 for j in got if j["kind"])} with a type', flush=True)
                 journeys.extend(got)
             except Exception as exc:
                 print(f'       {str(ds.get("name") or "")[:60]}: could not read ({type(exc).__name__})', flush=True)
