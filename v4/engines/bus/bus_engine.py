@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.12.3'
+ENGINE_VERSION = '0.12.4'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1583,10 +1583,27 @@ def plate_in_id(vehicle: str) -> tuple:
     return '', ''
 
 
+def company_label(noc: str) -> str:
+    """The bus company's name from the timetable ('' if unknown); every Stagecoach company is just "Stagecoach"."""
+    try:
+        name = (TIMETABLE['tt'].company_name(noc) if TIMETABLE['tt'] is not None else '').strip()
+    except Exception:
+        return ''
+    return 'Stagecoach' if name.lower().startswith('stagecoach') else name[:60]
+
+
+def plain_fleet_number(vehicle: str) -> str:
+    """0.12.4: the fleet number when the bus's ID is one - a plain number (Stagecoach 10039, Nottingham 418,
+    East Yorkshire 20313) or First's "FBRI-30057". Not plates or anything else."""
+    m = re.fullmatch(r'(?:[A-Z]{4}-)?(\d{1,6})', vehicle or '')
+    return m.group(1) if m else ''
+
+
 def bus_kind(key: str) -> tuple:
     """(picture, words for the box, more rows) for one bus; adds the plate when the bus's own ID holds one."""
     picture, words, more = _bus_kind(key)
     plate, fleet = plate_in_id(key.partition(':')[2])
+    fleet = fleet or plain_fleet_number(key.partition(':')[2])
     labels = {r['label'] for r in more}
     if fleet and 'Fleet number' not in labels:
         more = more + [{'label': 'Fleet number', 'value': fleet}]
@@ -1657,6 +1674,10 @@ def details(entity_id: str) -> dict:
         f = FOLLOW.get(key)
         sh = SHAPES.get(trip) if trip else None
     if not trip or TIMETABLE['tt'] is None:
+        # 0.12.4 (owner 18:07: "i cant find many ... with ... operators information"): the company, even unmatched
+        who = company_label(key.split(':', 1)[0])
+        if who:
+            out['rows'].insert(0, {'label': 'Operator', 'value': who})
         if v.get('destination'):
             out['rows'].append({'label': 'To', 'value': v['destination'][:80]})
         out['note'] = 'Its timetable could not be matched, so stops and times are not shown.'
