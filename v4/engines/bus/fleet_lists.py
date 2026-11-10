@@ -133,23 +133,58 @@ EY_KINDS = {'double decker bus': ('dd', 'Double decker'), 'single decker bus': (
             'open top bus': ('dd', 'Open-top double decker')}
 
 
+def _text(fragment: str) -> str:
+    import html as _html
+    return ' '.join(_html.unescape(re.sub(r'<[^>]+>', ' ', fragment or '')).split())
+
+
+def _kind_of(words: str):
+    """'Double decker bus', 'Single Decker', 'Midibus', 'Open top bus' ... -> (picture, kind) or None."""
+    w = words.lower()
+    if 'open top' in w or 'open-top' in w:
+        return 'dd', 'Open-top double decker'
+    for key, value in (('double', ('dd', 'Double decker')), ('midi', ('sd', 'Midi single decker')),
+                       ('mini', ('mini', 'Minibus')), ('coach', ('coach', 'Coach')), ('single', ('sd', 'Single decker'))):
+        if key in w:
+            return value
+    return None
+
+
 def parse_ey(raw: bytes) -> dict:
-    """fleet number -> {picture, kind, model, power, plate}, from East Yorkshire's fleet page (owner's peek 13:38)."""
+    """fleet number -> {picture, kind, model, power, plate}, from a fleet page in East Yorkshire's website kit (also
+    Nottingham City Transport's). 0.12.6 (owner's status 20:12: only 217 of ~287 East Yorkshire and 85 of ~276
+    Nottingham buses read): read each row cell by cell, so extra labels, entities or tags in a cell don't lose the bus.
+    How many buses were skipped is kept in parse_ey.skipped."""
     text = raw.decode('utf-8', 'replace')
-    out = {}
+    out, skipped = {}, 0
     for chunk in re.findall(r'<tr\b.*?</tr>', text, re.S):
-        fleet = re.search(r'data-more-info="(\d{2,6})"', chunk)
-        what = re.search(r'<td>\s*([^<]{2,60}?)\s*<br\s*/?>\s*<em>\s*([^<]{2,40}?)\s*</em>\s*</td>', chunk)
-        if not fleet or not what or what.group(2).strip().lower() not in EY_KINDS:
+        button = re.search(r'fleet-list__more-info-button[^>]*data-more-info="([^"]{1,12})"|'
+                           r'data-more-info="([^"]{1,12})"[^>]*fleet-list__more-info-button', chunk)
+        if not button:
             continue
-        picture, kind = EY_KINDS[what.group(2).strip().lower()]
-        plate = re.search(r'vehicle-information__plate">\s*([^<]{4,10}?)\s*<', chunk)
-        out[fleet.group(1)] = {'picture': picture, 'kind': kind, 'model': what.group(1).strip()[:40],
-                               'power': 'Electric' if 'electric bus' in chunk.lower() else '',
-                               'plate': plate.group(1).strip() if plate else ''}
+        fleet = (button.group(1) or button.group(2)).strip()
+        found = None
+        for cell in re.findall(r'<td\b[^>]*>(.*?)</td>', chunk, re.S):
+            em = re.search(r'<em\b[^>]*>(.*?)</em>', cell, re.S)
+            if em and _kind_of(_text(em.group(1))):
+                found = (_text(cell[:em.start()]), _kind_of(_text(em.group(1))))
+                break
+        if not found or not re.fullmatch(r'[A-Za-z0-9]{1,12}', fleet):
+            skipped += 1
+            continue
+        model, (picture, kind) = found
+        plate = re.search(r'vehicle-information__plate"[^>]*>(.*?)<', chunk, re.S)
+        out[fleet] = {'picture': picture, 'kind': kind, 'model': model[:40],
+                      'power': 'Electric' if 'electric bus' in chunk.lower() else '',
+                      'plate': _text(plate.group(1))[:10] if plate else ''}
+    parse_ey.skipped = skipped
     if len(out) < 10:
         raise ValueError(f'only {len(out)} buses read - page layout changed?')
     return out
+
+
+parse_ey.skipped = 0
+PARSER_VERSION = 2       # 0.12.6: a kept list read by an older reader is read again at once
 
 
 PARSERS = {'tfl': (lambda: TFL_URL, parse_tfl), 'ey': (lambda: EY_URL, parse_ey), 'nct': (lambda: NCT_URL, parse_ey)}
@@ -179,15 +214,16 @@ def refresh(data_dir: Path, enabled, download, status=lambda **kw: None) -> None
     for name in enabled:
         with LOCK:
             have = LISTS.get(name)
-        if have and time.time() - have.get('fetchedAt', 0) < REFRESH_DAYS * 86400:
+        if have and have.get('parser') == PARSER_VERSION and time.time() - have.get('fetchedAt', 0) < REFRESH_DAYS * 86400:
             continue
         url, parse = PARSERS[name]
         try:
             rows = parse(download(url()))
+            skipped = getattr(parse, 'skipped', 0) if parse is parse_ey else 0
             with LOCK:
-                LISTS[name] = {'fetchedAt': time.time(), 'rows': rows}
+                LISTS[name] = {'fetchedAt': time.time(), 'rows': rows, 'parser': PARSER_VERSION, 'skipped': skipped}
             save(data_dir)
-            status(name=name, rows=len(rows), error='')
+            status(name=name, rows=len(rows), error='', skipped=skipped)
         except Exception as exc:     # never breaks the layer; the old copy stays
             status(name=name, rows=len((have or {}).get('rows', {})), error=type(exc).__name__ + ': ' + str(exc)[:80])
 
@@ -208,4 +244,5 @@ def lookup(noc: str, vehicle: str, enabled) -> tuple:
 
 def counts() -> dict:
     with LOCK:
-        return {k: {'buses': len(v.get('rows') or {}), 'fetchedAt': v.get('fetchedAt', 0)} for k, v in LISTS.items()}
+        return {k: {'buses': len(v.get('rows') or {}), 'skipped': v.get('skipped', 0), 'fetchedAt': v.get('fetchedAt', 0)}
+                for k, v in LISTS.items()}

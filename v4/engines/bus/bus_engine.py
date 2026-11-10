@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.12.5'
+ENGINE_VERSION = '0.12.6'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1650,7 +1650,7 @@ def fleet_keeper() -> None:
 
     def note(**kw):
         with LOCK:
-            FLEET_STATUS[kw['name']] = {'buses': kw['rows'], 'error': kw['error']}
+            FLEET_STATUS[kw['name']] = {'buses': kw['rows'], 'error': kw['error'], 'skipped': kw.get('skipped', 0)}
     while True:
         fleet_lists.refresh(DATA_DIR, FLEET_LISTS, download, note)
         time.sleep(6 * 3600)
