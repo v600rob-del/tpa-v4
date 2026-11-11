@@ -87,7 +87,7 @@ for(const [name,lon,lat] of POI){const [x,y]=pixel(lon,lat);if(x<0||x>w||y<0||y>
 let airShow=(()=>{try{const v=localStorage.getItem('tpa-air-show');return ['all','normal','military','services'].includes(v)?v:'all';}catch(_){return 'all';}})();
 // 4.35.0 (owner 23:21): police / air ambulance / coastguard under a filter of their own, and in "All" (and Non-military)
 function isMilitary(e){return e.variant==='military'||(typeof e.variant==='string'&&e.variant.startsWith('mil-'));}
-function isService(e){return e.variant==='police'||e.variant==='ambulance'||e.variant==='coastguard';}
+function isService(e){return typeof e.variant==='string'&&/^(police|ambulance|coastguard)(-plane)?$/.test(e.variant);}
 function airShown(e){return e.component!=='air'||airShow==='all'||(airShow==='military'?isMilitary(e):airShow==='services'?isService(e):!isMilitary(e));}
 function listEntities(){return IDS.flatMap(id=>{
   if(!state.visible[id]||state.status[id]==='not_installed')return [];
@@ -163,7 +163,8 @@ const AIR_KINDS=Object.freeze({
   police:null,ambulance:null,coastguard:null,
   glider:['M15.4 4h1.2c.4 0 .6.8.6 1.8V12h13.3v1.6H17.2v12.2h3.6v1.4h-9.6v-1.4h3.6V13.6H1.5V12h13.3V5.8c0-1 .2-1.8.6-1.8Z',''],
   other:['M16 4a8 8 0 1 1 0 16 8 8 0 0 1 0-16ZM14 21h4v5h-4Z','']});
-for(const [k,v] of [['mil-transport','military'],['mil-helicopter','helicopter'],['police','helicopter'],['ambulance','helicopter'],['coastguard','helicopter']])
+for(const [k,v] of [['mil-transport','military'],['mil-helicopter','helicopter'],['police','helicopter'],['ambulance','helicopter'],['coastguard','helicopter'],
+                     ['police-plane','turboprop'],['ambulance-plane','turboprop'],['coastguard-plane','turboprop'],['balloon','other']])
   AIR_KINDS_ALIAS[k]=v;
 function airArt(v){const a=Object.hasOwn(AIR_KINDS_ALIAS,v)?AIR_KINDS_ALIAS[v]:v;return Object.hasOwn(AIR_KINDS,a)&&AIR_KINDS[a]?AIR_KINDS[a]:null;}
 function artPair(e){return (e.component==='rail'&&typeof e.variant==='string'&&Object.hasOwn(RAIL_KINDS,e.variant)&&RAIL_KINDS[e.variant])||
@@ -190,6 +191,17 @@ const KID_ART={
 };
 function kidFlip(e){return e.component==='air'&&e.position?.headingDeg!=null&&e.position.headingDeg>180?'scaleX(-1)':'';}
 const PIC_ICON=Object.freeze({bus:'/assets/icons/bus.webp',rail:'/assets/icons/train.webp'});   // 4.21.2
+// 4.36.0 (owner 11 Nov 00:09-00:11: his own glossy top-down plane icons, "all central to the icon to allow for rotation"):
+// the kind (air engine "variant") -> his picture; a kind the page does not know keeps the stand-in drawing. A plane whose
+// kind is not known shows the airliner. Balloons stay upright (they point no particular way).
+const PLANE_PIC=Object.freeze({airliner:'airliner',widebody:'widebody',turboprop:'turboprop',bizjet:'bizjet',light:'light',
+  helicopter:'helicopter',cargo:'cargo',glider:'glider',balloon:'balloon','mil-fighter':'fighter',
+  // until his military and emergency icons come: the nearest of his pictures (the pin colour still says which)
+  'mil-tanker':'widebody','mil-transport':'turboprop','mil-helicopter':'helicopter','mil-surveillance':'widebody',military:'light',
+  police:'helicopter',ambulance:'helicopter',coastguard:'helicopter','police-plane':'turboprop','ambulance-plane':'turboprop','coastguard-plane':'turboprop'});
+function planePic(e){if(e.component!=='air')return null;if(e.variant==null)return 'airliner';
+  return typeof e.variant==='string'&&Object.hasOwn(PLANE_PIC,e.variant)?PLANE_PIC[e.variant]:null;}
+function planeTurn(e){return e.variant!=='balloon'&&e.position?.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';}
 function buildArtwork(e){
   const icon=document.createElement('span');icon.className='review-art';icon.setAttribute('aria-hidden','true');
   if(KIDS&&KID_ART[e.component]){
@@ -205,7 +217,10 @@ function buildArtwork(e){
     if(e.component==='air'&&e.position?.headingDeg!=null)svg.style.transform='rotate('+e.position.headingDeg+'deg)';
     // 4.21.2 (owner 5 Nov 20:11-20:15, option B): buses and trains show the owner's front-on picture inside their frame,
     // so trains no longer need mirroring; the drawing comes back only if the picture cannot load.
-    if(PIC_ICON[e.component]){const img=document.createElement('img');img.className='pic-icon';img.src=PIC_ICON[e.component];img.alt='';
+    const plane=planePic(e);
+    if(PIC_ICON[e.component]||plane){const img=document.createElement('img');img.className='pic-icon'+(plane?' plane-pic p-'+plane:'');
+      img.src=plane?'/assets/planes/'+plane+'.webp':PIC_ICON[e.component];img.alt='';
+      if(plane)img.style.transform=planeTurn(e);
       img.decoding='async';img.draggable=false;img.addEventListener('error',()=>img.replaceWith(svg),{once:true});icon.append(img);}
     else icon.append(svg);
   }else{icon.textContent='≋';}
@@ -577,7 +592,7 @@ function markers(){
     // a side-on train faces the way it is going (west-ish: mirrored), and keeps facing that way when it stops
     if(e.component==='rail'&&!KIDS){const a=estimate(e,now+2000);if(a){const mx=metresXY(pos,a)[0];if(Math.abs(mx)>2){if(FACE.size>5000)FACE.clear();FACE.set(k,mx<0);}}}
     const faceLeft=e.component==='rail'&&FACE.get(k)===true;
-    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&isMilitary(e)?' k-military':''}${e.component==='air'&&isService(e)?' k-'+e.variant:''}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&isMilitary(e)?' k-military':''}${e.component==='air'&&isService(e)?' k-'+e.variant.split('-')[0]:''}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
     // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
     // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
     const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id;
@@ -585,7 +600,7 @@ function markers(){
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
     const b=pin.b;pin.e=e;pin.lat=pos.lat;pin.lon=pos.lon;pin.active=active;
     if(pin.art!==art){b.replaceChildren(buildArtwork(e));pin.art=art;}
-    if(e.component==='air'){const svg=b.querySelector('svg'),rot=KIDS?kidFlip(e):e.position.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';
+    if(e.component==='air'){const svg=b.querySelector('svg,.plane-pic'),rot=KIDS?kidFlip(e):svg?.classList?.contains('plane-pic')?planeTurn(e):e.position.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';
       if(svg&&svg.style.transform!==rot)svg.style.transform=rot;}
     if(b.className!==cls)b.className=cls;
     if(pos.hop){b.classList.remove('hop');void b.offsetWidth;b.classList.add('hop');}

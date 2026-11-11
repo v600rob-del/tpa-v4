@@ -326,3 +326,8 @@ body.vector-ready .vector-map{z-index:4}
 .marker-layer .review-pin.air.k-ambulance:not(.bus):not(.rail){background:#5c1420;color:#fff;border-color:#ff6b7d}
 .marker-layer .review-pin.air.k-coastguard:not(.bus):not(.rail){background:#6b3204;color:#fff;border-color:#ff9a3c}
 .air-filter{flex-wrap:wrap}
+/* 4.36.0 the owner's plane icons: the size of the old drawing (plane frames do not grow with --pin-s); a widebody bigger (owner 00:11) */
+.marker-layer .review-pin.air .plane-pic{width:34px;height:34px;max-width:none;transition:transform .2s ease}
+.marker-layer .review-pin.air .plane-pic.p-widebody{width:39px;height:39px}
+.marker-layer .review-pin.air .plane-pic.p-light,.marker-layer .review-pin.air .plane-pic.p-glider{width:31px;height:31px}
+@media(prefers-reduced-motion:reduce){.marker-layer .review-pin.air .plane-pic{transition:none}}

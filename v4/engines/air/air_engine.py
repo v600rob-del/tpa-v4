@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.6.3'
+ENGINE_VERSION = '0.6.4'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -633,7 +633,11 @@ def plane_kind(a) -> tuple:
     """(kind, words, where it came from) - or ('', 'Not known', '') when there is nothing to go on. Never a guess."""
     t, cat, call = (a.get('type') or '').upper(), a.get('category') or '', (a.get('flight') or '').upper()
     if re.match(r'^[A-Z]{3}\d', call) and call[:3] in SERVICES:
-        return SERVICES[call[:3]] + ('from its callsign',)
+        # 0.6.4 (owner 23:53: "the police for example use planes and helicopters"): a plane gets "-plane" (its own icon)
+        kind, words = SERVICES[call[:3]]
+        if cat != 'A7' and t not in HELICOPTER and (t or cat):
+            kind, words = kind + '-plane', words + ' plane'
+        return kind, words, 'from its callsign'
     reported = 'from what it reports'
     if a.get('military'):
         if cat == 'A7' or t in HELICOPTER:
@@ -647,8 +651,10 @@ def plane_kind(a) -> tuple:
         return 'helicopter', KIND_WORDS['helicopter'], reported if cat == 'A7' else 'from its type code'
     if cat == 'B1' or t in GLIDER:
         return 'glider', KIND_WORDS['glider'], reported if cat == 'B1' else 'from its type code'
-    if cat in ('B2', 'B6', 'B7'):
-        return 'other', {'B2': 'Balloon', 'B6': 'Drone', 'B7': 'Space vehicle'}[cat], reported
+    if cat == 'B2':
+        return 'balloon', 'Balloon', reported          # 0.6.4: the owner's balloon icon
+    if cat in ('B6', 'B7'):
+        return 'other', {'B6': 'Drone', 'B7': 'Space vehicle'}[cat], reported
     if cat == 'B4':
         return 'light', 'Microlight', reported
     if re.match(r'^[A-Z]{3}\d', call) and call[:3] in CARGO_AIRLINES:
