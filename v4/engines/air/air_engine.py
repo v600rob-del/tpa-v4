@@ -8,9 +8,10 @@ feeding them data). TPA_ADSBLOL_API_KEY is read if set, ready for that day.
 How it fetches (like the bus engine's "area" mode):
 - asks ADSB.lol once for a circle covering the area being viewed (plus a
   margin, at most 250 nautical miles, the service maximum);
-- at most every POLL_SECONDS (default 20 s), and ONLY while someone is viewing;
+- at most every POLL_SECONDS (default 30 s since 0.7.0), and ONLY while someone is viewing;
 - every viewer is served from the same shared copy;
-- if ADSB.lol says "slow down" (429) or refuses, it pauses for 5 minutes.
+- if ADSB.lol says "slow down" (429) or refuses, it pauses (5 min, longer if it happens again)
+  and then asks more slowly until things are calm (0.7.0).
 
 Honesty: aircraft are shown where they last reported (never invented or
 animated). Reports over 30 s old are marked stale; over 90 s old they are
@@ -36,13 +37,16 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.6.6'
+ENGINE_VERSION = '0.7.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
 ATTRIBUTION = 'Aircraft data: ADSB.lol (Open Database License)'
 
-POLL_SECONDS = max(10, int(os.environ.get('TPA_AIR_POLL_SECONDS', '20') or 20))
+# 0.7.0 (owner 11 Nov 10:26: ADSB.lol said "slow down" and the map had no planes all day): normal pace 30 s (was 20 s).
+# Planes still glide smoothly between updates. (Below 10 s is allowed only against the test stand-in.)
+_POLL_FLOOR = 1 if os.environ.get('TPA_AIR_TEST_URL', '').strip() else 10
+POLL_SECONDS = max(_POLL_FLOOR, int(os.environ.get('TPA_AIR_POLL_SECONDS', '30') or 30))
 DEMAND_WINDOW = max(5, int(os.environ.get('TPA_AIR_DEMAND_SECONDS', '180') or 180))
 STALE_AFTER = 30
 DROP_AFTER = 90              # owner's v3 rule
@@ -54,11 +58,19 @@ MAX_RADIUS_NM = 250          # ADSB.lol maximum
 # because aircraft were only asked for once someone opened the map): with TPA_AIR_ALWAYS_ON=1 the engine
 # keeps one copy of the skies over most of Britain fresh even when nobody is watching, so the first
 # visitor sees aircraft at once. One request every IDLE_POLL_SECONDS (30 s) - same kind of load as one viewer.
+# 0.7.0 (owner 11 Nov): no longer asks while nobody is watching; TPA_AIR_ALWAYS_ON=1 now only means "ask for the whole UK".
 ALWAYS_ON = os.environ.get('TPA_AIR_ALWAYS_ON', '0').strip() == '1'
 IDLE_POLL_SECONDS = max(20, int(os.environ.get('TPA_AIR_IDLE_POLL_SECONDS', '30') or 30))
 HOME_VIEW = (50.0, -5.7, 55.8, 1.8)   # south, west, north, east: England, Wales and southern Scotland
 MAX_VIEW_SPAN = 9.0          # degrees of latitude; wider views ask the user to zoom in
-COOLDOWN_SECONDS = 300       # after 401/403/429/451, as in v3
+COOLDOWN_SECONDS = max(1, int(os.environ.get('TPA_AIR_COOLDOWN_SECONDS', '300') or 300))   # after 401/403/429/451, as in v3
+# 0.7.0 back off gently (owner 11 Nov): each "slow down" in a row raises slowLevel (at most 3). The pause grows
+# (5, 10, 15 min, or longer if ADSB.lol's Retry-After says so), and afterwards the engine asks at a slower pace:
+# every 1 min at level 1, every 2 min at levels 2 and 3. After CALM_SECONDS (10 min) with no "slow down" it steps
+# back down one level, until it is at the normal pace again.
+SLOW_PACES = tuple(max(1, int(x)) for x in (os.environ.get('TPA_AIR_SLOW_SECONDS', '60,120') or '60,120').split(',') if x.strip().isdigit()) or (60, 120)
+CALM_SECONDS = max(1, int(os.environ.get('TPA_AIR_CALM_SECONDS', '600') or 600))
+MAX_SLOW_LEVEL = 3
 # 0.4.0 (3 Nov load tests: ADSB.lol answered 429 "slow down" while pretend viewers watched twelve cities): on the server
 # (always on) the engine asks for the whole UK in two fixed circles each round and serves every viewer from them, so the
 # number of requests no longer depends on how many places are watched: 2 per round, at most 6 a minute.
@@ -87,7 +99,22 @@ STANDING = {'path': '', 'builtAt': 0.0, 'error': '', 'rows': {}}
 LOCK = threading.Lock()
 STATE = {'aircraft': [], 'fetchedAt': 0.0, 'circle': None, 'lastAttemptAt': 0.0, 'lastError': '',
          'lastDemandAt': 0.0, 'wanted': None, 'downloadsThisRun': 0, 'downloadBytes': 0,
-         'cooldownUntil': 0.0, 'consecutiveErrors': 0}
+         'cooldownUntil': 0.0, 'consecutiveErrors': 0, 'slowLevel': 0, 'lastSlowDownAt': 0.0}
+
+
+def pace() -> int:
+    """0.7.0: seconds between rounds right now (normal, or slower after a "slow down"). Call with LOCK held."""
+    level = STATE['slowLevel']
+    if not level:
+        return POLL_SECONDS
+    return max(POLL_SECONDS, SLOW_PACES[min(level, len(SLOW_PACES)) - 1])
+
+
+def calm_check(now: float) -> None:
+    """0.7.0: after a calm spell with no "slow down", step back towards the normal pace. Call with LOCK held."""
+    if STATE['slowLevel'] and now - STATE['lastSlowDownAt'] >= CALM_SECONDS:
+        STATE['slowLevel'] -= 1
+        STATE['lastSlowDownAt'] = now
 WAKE = threading.Event()
 
 
@@ -206,6 +233,7 @@ def fetch_national() -> None:
                 got[a['hex']] = a
         STATE.update(aircraft=list(got.values()), fetchedAt=started, circle='national', lastError='', consecutiveErrors=0,
                      downloadBytes=size)
+        calm_check(time.time())
         STATE['downloadsThisRun'] += 1
     print(f'ADSB.lol OK: {len(got)} aircraft over the UK, {size//1024} KB', flush=True)
 
@@ -228,7 +256,7 @@ def fetch_part(circle):
             raise ValueError('not-an-object')
         return len(raw), parse(payload, started)
     except HTTPError as exc:
-        _fail(f'adsblol-http-{exc.code}', exc.code in (401, 403, 429, 451))
+        _fail(f'adsblol-http-{exc.code}', exc.code in (401, 403, 429, 451), retry_after(exc))
     except (URLError, TimeoutError, OSError) as exc:
         _fail('network-' + type(exc).__name__, False)
     except ValueError as exc:
@@ -255,22 +283,35 @@ def fetch_once(circle) -> None:
         with LOCK:
             STATE.update(aircraft=aircraft, fetchedAt=started, circle=circle, lastError='', consecutiveErrors=0,
                          downloadBytes=len(raw))
+            calm_check(time.time())
             STATE['downloadsThisRun'] += 1
         print(f'ADSB.lol OK: {len(aircraft)} aircraft within {radius} nm, {len(raw)//1024} KB', flush=True)
     except HTTPError as exc:
-        _fail(f'adsblol-http-{exc.code}', exc.code in (401, 403, 429, 451))
+        _fail(f'adsblol-http-{exc.code}', exc.code in (401, 403, 429, 451), retry_after(exc))
     except (URLError, TimeoutError, OSError) as exc:
         _fail('network-' + type(exc).__name__, False)
     except ValueError as exc:
         _fail('bad-data-' + str(exc)[:30], False)
 
 
-def _fail(code: str, long_pause: bool) -> None:
+def retry_after(exc) -> int:
+    """0.7.0: ADSB.lol's own "try again after N seconds", if it sent one (capped at 1 hour)."""
+    try:
+        value = int(str((exc.headers or {}).get('Retry-After', '')).strip())
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return max(0, min(3600, value))
+
+
+def _fail(code: str, long_pause: bool, wait_asked: int = 0) -> None:
     with LOCK:
         STATE['lastError'] = code[:60]
         STATE['consecutiveErrors'] += 1
         if long_pause:
-            STATE['cooldownUntil'] = time.time() + COOLDOWN_SECONDS
+            now = time.time()
+            STATE['slowLevel'] = min(MAX_SLOW_LEVEL, STATE['slowLevel'] + 1)
+            STATE['lastSlowDownAt'] = now
+            STATE['cooldownUntil'] = now + max(COOLDOWN_SECONDS * STATE['slowLevel'], wait_asked)
     print('ADSB.lol fetch failed:', code, flush=True)
 
 
@@ -281,10 +322,12 @@ def poller() -> None:
         now = time.time()
         if ALWAYS_ON:                          # 0.4.0: the whole UK, at a fixed pace
             with LOCK:
+                # 0.7.0 (owner 11 Nov): only while someone is looking at the map - no more asking all day and night.
                 viewed = now - STATE['lastDemandAt'] < DEMAND_WINDOW
                 cooling = now < STATE['cooldownUntil']
-                wait = POLL_SECONDS * min(6, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else POLL_SECONDS
-                go = not cooling and now - STATE['lastAttemptAt'] >= (wait if viewed else max(wait, IDLE_POLL_SECONDS))
+                base = pace()
+                wait = base * min(6, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else base
+                go = viewed and not cooling and now - STATE['lastAttemptAt'] >= wait
                 if go:
                     STATE['lastAttemptAt'] = now
             if go:
@@ -296,7 +339,8 @@ def poller() -> None:
             if ALWAYS_ON and wanted is HOME_VIEW:
                 viewed = False             # nobody has asked for an area yet: keep most of Britain fresh
             cooling = now < STATE['cooldownUntil']
-            wait = POLL_SECONDS * min(6, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else POLL_SECONDS
+            base = pace()
+            wait = base * min(6, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else base
             due = now - STATE['lastAttemptAt'] >= wait
             uncovered = wanted is not None and not circle_covers(STATE['circle'], wanted) and now - STATE['lastAttemptAt'] >= 3
             if not viewed and ALWAYS_ON:
@@ -313,7 +357,9 @@ def poller() -> None:
 def health(now: float) -> tuple[str, str]:
     if now < STATE['cooldownUntil']:
         code = STATE['lastError']
-        msg = 'ADSB.lol asked us to slow down · paused 5 min' if code == 'adsblol-http-429' else 'ADSB.lol refused the request · paused 5 min'
+        mins = max(1, round((STATE['cooldownUntil'] - now) / 60))
+        msg = (f'ADSB.lol asked us to slow down · paused {mins} min' if code == 'adsblol-http-429'
+               else f'ADSB.lol refused the request · paused {mins} min')
         return ('stale' if STATE['fetchedAt'] else 'unavailable'), msg
     if not STATE['fetchedAt']:
         if STATE['consecutiveErrors']:
@@ -857,7 +903,8 @@ def label_for(a) -> str:
 def snapshot(view) -> dict:
     now = time.time()
     small = view is not None and view[2] - view[0] <= MAX_VIEW_SPAN
-    note_demand(view if small else None)
+    if small:                       # 0.7.0: a zoomed-out map shows no planes, so it does not count as watching
+        note_demand(view)
     with LOCK:
         aircraft, fetched, circle = STATE['aircraft'], STATE['fetchedAt'], STATE['circle']
         h, notice = health(now)
@@ -942,8 +989,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.client_address[0] != '127.0.0.1':
             return self.reply(403, {'error': 'local only'})
         split = urlsplit(self.path)
-        if split.path == '/status':
-            note_demand()
+        if split.path == '/status':        # 0.7.0: a health check is not a visitor watching planes
             now = time.time()
             with LOCK:
                 h, notice = health(now)
@@ -953,6 +999,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'aircraftInLastDownload': len(STATE['aircraft']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
                                         'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
+                                        'slowLevel': STATE['slowLevel'], 'pollingEverySeconds': pace(),
                                         'standingData': {'ready': bool(STANDING['path']), 'builtAt': iso(STANDING['builtAt']) if STANDING['builtAt'] else None,
                                                          'error': STANDING['error'], 'rows': STANDING['rows']}})
         if split.path == '/snapshot':
@@ -977,8 +1024,8 @@ def main() -> None:
         print('=' * 60, flush=True)
         print(f'TPA AIRCRAFT ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
         print('Source: ADSB.lol (free, no key needed today).', flush=True)
-        print(f'Asks ADSB.lol at most every {POLL_SECONDS}s while the map is open'
-              + (f', and every {IDLE_POLL_SECONDS}s for most of Britain when it is not.' if ALWAYS_ON else ', only then.'), flush=True)
+        print(f'Asks ADSB.lol at most every {POLL_SECONDS}s, only while someone is looking at the map'
+              + (' (the whole UK in two circles).' if ALWAYS_ON else '.') + ' Slows down further if ADSB.lol asks.', flush=True)
         print('Keep this window open. Close it to stop aircraft only.', flush=True)
         print('=' * 60, flush=True)
         server.serve_forever()
