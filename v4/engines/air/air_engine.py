@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.8.3'
+ENGINE_VERSION = '0.8.4'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -448,9 +448,16 @@ def choose(now: float):
     return None
 
 
+# 0.8.4 (owner 11 Nov 20:55, the plane refresh tweak): the poller looks every second whether a round is due (was every
+# 5 s, which could add up to 5 s to each round), and the page asks every 5 s (was 10 s). Visible updates come about every
+# 12 s instead of ~18 s. The number of requests to FlyItalyADSB is unchanged: the budget still sets the pace.
+POLLER_TICK = 1
+PAGE_POLL_MS = 5000
+
+
 def poller() -> None:
     while True:
-        WAKE.wait(timeout=5)
+        WAKE.wait(timeout=POLLER_TICK)
         WAKE.clear()
         now = time.time()
         if ALWAYS_ON:                          # 0.4.0: the whole UK, at a fixed pace
@@ -1211,7 +1218,7 @@ def snapshot(view) -> dict:
     received = fetched or now
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
-             'nextPollAfterMs': 10000, 'attribution': ATTRIBUTIONS[source or ORDER[0]], 'entities': []}
+             'nextPollAfterMs': PAGE_POLL_MS if small else 10000, 'attribution': ATTRIBUTIONS[source or ORDER[0]], 'entities': []}
     if not small:
         frame['notice'] = 'Zoom in to see aircraft'
         return frame
