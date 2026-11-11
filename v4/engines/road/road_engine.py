@@ -39,7 +39,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.4.1'
+ENGINE_VERSION = '0.4.2'
 COMPONENT = 'road'
 CONTRACT = '1.0'
 TOMTOM_TILE = 'https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/{z}/{x}/{y}'
@@ -288,7 +288,7 @@ INC_CACHE: 'OrderedDict[tuple, tuple[list, float]]' = OrderedDict()    # (z,x,y)
 INC_ITEMS: dict = {}                                                   # id -> incident (for the details box)
 INC_QUEUE: list = []          # 0.4.1: newest first; each entry (key, last asked for)
 INC_PENDING: dict = {}        # key -> last asked for
-INC_WORKERS = 3               # 0.4.1: three tiles at a time (TomTom allows at least 5 a second)
+INC_WORKERS = 4               # 0.4.1: three tiles at a time; 0.4.2: four (TomTom allows at least 5 requests a second)
 INC_ABANDONED = 1 if os.environ.get('TPA_ROAD_INC_TEST_ABANDON') and _inc_override else 20   # seconds: a queued tile nobody has asked for again is dropped (the view moved on)
 INC = {'requests': 0, 'lastError': '', 'consecutiveErrors': 0, 'pausedUntil': 0.0, 'lastSuccessAt': 0.0}
 INC_WAKE = threading.Event()
@@ -565,7 +565,7 @@ def inc_worker() -> None:
             finally:
                 with LOCK:
                     INC_PENDING.pop(key, None)
-            time.sleep(0.1)
+            time.sleep(0.05)
 
 
 def same_job(a, b) -> bool:
@@ -584,6 +584,12 @@ def inc_entities(view, now) -> tuple[list, str, bool]:
         return [], '', False
     s, w, n, e = view
     seen, out, loading, ask = set(), [], False, False
+    # 0.4.2 (owner 11 Nov 14:22, York at zoom 13: about 8 s): the tiles nearest the middle of the view are fetched first
+    # (put at the front of the queue last, so the middle ends up first)
+    k = 2 ** z
+    cx = ((w + e) / 2 + 180) / 360 * k
+    cy = (1 - math.log(math.tan(math.radians((s + n) / 2)) + 1 / math.cos(math.radians((s + n) / 2))) / math.pi) / 2 * k
+    tiles = sorted(tiles, key=lambda t: -((t[0] + 0.5 - cx) ** 2 + (t[1] + 0.5 - cy) ** 2))
     with LOCK:
         for x, y in tiles:
             key = (z, x, y)

@@ -35,7 +35,7 @@ COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.40.0'
+HQ_VERSION = '4.41.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -255,6 +255,16 @@ def area_query(query):
     return f'?west={w2:.4f}&south={s2:.4f}&east={e2:.4f}&north={n2:.4f}'
 
 
+def keep_seconds(raw):
+    """4.41.0 (owner 11 Nov 14:22: York roadworks took about 8 s to appear): an answer that says "ask again soon"
+    (still loading, nextPollAfterMs under 4 s) is shared for half that time, not the full SHARE_SECONDS - otherwise the
+    page's quick second look got the same "still loading" answer back."""
+    m = re.search(rb'"nextPollAfterMs":\s*(\d{1,6})', raw[:4096] if isinstance(raw, (bytes, bytearray)) else b'')
+    if m and int(m.group(1)) < SHARE_SECONDS * 1000:
+        return max(0.5, int(m.group(1)) / 2000)
+    return SHARE_SECONDS
+
+
 def shared_snapshot(comp, query, fetch):
     """One engine answer per (layer, area) every SHARE_SECONDS, shared by everyone asking for it."""
     key = (comp, area_query(query))
@@ -280,7 +290,7 @@ def shared_snapshot(comp, query, fetch):
         raw = fetch(key[1])
         with SHARED_LOCK:
             now = time.monotonic()
-            SHARED[key] = (now + SHARE_SECONDS, raw)
+            SHARED[key] = (now + keep_seconds(raw), raw)
             if len(SHARED) > 600:
                 for k in [k for k, (t, _) in SHARED.items() if t <= now] or list(SHARED)[:200]:
                     SHARED.pop(k, None)
@@ -576,7 +586,7 @@ class HQHandler(SimpleHTTPRequestHandler):
                         share=PUBLIC_CACHE and not self.headers.get('Authorization') and re.search(r'(?:^|&)cell=',split.query or '') \
                             and current_slot(split.query)
                         return self.reply(200,raw,'application/json; charset=utf-8',
-                                          f'public, max-age=0, s-maxage={int(SHARE_SECONDS)}' if share else 'no-store')   # 4.28.0
+                                          f'public, max-age=0, s-maxage={max(1, int(keep_seconds(raw)))}' if share else 'no-store')   # 4.28.0
                     except Exception:
                         return self.json_reply(503,{'component':comp,'health':'unavailable','message':'Engine not running or not responding'})
                 if FIXTURE_DIR and parts[5]=='snapshot':
