@@ -1737,6 +1737,19 @@ paint();discover();beginMap();setInterval(discover,30000);
 setInterval(()=>{if(IDS.some(id=>state.live[id]&&!state.parked[id]&&state.status[id]!=='ready'))discover();},10000);
 loadSiteConfig();
 // 4.0.13: one place that opens/closes the phone layers menu and keeps the button state right.
+// 4.46.0 (owner 11 Nov 18:58: "can the left hand menu be closable, with arrows to open it again, it takes up a fair chunk of
+// the screen for those of us who like a screen with things moving about on it"): on wider screens a tab on the menu's edge hides
+// it (the map takes the whole width) and brings it back; remembered in this browser. Phones keep their own LAYERS menu.
+function setMenuHidden(hide,save){
+  const app=document.querySelector('.app');if(!app)return;app.classList.toggle('menu-hidden',hide);
+  const t=$('menu-tab');if(t){t.textContent=hide?'▶':'◀';t.setAttribute('aria-expanded',hide?'false':'true');
+    t.setAttribute('aria-label',hide?'Show the layers menu':'Hide the layers menu');t.title=hide?'Show the menu':'Hide the menu';}
+  if(save){try{localStorage.setItem('tpa-menu-hidden',hide?'1':'0');}catch(_){}}
+  if(map&&typeof map.invalidateSize==='function')map.invalidateSize({pan:false});
+  paint();}
+if($('menu-tab')){$('menu-tab').onclick=()=>setMenuHidden(!document.querySelector('.app').classList.contains('menu-hidden'),true);
+  let was=false;try{was=localStorage.getItem('tpa-menu-hidden')==='1';}catch(_){}
+  if(was)setMenuHidden(true,false);}
 function setMenu(open){$('sidebar').classList.toggle('open',open);$('menu-button').setAttribute('aria-expanded',open?'true':'false');}
 new MutationObserver(()=>$('menu-button').setAttribute('aria-expanded',$('sidebar').classList.contains('open')?'true':'false')).observe($('sidebar'),{attributes:true,attributeFilter:['class']});
 })();

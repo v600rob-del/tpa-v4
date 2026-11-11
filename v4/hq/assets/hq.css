@@ -340,3 +340,20 @@ body.vector-ready .vector-map{z-index:4}
 /* 4.45.0: airport vehicles and towers - small, no frame (they only show close in) */
 .marker-layer .review-pin.air.k-ground{background:transparent;border:0;box-shadow:none;padding:0;width:28px;height:28px}
 .marker-layer .review-pin.air.k-ground .plane-pic{width:26px;height:26px;filter:drop-shadow(0 1px 2px #000a)}
+
+/* 4.46.0: hide / show the menu on wider screens (owner 11 Nov 18:58) */
+.menu-tab{position:absolute;left:0;top:50%;transform:translateY(-50%);z-index:1200;width:22px;height:64px;padding:0;border:1px solid #2a3b4c;border-left:0;
+  border-radius:0 9px 9px 0;background:#0d1a2ce8;color:#9fd8f0;font-size:12px;line-height:1;cursor:pointer;box-shadow:3px 0 12px #0006}
+.menu-tab:hover{background:#15283f;color:#fff}
+.menu-tab:focus-visible{outline:2px solid #fff;outline-offset:2px}
+@media(min-width:761px){.app.menu-hidden .sidebar{display:none}}
+@media(max-width:760px){.menu-tab{display:none}}
+
+/* 4.46.0 (owner 11 Nov 19:19: "I have to have my screen at 50% zoom to see it all on planes. Can all the click to pop up info
+   boxes have a scroll"): the box never grows past the top of the map - it scrolls inside, with the close button kept in view -
+   and on wider screens it sits clear of the zoom buttons. */
+.map-selection{max-height:calc(100% - 76px - 74px);overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#3b5a70 transparent}
+@media(min-width:761px){.map-selection{right:76px}}
+@media(max-width:760px){.map-selection{max-height:calc(100% - 60px - 128px);right:58px;max-width:min(330px,calc(100% - 68px))}}
+.map-selection>button[aria-label="Close target details"]{position:sticky;top:-8px;order:-1;align-self:flex-end;flex:0 0 auto;margin:-8px -8px -40px 0;
+  z-index:2;background:#0e2037;border:1px solid #365e72}
