@@ -207,8 +207,19 @@ const PLANE_PIC=Object.freeze({airliner:'airliner',widebody:'widebody',turboprop
 function planePic(e){if(e.component!=='air')return null;if(e.variant==null)return 'airliner';
   return typeof e.variant==='string'&&Object.hasOwn(PLANE_PIC,e.variant)?PLANE_PIC[e.variant]:null;}
 function planeTurn(e){return e.variant!=='balloon'&&e.position?.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';}
+// 4.39.0 (owner 11 Nov 13:04, traffic: incident markers and roadworks happening now): TPA's own road-sign style icons,
+// drawn here (no outside pictures): warning triangles for incidents, the red ring for a closed road.
+const TRI='<path d="M16 2.5 30.5 28H1.5Z" fill="#c8102e"/><path d="M16 8.2 25.6 25H6.4Z" fill="#fff"/>';
+const ROAD_ART={
+  roadworks:TRI+'<circle cx="17.6" cy="13.2" r="1.5" fill="#111"/><path d="M17 15.2 14.4 18.4 12.6 22.6M17 15.2l1.5 4.2 1.7 3.2M16.3 16.8l-3.5 1M14 18.6 9.6 15.2" stroke="#111" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M19.4 23.2h4.6l-2.3-3z" fill="#111"/>',
+  accident:TRI+'<path d="M9.6 21.6l3-4.6 4.2.8.6 3.2zM22.4 21.6l-3-4.6-4.2.8-.6 3.2z" fill="#111"/><path d="M16 12.4v2.8" stroke="#111" stroke-width="1.6" stroke-linecap="round"/>',
+  'broken-down':TRI+'<path d="M10 21.4v-2.6l1.8-3.4h8.4l1.8 3.4v2.6z" fill="#111"/><circle cx="12.6" cy="22" r="1.3" fill="#111"/><circle cx="19.4" cy="22" r="1.3" fill="#111"/>',
+  'lane-closed':TRI+'<path d="M12.6 23V15.6l2.8-3M19.4 23V12.6" stroke="#111" stroke-width="1.8" fill="none" stroke-linecap="round"/>',
+  hazard:TRI+'<path d="M16 12.4v6.4" stroke="#111" stroke-width="2.4" stroke-linecap="round"/><circle cx="16" cy="22.2" r="1.4" fill="#111"/>',
+  closed:'<circle cx="16" cy="16" r="14" fill="#c8102e"/><circle cx="16" cy="16" r="9.4" fill="#fff"/>'};
 function buildArtwork(e){
   const icon=document.createElement('span');icon.className='review-art';icon.setAttribute('aria-hidden','true');
+  if(e.component==='road'){icon.classList.add('road-sign');icon.innerHTML='<svg viewBox="0 0 32 32" focusable="false">'+(ROAD_ART[e.variant]||ROAD_ART.hazard)+'</svg>';return icon;}
   if(KIDS&&KID_ART[e.component]){
     icon.classList.add('kid-art');icon.innerHTML=KID_ART[e.component];
     const svg=icon.querySelector('svg');if(svg)svg.style.transform=kidFlip(e);   // planes face the way they fly
@@ -353,8 +364,8 @@ function selectEntity(e){
   // 4.4.0 (owner 1 Nov 13:42): more about this vehicle from its own engine (start, end, next stop for a bus)
   const more=document.createElement('div');more.className='vehicle-details';
   // 4.10.0 (owner 1 Nov 17:49): "Follow me!" - also here, for phones and tablets (no right-click)
-  const fb=document.createElement('button');fb.type='button';fb.className='follow-button';
-  fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};
+  const fb=e.component==='road'?null:document.createElement('button');   // 4.39.0: roadworks and incidents stay put
+  if(fb){fb.type='button';fb.className='follow-button';fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};}
   const rb=REPORT_ON?el('button','report-button','Report this'):null;
   if(rb){rb.type='button';rb.onclick=()=>copyReport(e);}
   selected.replaceChildren(...[h,info,more,fb,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
@@ -1312,6 +1323,8 @@ async function discover(){
   try{
     const data=await requestBounded('/api/v4/manifest',32768,5000);
     if(data.contractVersion!=='1.0'||!Array.isArray(data.components)||data.components.length>5)throw Error('manifest-contract');
+    // 4.39.0: the version label shows the real HQ version (it said 4.32.0 since then: written by hand in the page)
+    {const v=typeof data.hq==='string'&&/^\d+\.\d+\.\d+/.exec(data.hq),st=document.querySelector('.preview-stamp');if(v&&st&&st.textContent!=='HQ '+v[0]+' · TEST VERSION')st.textContent='HQ '+v[0]+' · TEST VERSION';}
     const seen=new Set();
     for(const entry of data.components){
       if(!entry||!IDS.includes(entry.id)||seen.has(entry.id)||!['ready','unavailable','not_installed','stale'].includes(entry.status))throw Error('manifest-invalid');
