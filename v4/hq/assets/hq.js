@@ -458,7 +458,9 @@ function estimate(e,now){
 //  - sideways or unclear -> the short 2 s slide as before.
 // 4.1.14 (owner 31 Oct 23:18: waited "almost 30 seconds", then "their little speeding thing"): a vehicle
 // waits at most 20 s and catches up at most 40% faster than its own speed; beyond that it fades in.
-const WAIT_MAX_MS=20000,CATCHUP_SHARE=0.4,CATCHUP_MAX_MS=30000,RAIL_SLIDE_MAX=150;
+const WAIT_MAX_MS=20000,CATCHUP_SHARE=0.4,CATCHUP_MAX_MS=30000,RAIL_SLIDE_MAX=150,PLANE_GLIDE_MAX=8000;
+// 4.42.0: a real aircraft (the air engine names its kind) or anything in the air layer moving faster than 60 m/s
+function isPlane(e,speed){return e.component==='air'&&(!!e.variant||speed>60);}
 function metresXY(a,b){const k=Math.cos(a.lat*Math.PI/180);return [(b.lon-a.lon)*k*111195,(b.lat-a.lat)*111195];}
 // 4.2.1: a "timed" track may hold a jump (two points 0.2 s or less apart and over 30 m apart: the engine
 // could not tell which way the vehicle went between two reports). It is drawn as a fade, never a slide.
@@ -502,6 +504,14 @@ function noteNewFrame(f,now,fresh){
     // never slid in a straight line over more than a short way (that cuts across buildings, not along the track): further
     // than that it fades out and back in where it really is. Other layers keep their own rules.
     if(e.component==='rail'&&gap>RAIL_SLIDE_MAX&&!REDUCED){blends.set(k,{hop:true,t0:now});continue;}
+    // 4.42.0 (owner 11 Nov 15:00: "instead of refreshing the icons, just have them stay on screen but glide to the new
+    // accurate position"): planes have no buildings to cut across, so they always glide to the reported place - never
+    // stopping in mid-air, never fading. The correction is spread out so it adds or takes at most ~40% of the plane's
+    // own speed (at most 20 s); only a plane found more than PLANE_GLIDE_MAX away (a new reading far off) fades in there.
+    if(isPlane(e,speed)&&!REDUCED){
+      if(gap>PLANE_GLIDE_MAX){blends.set(k,{hop:true,t0:now});continue;}
+      const dur=speed>5?Math.min(20000,Math.max(BLEND_MS,1.5*gap/(CATCHUP_SHARE*speed)*1000)):Math.min(5000,Math.max(BLEND_MS,800+gap*1.5));
+      blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur});continue;}
     if(e.motion&&speed>0.3&&gap>3){
       const ux=mx/speed,uy=my/speed,along=gx*ux+gy*uy,across=Math.abs(gx*uy-gy*ux);
       if(along<0&&across<40&&-along/speed*1000<=WAIT_MAX_MS){blends.set(k,{lon:was.lon,lat:was.lat,t0:now,wait:true,ux,uy});continue;}
