@@ -37,7 +37,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.7.0'
+ENGINE_VERSION = '0.7.1'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -63,6 +63,10 @@ ALWAYS_ON = os.environ.get('TPA_AIR_ALWAYS_ON', '0').strip() == '1'
 IDLE_POLL_SECONDS = max(20, int(os.environ.get('TPA_AIR_IDLE_POLL_SECONDS', '30') or 30))
 HOME_VIEW = (50.0, -5.7, 55.8, 1.8)   # south, west, north, east: England, Wales and southern Scotland
 MAX_VIEW_SPAN = 9.0          # degrees of latitude; wider views ask the user to zoom in
+# 0.7.1 (owner 11 Nov 10:57): "could the planes appear one zoom level out from where they do now ... would encompass
+# most of the uk and give an impression of how many planes etc are in our airspace". One level out = twice as far
+# across. On the server the engine already holds the whole UK (two national circles), so this costs ADSB.lol nothing.
+WIDE_VIEW_SPAN = 18.0
 COOLDOWN_SECONDS = max(1, int(os.environ.get('TPA_AIR_COOLDOWN_SECONDS', '300') or 300))   # after 401/403/429/451, as in v3
 # 0.7.0 back off gently (owner 11 Nov): each "slow down" in a row raises slowLevel (at most 3). The pause grows
 # (5, 10, 15 min, or longer if ADSB.lol's Retry-After says so), and afterwards the engine asks at a slower pace:
@@ -902,7 +906,9 @@ def label_for(a) -> str:
 
 def snapshot(view) -> dict:
     now = time.time()
-    small = view is not None and view[2] - view[0] <= MAX_VIEW_SPAN
+    span = view[2] - view[0] if view is not None else None
+    small = span is not None and span <= (WIDE_VIEW_SPAN if ALWAYS_ON else MAX_VIEW_SPAN)
+    wide = span is not None and span > MAX_VIEW_SPAN
     if small:                       # 0.7.0: a zoomed-out map shows no planes, so it does not count as watching
         note_demand(view)
     with LOCK:
@@ -928,7 +934,14 @@ def snapshot(view) -> dict:
             continue
         inside.append(((a['lat'] - clat) ** 2 + (a['lon'] - clon) ** 2, a, age))
     inside.sort(key=lambda t: t[0])
-    for _, a, age in inside[:MAX_PER_VIEW]:
+    if wide and len(inside) > MAX_PER_VIEW:
+        # 0.7.1: zoomed right out with a busy sky: an even share from right across the view (every so many by
+        # distance from the middle), not just the nearest 400 in a blob round the middle.
+        step = len(inside) / MAX_PER_VIEW
+        chosen = [inside[int(i * step)] for i in range(MAX_PER_VIEW)]
+    else:
+        chosen = inside[:MAX_PER_VIEW]
+    for _, a, age in chosen:
         entity = {'id': 'air:' + a['hex'], 'label': label_for(a)[:160],
                   'position': {'lon': a['lon'], 'lat': a['lat'], 'headingDeg': a['heading']},
                   'quality': 'stale' if age > STALE_AFTER else 'observed', 'observedAt': iso(a['reported'])}
@@ -957,7 +970,8 @@ def snapshot(view) -> dict:
     if not frame['entities'] and not circle_covers(circle, view) and not notice:
         frame['notice'] = 'Loading aircraft for this area…'
     elif len(inside) > MAX_PER_VIEW and not notice:
-        frame['notice'] = f'Showing nearest {MAX_PER_VIEW} · zoom in for all'
+        frame['notice'] = (f'Showing {MAX_PER_VIEW} of {len(inside)} planes · zoom in for all' if wide
+                           else f'Showing nearest {MAX_PER_VIEW} · zoom in for all')
     return frame
 
 

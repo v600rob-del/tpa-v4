@@ -26,6 +26,10 @@ if(USER_VIEW){document.documentElement.classList.add('user-view');document.title
   const h=document.querySelector('.search-panel h2');if(h)h.textContent='FIND A PLACE';
   const m=document.querySelector('.search-panel .micro');if(m)m.textContent='';}
 const HOME={lon:-0.423,lat:53.842,z:11};
+// 4.38.0 (owner 10 Nov 23:23): the map stays on the UK and the airspace around it - Channel Islands to Shetland,
+// all of Ireland, the North Sea edge - so it never wanders off to Singapore or loads far-off map tiles.
+const UK_BOX={south:48,west:-14,north:62,east:6};
+let minZ=3;   // the smallest zoom that still has the whole box on screen (set once the map knows its size)
 const POI=[
 ['Beverley',-0.423,53.842],['Hull',-0.334,53.745],['York',-1.082,53.960],['Leeds',-1.549,53.801],
 ['Bridlington',-0.202,54.084],['Scarborough',-0.401,54.284],['Goole',-0.869,53.702],['Doncaster',-1.134,53.523],
@@ -78,7 +82,7 @@ function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.la
 function gotoPlace(lon,lat,z,label){stopFollow();if(map)map.setView([lat,lon],z,{animate:false});state.lon=lon;state.lat=lat;state.z=z;selected.classList.add('hidden');state.selected=null;$('map-place').textContent=(label||'SELECTED LOCATION').toUpperCase();$('sidebar').classList.remove('open');paint();}
 function home(){gotoPlace(HOME.lon,HOME.lat,HOME.z,'BEVERLEY, EAST YORKSHIRE');toast('Home · Beverley, East Yorkshire');}
 function fitUK(){gotoPlace(-3.0,54.55,5.5,'UNITED KINGDOM');}
-function zoom(delta){if(map)map.setZoom(clamp(map.getZoom()+delta,3,18));else{state.z=clamp(state.z+delta,3,17);paint();}}
+function zoom(delta){if(map)map.setZoom(clamp(map.getZoom()+delta,minZ,18));else{state.z=clamp(state.z+delta,3,17);paint();}}
 function drawFallback(){const {w,h}=dims(),scale=Math.min(2,window.devicePixelRatio||1);if(canvas.width!==Math.round(w*scale)||canvas.height!==Math.round(h*scale)){canvas.width=Math.round(w*scale);canvas.height=Math.round(h*scale);}ctx.setTransform(scale,0,0,scale,0,0);ctx.clearRect(0,0,w,h);if(!state.geo||ready)return;
 ctx.fillStyle='#e8eeea';for(const shape of state.geo.land){if(shape.length<3)continue;ctx.beginPath();shape.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.closePath();ctx.fill();}
 ctx.strokeStyle='#86acb1';ctx.lineWidth=1;for(const seg of state.geo.coastlines){ctx.beginPath();seg.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.stroke();}
@@ -1353,7 +1357,7 @@ window.addEventListener('resize',()=>{if(map)map.invalidateSize();paint();});
 // Fallback drag/scroll remains usable only if MapLibre is unavailable.
 root.addEventListener('wheel',e=>{if(map)return;e.preventDefault();zoom(e.deltaY<0?1:-1);},{passive:false});
 root.addEventListener('pointerdown',e=>{if(map||e.button!==0||e.target.closest('button,input'))return;pan={x:e.clientX,y:e.clientY};});
-root.addEventListener('pointermove',e=>{if(map||!pan)return;const dx=e.clientX-pan.x,dy=e.clientY-pan.y;pan={x:e.clientX,y:e.clientY};const c=merc(state.lon,state.lat,state.z),p=inverse(c[0]-dx,c[1]-dy,state.z);state.lon=clamp(p.lon,-180,180);state.lat=clamp(p.lat,-80,80);paint();});
+root.addEventListener('pointermove',e=>{if(map||!pan)return;const dx=e.clientX-pan.x,dy=e.clientY-pan.y;pan={x:e.clientX,y:e.clientY};const c=merc(state.lon,state.lat,state.z),p=inverse(c[0]-dx,c[1]-dy,state.z);state.lon=clamp(p.lon,UK_BOX.west,UK_BOX.east);state.lat=clamp(p.lat,UK_BOX.south,UK_BOX.north);paint();});
 root.addEventListener('pointerup',()=>{pan=null;});root.addEventListener('pointercancel',()=>{pan=null;});
 root.tabIndex=0;root.addEventListener('keydown',e=>{if(map)return;if(e.key==='+'||e.key==='=')zoom(1);if(e.key==='-')zoom(-1);});
 async function diagnose(){try{const r=await fetch('/hq-map-status',{cache:'no-store'});if(!r.ok)return;const data=await r.json();let error=data.upstreamErrors||{};let message=error['blocked-map-path']?.code||error.openfreemap?.code||error['maplibre-library']?.code||data.browser?.lastCode||'map-resource-unavailable';showNotice('OpenFreeMap map unavailable ('+message+'). UK geographic fallback active.',true);}catch(_){showNotice('Map connection unavailable. UK geographic fallback active.',true);}}
@@ -1361,8 +1365,14 @@ function beginMap(){
 if(!window.L||!L.map){state.renderer='fallback';reportBrowser('library-missing','leaflet','Leaflet absent');diagnose();return;}
 try{
   // Historical behaviour: Leaflet owns zoom/pan/markers; MapLibre only paints Liberty.
-  map=L.map('vector-map',{zoomControl:false,preferCanvas:true,minZoom:3,maxZoom:18,worldCopyJump:true,
+  // 4.38.0: dragging stops at the edge of the UK box (only where the map library offers it; a map without it still works)
+  const ukBounds=typeof L.latLngBounds==='function'?L.latLngBounds([UK_BOX.south,UK_BOX.west],[UK_BOX.north,UK_BOX.east]):null;
+  map=L.map('vector-map',{zoomControl:false,preferCanvas:true,minZoom:3,maxZoom:18,
+    ...(ukBounds?{maxBounds:ukBounds,maxBoundsViscosity:1.0}:{}),
     attributionControl:false}).setView([HOME.lat,HOME.lon],HOME.z);
+  // 4.38.0: zooming out stops once the whole UK box is on screen (a phone stops one step further out than a PC).
+  const fitMinZoom=()=>{try{if(!ukBounds||typeof map.getBoundsZoom!=='function')return;minZ=clamp(map.getBoundsZoom(ukBounds,false),3,10);if(typeof map.setMinZoom==='function')map.setMinZoom(minZ);}catch(_){}};
+  fitMinZoom();if(typeof map.on==='function')map.on('resize',fitMinZoom);
   L.control.attribution({position:'bottomright',prefix:false}).addTo(map);
   state.renderer='leaflet-waiting';
   // 4.1.7: a plain drag only shifts the icon layer (cheap); the icons are fully re-placed at most
