@@ -22,7 +22,7 @@
       "TPA is for interest only. Positions can be late, missing or wrong, so please don't rely on it for travel plans or anything safety-related; check with your operator.",
       "Your privacy: no accounts, no cookies, no adverts and no tracking. TPA doesn't record who you are or where you are; your browser only remembers small settings, like having seen this screen. The street map loads from OpenFreeMap, which sets no cookies.",
       "If you email us, we only use your message to reply. Get in touch: enquiries@tpalive.co.uk",
-      "Built from open data: Department for Transport (bus locations, timetables and stops), Transport for London (bus fleet), Network Rail, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
+      "Built from open data: Department for Transport (bus locations, timetables and stops), Transport for London (bus fleet), Network Rail, FlyItalyADSB, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
       "Test version: anything marked MOCK is a pretend example · © 2026 Rob Burnett"
     ],
     "enterLabel": "Let's go!",
@@ -65,10 +65,10 @@
     },
     {
       "layer": "Aircraft",
-      "text": "Aircraft positions from ADSB.lol (Open Database License). Airline, aircraft and route details: Virtual Radar Server standing data (CC0), with thanks. Between reports, positions are estimated from speed and direction.",
-      "url": "https://www.adsb.lol/",
+      "text": "Aircraft positions from FlyItalyADSB (CC BY-SA 4.0), with ADSB.lol (Open Database License) as a backup. Airline, aircraft and route details: Virtual Radar Server standing data (CC0), with thanks. Between reports, positions are estimated from speed and direction.",
+      "url": "https://flyitalyadsb.com/",
       "status": "Live in test",
-      "short": "ADSB.lol"
+      "short": "FlyItalyADSB · ADSB.lol"
     },
     {
       "layer": "Road traffic",

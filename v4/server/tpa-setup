@@ -63,6 +63,7 @@ echo "1) TomTom (road traffic)";          save_one road.env TOMTOM_API_KEY "TomT
 echo "2) BODS (buses)";                   save_one bus.env  TPA_BODS_API_KEY "BODS key"
 echo "3) Network Rail (trains)";          save_one rail.env TPA_NR_USERNAME "Network Rail login email"
                                           save_one rail.env TPA_NR_PASSWORD "Network Rail password"
+echo "4) FlyItalyADSB (planes)";          save_one air.env  TPA_FLYITALY_API_KEY "FlyItalyADSB key"
 
 # ---- private test password (the site stays private until Network Rail reply) -------
 echo

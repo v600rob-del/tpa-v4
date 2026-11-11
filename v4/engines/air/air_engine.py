@@ -20,6 +20,7 @@ dropped (the owner's v3 rule). Ground traffic is labelled "on the ground".
 """
 from __future__ import annotations
 
+import calendar
 import csv
 import io
 import json
@@ -37,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.7.1'
+ENGINE_VERSION = '0.8.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -86,6 +87,26 @@ if _test and not re.match(r'^http://127\.0\.0\.1:\d+/.*\{lat\}.*\{lon\}.*\{radiu
     raise SystemExit('TPA_AIR_TEST_URL must point at 127.0.0.1 (testing only)')
 POINT_URL = _test or ADSBLOL_POINT
 
+# 0.8.0 (owner 11 Nov 12:09, after ADSB.lol's new 500-a-day limit: "I think we have genuinely found our new plane
+# provider"): FlyItalyADSB - free key by email, commercial use allowed within the free limits (30 requests a minute,
+# 300,000 a month, 500 km radius), data CC BY-SA 4.0 (one attribution line). Same answer format as ADSB.lol (the
+# ADS-B Exchange v2 layout). Used first when TPA_FLYITALY_API_KEY is set; ADSB.lol stays as the backup.
+FLYITALY_POINT = 'https://api.flyitalyadsb.com/api/aircraft/v2/lat/{lat}/lon/{lon}/dist/{radius}/'
+FLY_KEY = (os.environ.get('TPA_FLYITALY_API_KEY') or '').strip()
+_fly_test = os.environ.get('TPA_AIR_FLY_TEST_URL', '').strip()
+if _fly_test and not re.match(r'^http://127\.0\.0\.1:\d+/.*\{lat\}.*\{lon\}.*\{radius\}', _fly_test):
+    raise SystemExit('TPA_AIR_FLY_TEST_URL must point at 127.0.0.1 (testing only)')
+FLY_URL = _fly_test or FLYITALY_POINT
+FLY_MONTHLY = max(1, int(os.environ.get('TPA_AIR_FLY_MONTHLY', '300000') or 300000))
+FLY_BUDGET = int(FLY_MONTHLY * 0.95)          # 5% kept spare
+FLY_POLL_SECONDS = max(1 if (_fly_test or _test) else 6, int(os.environ.get('TPA_AIR_FLY_POLL_SECONDS', '10') or 10))
+PER_ROUND = 2 if ALWAYS_ON else 1             # requests in one round (the server asks for two UK circles)
+ORDER = ('fly', 'lol') if FLY_KEY else ('lol',)
+URLS = {'fly': FLY_URL, 'lol': POINT_URL}
+NAMES = {'fly': 'FlyItalyADSB', 'lol': 'ADSB.lol'}
+CODES = {'fly': 'flyitaly', 'lol': 'adsblol'}
+ATTRIBUTIONS = {'fly': 'Aircraft data: FlyItalyADSB (CC BY-SA 4.0)', 'lol': ATTRIBUTION}
+
 # 0.5.0 (owner 4 Nov 22:51, planes sign-off: "we need more plane info when clicked"): airline, flight number, usual
 # route, full aircraft name, operator, registration, year built - from Virtual Radar Server's standing data (public
 # domain, CC0; https://github.com/vradarserver/standing-data), downloaded by this engine once a month and kept on our
@@ -103,22 +124,105 @@ STANDING = {'path': '', 'builtAt': 0.0, 'error': '', 'rows': {}}
 LOCK = threading.Lock()
 STATE = {'aircraft': [], 'fetchedAt': 0.0, 'circle': None, 'lastAttemptAt': 0.0, 'lastError': '',
          'lastDemandAt': 0.0, 'wanted': None, 'downloadsThisRun': 0, 'downloadBytes': 0,
-         'cooldownUntil': 0.0, 'consecutiveErrors': 0, 'slowLevel': 0, 'lastSlowDownAt': 0.0}
+         'source': ''}
 
 
-def pace() -> int:
-    """0.7.0: seconds between rounds right now (normal, or slower after a "slow down"). Call with LOCK held."""
-    level = STATE['slowLevel']
+def new_source() -> dict:
+    return {'lastError': '', 'consecutiveErrors': 0, 'cooldownUntil': 0.0, 'slowLevel': 0, 'lastSlowDownAt': 0.0,
+            'quota': False, 'requests': 0}
+
+
+SRC = {'fly': new_source(), 'lol': new_source()}
+
+
+def pace(src: str = 'lol') -> int:
+    """0.7.0: seconds between rounds right now (normal, or slower after a "slow down"). Call with LOCK held.
+    0.8.0: FlyItalyADSB's normal pace comes from its monthly budget (fly_pace)."""
+    base = fly_pace() if src == 'fly' else POLL_SECONDS
+    level = SRC[src]['slowLevel']
     if not level:
-        return POLL_SECONDS
-    return max(POLL_SECONDS, SLOW_PACES[min(level, len(SLOW_PACES)) - 1])
+        return base
+    return max(base, SLOW_PACES[min(level, len(SLOW_PACES)) - 1])
 
 
-def calm_check(now: float) -> None:
+def calm_check(src: str, now: float) -> None:
     """0.7.0: after a calm spell with no "slow down", step back towards the normal pace. Call with LOCK held."""
-    if STATE['slowLevel'] and now - STATE['lastSlowDownAt'] >= CALM_SECONDS:
-        STATE['slowLevel'] -= 1
-        STATE['lastSlowDownAt'] = now
+    s = SRC[src]
+    if s['slowLevel'] and now - s['lastSlowDownAt'] >= CALM_SECONDS:
+        s['slowLevel'] -= 1
+        s['lastSlowDownAt'] = now
+
+
+# 0.8.0: FlyItalyADSB's free key allows 300,000 requests a month (and 30 a minute). The engine keeps 5% spare and
+# spreads the rest over what is left of the month: every request is counted (kept on disk, so a restart does not
+# forget), and the pace is (requests per round) x (seconds left in the month) / (requests left). Quiet hours, when
+# nobody is watching, are saved up and let the pace quicken later - never faster than FLY_POLL_SECONDS a round.
+BUDGET = {'month': '', 'used': 0, 'savedUsed': 0}
+
+
+def month_now(now=None):
+    t = time.gmtime(now if now is not None else time.time())
+    nxt = calendar.timegm((t.tm_year + (t.tm_mon == 12), t.tm_mon % 12 + 1, 1, 0, 0, 0, 0, 0, 0))
+    return f'{t.tm_year:04d}-{t.tm_mon:02d}', nxt
+
+
+def budget_file():
+    return os.path.join(DATA_DIR, 'flyitaly-budget.json') if DATA_DIR else ''
+
+
+def budget_load() -> None:
+    path = budget_file()
+    try:
+        with open(path) as f:
+            saved = json.load(f)
+        if isinstance(saved, dict) and isinstance(saved.get('used'), int) and isinstance(saved.get('month'), str):
+            BUDGET.update(month=saved['month'][:7], used=max(0, saved['used']), savedUsed=max(0, saved['used']))
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def budget_save() -> None:
+    path = budget_file()
+    if not path:
+        return
+    try:
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'month': BUDGET['month'], 'used': BUDGET['used']}, f)
+        os.replace(tmp, path)
+        BUDGET['savedUsed'] = BUDGET['used']
+    except OSError:
+        pass
+
+
+def budget_roll() -> None:
+    month, _ = month_now()
+    if BUDGET['month'] != month:
+        BUDGET.update(month=month, used=0)
+        budget_save()
+
+
+def budget_count() -> None:
+    """Call with LOCK held."""
+    budget_roll()
+    BUDGET['used'] += 1
+    budget_save()                     # a tiny file; at most one write every few seconds
+
+
+def budget_left() -> int:
+    """Call with LOCK held."""
+    budget_roll()
+    return FLY_BUDGET - BUDGET['used']
+
+
+def fly_pace() -> int:
+    """Call with LOCK held."""
+    left = max(1, budget_left())
+    _, month_end = month_now()
+    per_round = PER_ROUND * max(60.0, month_end - time.time()) / left
+    return max(FLY_POLL_SECONDS, math.ceil(per_round))
+
+
 WAKE = threading.Event()
 
 
@@ -213,11 +317,11 @@ def context():
         return ssl.create_default_context()
 
 
-def fetch_national() -> None:
+def fetch_national(src: str = 'lol') -> None:
     """0.4.0: both UK circles, merged (aircraft seen in both kept once, freshest report)."""
     got, started, size = {}, time.time(), 0
     for circle in NATIONAL:
-        part = fetch_part(circle)
+        part = fetch_part(circle, src)
         if part is None:
             return                   # failed (already recorded): keep the last good copy
         raw_len, aircraft = part
@@ -235,21 +339,26 @@ def fetch_national() -> None:
         for a in STATE['aircraft']:
             if a['hex'] not in got and started - a['reported'] <= a.get('keep', DROP_AFTER):
                 got[a['hex']] = a
-        STATE.update(aircraft=list(got.values()), fetchedAt=started, circle='national', lastError='', consecutiveErrors=0,
-                     downloadBytes=size)
-        calm_check(time.time())
-        STATE['downloadsThisRun'] += 1
-    print(f'ADSB.lol OK: {len(got)} aircraft over the UK, {size//1024} KB', flush=True)
+        STATE.update(aircraft=list(got.values()), fetchedAt=started, circle='national', downloadBytes=size, source=src)
+        succeeded(src)
+    print(f'{NAMES[src]} OK: {len(got)} aircraft over the UK, {size//1024} KB', flush=True)
 
 
-def fetch_part(circle):
-    """One circle; (bytes, aircraft) or None after recording the failure."""
+def fetch_part(circle, src: str = 'lol'):
+    """One circle from one source; (bytes, aircraft) or None after recording the failure."""
     clat, clon, radius = circle
-    url = POINT_URL.format(lat=clat, lon=clon, radius=radius)
+    url = URLS[src].format(lat=clat, lon=clon, radius=radius)
     headers = {'User-Agent': f'TPA-Air-Engine/{ENGINE_VERSION} (+mailto:tpaprojectuk@gmail.com)', 'Accept': 'application/json'}
-    if KEY:
+    if src == 'fly':
+        headers['X-Api-Key'] = FLY_KEY          # 0.8.0: FlyItalyADSB's key header (its v2 format also takes api-auth)
+        headers['api-auth'] = FLY_KEY
+    elif KEY:
         headers['api-auth'] = KEY
     started = time.time()
+    with LOCK:
+        SRC[src]['requests'] += 1
+        if src == 'fly':
+            budget_count()
     try:
         with urlopen(Request(url, headers=headers), timeout=20, context=context()) as res:
             raw = res.read(MAX_DOWNLOAD + 1)
@@ -260,46 +369,36 @@ def fetch_part(circle):
             raise ValueError('not-an-object')
         return len(raw), parse(payload, started)
     except HTTPError as exc:
-        _fail(f'adsblol-http-{exc.code}', exc.code in (401, 403, 429, 451), retry_after(exc))
+        quota = quota_wait(exc)
+        _fail(src, f'{CODES[src]}-http-{exc.code}', exc.code in (401, 403, 429, 451), max(retry_after(exc), quota), quota > 0)
     except (URLError, TimeoutError, OSError) as exc:
-        _fail('network-' + type(exc).__name__, False)
+        _fail(src, 'network-' + type(exc).__name__, False)
     except ValueError as exc:
-        _fail('bad-data-' + str(exc)[:30], False)
+        _fail(src, 'bad-data-' + str(exc)[:30], False)
     return None
 
 
-def fetch_once(circle) -> None:
-    clat, clon, radius = circle
-    url = POINT_URL.format(lat=clat, lon=clon, radius=radius)
-    headers = {'User-Agent': f'TPA-Air-Engine/{ENGINE_VERSION} (+mailto:tpaprojectuk@gmail.com)', 'Accept': 'application/json'}
-    if KEY:
-        headers['api-auth'] = KEY
-    started = time.time()
-    try:
-        with urlopen(Request(url, headers=headers), timeout=20, context=context()) as res:
-            raw = res.read(MAX_DOWNLOAD + 1)
-        if len(raw) > MAX_DOWNLOAD:
-            raise ValueError('too-large')
-        payload = json.loads(raw)
-        if not isinstance(payload, dict):
-            raise ValueError('not-an-object')
-        aircraft = parse(payload, started)
-        with LOCK:
-            STATE.update(aircraft=aircraft, fetchedAt=started, circle=circle, lastError='', consecutiveErrors=0,
-                         downloadBytes=len(raw))
-            calm_check(time.time())
-            STATE['downloadsThisRun'] += 1
-        print(f'ADSB.lol OK: {len(aircraft)} aircraft within {radius} nm, {len(raw)//1024} KB', flush=True)
-    except HTTPError as exc:
-        _fail(f'adsblol-http-{exc.code}', exc.code in (401, 403, 429, 451), retry_after(exc))
-    except (URLError, TimeoutError, OSError) as exc:
-        _fail('network-' + type(exc).__name__, False)
-    except ValueError as exc:
-        _fail('bad-data-' + str(exc)[:30], False)
+def fetch_once(circle, src: str = 'lol') -> None:
+    part = fetch_part(circle, src)
+    if part is None:
+        return
+    raw_len, aircraft = part
+    with LOCK:
+        STATE.update(aircraft=aircraft, fetchedAt=time.time(), circle=circle, downloadBytes=raw_len, source=src)
+        succeeded(src)
+    print(f'{NAMES[src]} OK: {len(aircraft)} aircraft within {circle[2]} nm, {raw_len//1024} KB', flush=True)
+
+
+def succeeded(src: str) -> None:
+    """Call with LOCK held."""
+    s = SRC[src]
+    s.update(lastError='', consecutiveErrors=0, quota=False)
+    STATE['downloadsThisRun'] += 1
+    calm_check(src, time.time())
 
 
 def retry_after(exc) -> int:
-    """0.7.0: ADSB.lol's own "try again after N seconds", if it sent one (capped at 1 hour)."""
+    """0.7.0: the service's own "try again after N seconds", if it sent one (capped at 1 hour)."""
     try:
         value = int(str((exc.headers or {}).get('Retry-After', '')).strip())
     except (TypeError, ValueError, AttributeError):
@@ -307,16 +406,44 @@ def retry_after(exc) -> int:
     return max(0, min(3600, value))
 
 
-def _fail(code: str, long_pause: bool, wait_asked: int = 0) -> None:
+def quota_wait(exc) -> int:
+    """0.8.0 (owner 11 Nov 11:55: ADSB.lol answered x-ratelimit-limit "500, 500;w=86400", remaining 0, reset 43500):
+    when the service says the allowance is used up, the seconds until it is renewed (at most a day and ten minutes)."""
+    try:
+        headers = exc.headers or {}
+        remaining = str(headers.get('x-ratelimit-remaining', '')).split(',')[0].strip()
+        reset = str(headers.get('x-ratelimit-reset', '')).split(',')[0].strip()
+        if remaining == '0' and reset.isdigit():
+            return max(60, min(86400 + 600, int(reset) + 60))
+    except (TypeError, ValueError, AttributeError):
+        pass
+    return 0
+
+
+def _fail(src: str, code: str, long_pause: bool, wait_asked: int = 0, quota: bool = False) -> None:
     with LOCK:
-        STATE['lastError'] = code[:60]
-        STATE['consecutiveErrors'] += 1
+        s = SRC[src]
+        s['lastError'] = code[:60]
+        s['consecutiveErrors'] += 1
         if long_pause:
             now = time.time()
-            STATE['slowLevel'] = min(MAX_SLOW_LEVEL, STATE['slowLevel'] + 1)
-            STATE['lastSlowDownAt'] = now
-            STATE['cooldownUntil'] = now + max(COOLDOWN_SECONDS * STATE['slowLevel'], wait_asked)
-    print('ADSB.lol fetch failed:', code, flush=True)
+            s['slowLevel'] = min(MAX_SLOW_LEVEL, s['slowLevel'] + 1)
+            s['lastSlowDownAt'] = now
+            s['cooldownUntil'] = now + max(COOLDOWN_SECONDS * s['slowLevel'], wait_asked)
+            s['quota'] = quota
+    print(f'{NAMES[src]} fetch failed:', code, '(allowance used up: waiting until it is renewed)' if quota else '', flush=True)
+
+
+def choose(now: float):
+    """0.8.0: FlyItalyADSB first (when its key is set and its month's budget is not spent), else ADSB.lol.
+    A source that has said "slow down" or "allowance used up" is skipped until its pause ends. Call with LOCK held."""
+    for src in ORDER:
+        if now < SRC[src]['cooldownUntil']:
+            continue
+        if src == 'fly' and budget_left() <= 0:
+            continue
+        return src
+    return None
 
 
 def poller() -> None:
@@ -328,47 +455,64 @@ def poller() -> None:
             with LOCK:
                 # 0.7.0 (owner 11 Nov): only while someone is looking at the map - no more asking all day and night.
                 viewed = now - STATE['lastDemandAt'] < DEMAND_WINDOW
-                cooling = now < STATE['cooldownUntil']
-                base = pace()
-                wait = base * min(6, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else base
-                go = viewed and not cooling and now - STATE['lastAttemptAt'] >= wait
+                src = choose(now)
+                go = False
+                if viewed and src:
+                    base = pace(src)
+                    errors = SRC[src]['consecutiveErrors']
+                    wait = base * min(6, 2 ** max(0, errors - 1)) if errors else base
+                    go = now - STATE['lastAttemptAt'] >= wait
                 if go:
                     STATE['lastAttemptAt'] = now
             if go:
-                fetch_national()
+                fetch_national(src)
             continue
         with LOCK:
             viewed = now - STATE['lastDemandAt'] < DEMAND_WINDOW
-            wanted = STATE['wanted'] if (viewed and STATE['wanted'] is not None) or not ALWAYS_ON else HOME_VIEW
-            if ALWAYS_ON and wanted is HOME_VIEW:
-                viewed = False             # nobody has asked for an area yet: keep most of Britain fresh
-            cooling = now < STATE['cooldownUntil']
-            base = pace()
-            wait = base * min(6, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else base
-            due = now - STATE['lastAttemptAt'] >= wait
-            uncovered = wanted is not None and not circle_covers(STATE['circle'], wanted) and now - STATE['lastAttemptAt'] >= 3
-            if not viewed and ALWAYS_ON:
-                due = now - STATE['lastAttemptAt'] >= max(wait, IDLE_POLL_SECONDS)
-                uncovered = False
-            go = (viewed or ALWAYS_ON) and wanted is not None and not cooling and (due or uncovered)
+            wanted = STATE['wanted'] if viewed else None
+            src = choose(now)
+            go = False
+            if viewed and wanted is not None and src:
+                base = pace(src)
+                errors = SRC[src]['consecutiveErrors']
+                wait = base * min(6, 2 ** max(0, errors - 1)) if errors else base
+                due = now - STATE['lastAttemptAt'] >= wait
+                uncovered = not circle_covers(STATE['circle'], wanted) and now - STATE['lastAttemptAt'] >= 3
+                go = due or uncovered
             circle = circle_for(wanted) if go else None
             if go:
                 STATE['lastAttemptAt'] = now
         if go:
-            fetch_once(circle)
+            fetch_once(circle, src)
+
+
+def when(ts: float) -> str:
+    """'at 00:01' within a day, otherwise 'on 1 Dec'."""
+    try:
+        from zoneinfo import ZoneInfo
+        t = datetime.fromtimestamp(ts, ZoneInfo('Europe/London'))   # UK time, summer and winter
+    except Exception:  # pragma: no cover - no time zone data: the server's own clock
+        t = datetime.fromtimestamp(ts)
+    return t.strftime('at %H:%M') if ts - time.time() <= 86400 else f"on {t.day} {t.strftime('%b')}"
 
 
 def health(now: float) -> tuple[str, str]:
-    if now < STATE['cooldownUntil']:
-        code = STATE['lastError']
-        mins = max(1, round((STATE['cooldownUntil'] - now) / 60))
-        msg = (f'ADSB.lol asked us to slow down · paused {mins} min' if code == 'adsblol-http-429'
-               else f'ADSB.lol refused the request · paused {mins} min')
+    """Call with LOCK held."""
+    if all(now < SRC[s]['cooldownUntil'] for s in ORDER):
+        s = SRC[ORDER[-1]] if ORDER[-1] == 'lol' and SRC['lol']['quota'] else SRC[ORDER[0]]
+        src = ORDER[-1] if s is SRC[ORDER[-1]] else ORDER[0]
+        name, until = NAMES[src], s['cooldownUntil']
+        if s['quota']:
+            msg = f'{name} daily limit reached · back {when(until)}' if src == 'lol' else f'{name} allowance used up · back {when(until)}'
+        elif s['lastError'].endswith('-http-429'):
+            msg = f'{name} asked us to slow down · paused {max(1, round((until - now) / 60))} min'
+        else:
+            msg = f'{name} refused the request · paused {max(1, round((until - now) / 60))} min'
         return ('stale' if STATE['fetchedAt'] else 'unavailable'), msg
     if not STATE['fetchedAt']:
-        if STATE['consecutiveErrors']:
-            return 'unavailable', 'ADSB.lol not responding · retrying'
-        return 'ready', 'Connecting to ADSB.lol…'  # "ready" so HQ sends the viewed area
+        if SRC[ORDER[0]]['consecutiveErrors']:
+            return 'unavailable', f'{NAMES[ORDER[0]]} not responding · retrying'
+        return 'ready', f'Connecting to {NAMES[ORDER[0]]}…'  # "ready" so HQ sends the viewed area
     if now - STATE['fetchedAt'] > FRAME_TTL:
         return 'stale', 'Aircraft update delayed · showing last positions'
     return 'ready', ''
@@ -912,12 +1056,12 @@ def snapshot(view) -> dict:
     if small:                       # 0.7.0: a zoomed-out map shows no planes, so it does not count as watching
         note_demand(view)
     with LOCK:
-        aircraft, fetched, circle = STATE['aircraft'], STATE['fetchedAt'], STATE['circle']
+        aircraft, fetched, circle, source = STATE['aircraft'], STATE['fetchedAt'], STATE['circle'], STATE['source']
         h, notice = health(now)
     received = fetched or now
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
-             'nextPollAfterMs': 10000, 'attribution': ATTRIBUTION, 'entities': []}
+             'nextPollAfterMs': 10000, 'attribution': ATTRIBUTIONS[source or ORDER[0]], 'entities': []}
     if not small:
         frame['notice'] = 'Zoom in to see aircraft'
         return frame
@@ -1007,13 +1151,20 @@ class Handler(BaseHTTPRequestHandler):
             now = time.time()
             with LOCK:
                 h, notice = health(now)
+                main_src = SRC[ORDER[0]]
+                sources = {NAMES[k]: {'inUse': k in ORDER, 'lastError': v['lastError'], 'slowLevel': v['slowLevel'],
+                                      'pausedForSeconds': max(0, round(v['cooldownUntil'] - now)), 'allowanceUsedUp': v['quota'],
+                                      'requestsThisRun': v['requests'], 'pollingEverySeconds': pace(k)} for k, v in SRC.items()}
+                sources['FlyItalyADSB'].update(keyConfigured=bool(FLY_KEY), month=BUDGET['month'], usedThisMonth=BUDGET['used'],
+                                               monthlyBudget=FLY_BUDGET)
                 return self.reply(200, {'component': COMPONENT, 'engine': 'tpa-air-engine', 'engineVersion': ENGINE_VERSION,
                                         'contractVersion': CONTRACT, 'live': True, 'health': h, 'notice': notice,
-                                        'keyConfigured': bool(KEY), 'lastError': STATE['lastError'],
+                                        'source': NAMES.get(STATE['source'], ''), 'sources': sources,
+                                        'keyConfigured': bool(KEY), 'lastError': main_src['lastError'],
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'aircraftInLastDownload': len(STATE['aircraft']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
                                         'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
-                                        'slowLevel': STATE['slowLevel'], 'pollingEverySeconds': pace(),
+                                        'slowLevel': main_src['slowLevel'], 'pollingEverySeconds': pace(ORDER[0]),
                                         'standingData': {'ready': bool(STANDING['path']), 'builtAt': iso(STANDING['builtAt']) if STANDING['builtAt'] else None,
                                                          'error': STANDING['error'], 'rows': STANDING['rows']}})
         if split.path == '/snapshot':
@@ -1031,13 +1182,15 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     port = int(os.environ.get('TPA_AIR_ENGINE_PORT', '8783'))
+    budget_load()
     threading.Thread(target=poller, daemon=True).start()
     if DATA_DIR:
         threading.Thread(target=standing_keeper, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA AIRCRAFT ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
-        print('Source: ADSB.lol (free, no key needed today).', flush=True)
+        print('Source: ' + (f'FlyItalyADSB (key set; {FLY_BUDGET:,} requests a month), ADSB.lol as backup.' if FLY_KEY
+                            else 'ADSB.lol (no FlyItalyADSB key set).'), flush=True)
         print(f'Asks ADSB.lol at most every {POLL_SECONDS}s, only while someone is looking at the map'
               + (' (the whole UK in two circles).' if ALWAYS_ON else '.') + ' Slows down further if ADSB.lol asks.', flush=True)
         print('Keep this window open. Close it to stop aircraft only.', flush=True)

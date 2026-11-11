@@ -196,7 +196,7 @@ unit bus "bus engine (BODS, whole-country mode)" TPA_BUS_ENGINE_PORT 8781 \
     "$BUS_ENV" 500M bus.env v4/engines/bus/bus_engine.py
 fi
 unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
-    "Environment=TPA_AIR_ALWAYS_ON=1" 150M "" v4/engines/air/air_engine.py
+    "Environment=TPA_AIR_ALWAYS_ON=1" 150M air.env v4/engines/air/air_engine.py   # air.env: FlyItalyADSB key (11 Nov)
 unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_PORT 8784 \
     "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 300M rail.env v4/engines/rail/rail_engine.py
 unit hq "HQ map page" TPA_HQ_PORT 8778 \
