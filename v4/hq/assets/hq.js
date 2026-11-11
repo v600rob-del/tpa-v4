@@ -1289,10 +1289,13 @@ function syncOverlays(){
     layer.addTo(map);
   }
 }
-let refetchTimer=0;
+let refetchTimer=0;const hasItems=Object.create(null);
 function refetchLiveView(){clearTimeout(refetchTimer);refetchTimer=setTimeout(()=>{
   const v=currentBox(0);
-  for(const id of IDS)if(state.live[id]&&!state.parked[id]&&!state.frames[id]?.overlay&&(state.status[id]==='ready'||state.status[id]==='stale')){
+  // 4.47.0 (owner 11 Nov 20:02: "When i zoom out and back in, the roadworks that were there have to reload"): a layer that
+  // draws a picture overlay AND map items (traffic: the flow colours plus roadworks signs) is asked again when the view
+  // changes too. Before, only overlay-free layers were, so the signs waited for traffic's next 60-second check.
+  for(const id of IDS)if(state.live[id]&&!state.parked[id]&&(!state.frames[id]?.overlay||hasItems[id])&&(state.status[id]==='ready'||state.status[id]==='stale')){
     // 4.1.0: nothing to fetch if the last answer already covered this whole view.
     const b=fetchedBox[id];
     if(v&&b&&b.complete&&v.w>=b.w&&v.e<=b.e&&v.s>=b.s&&v.n<=b.n)continue;
@@ -1328,7 +1331,7 @@ async function getComponent(id){
   try{
     const asked=performance.now();
     const f=checkFrame(id,await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}`,1200000,6000));
-    {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length)speedMark(id+' shown');}
+    {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length){speedMark(id+' shown');hasItems[id]=true;}}
     if(seq<(seqDone[id]||0))return;
     seqDone[id]=seq;
     fetchedBox[id]=box?{...box,complete:!f.notice}:null;
