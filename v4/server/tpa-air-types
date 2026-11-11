@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""tpa-air-types: look-only count of the plane types on TPA's map right now (asks only TPA's own plane engine on
+this server - no requests to FlyItalyADSB or anyone else). Prints COPY markers."""
+import json
+import urllib.parse
+import urllib.request
+from collections import Counter
+
+BASE = 'http://127.0.0.1:8783'
+OPEN = urllib.request.build_opener(urllib.request.ProxyHandler({})).open
+VIEWS = [(49.5, -11.0, 55.5, -3.0), (49.5, -3.0, 55.5, 3.0), (55.5, -11.0, 61.5, -3.0), (55.5, -3.0, 61.5, 3.0)]
+
+
+def get(path):
+    with OPEN(BASE + path, timeout=10) as r:
+        return json.loads(r.read())
+
+
+print('=========== COPY FROM HERE ===========')
+ids = set()
+for s, w, n, e in VIEWS:
+    try:
+        f = get(f'/snapshot?west={w}&south={s}&east={e}&north={n}')
+        ids.update(x['id'] for x in f.get('entities', []))
+    except Exception as exc:
+        print('  could not ask the plane engine:', type(exc).__name__)
+codes, names, kinds = Counter(), {}, Counter()
+for i in ids:
+    try:
+        d = get('/details?id=' + urllib.parse.quote(i))
+    except Exception:
+        continue
+    rows = {r.get('label'): r.get('value') for r in d.get('rows', [])}
+    code = (rows.get('Type code') or '?').strip() or '?'
+    codes[code] += 1
+    if rows.get('Aircraft') and code not in names:
+        names[code] = rows['Aircraft']
+    kinds[rows.get('Kind') or '?'] += 1
+print(f'Planes on the map now: {len(ids)}')
+print('Kinds:', ', '.join(f'{k} {n}' for k, n in kinds.most_common()))
+print('Types (busiest first): code  count  example name')
+for code, n in codes.most_common(60):
+    print(f'  {code:6} {n:4}  {names.get(code, "")[:40]}')
+print('=========== COPY TO HERE ===========')
