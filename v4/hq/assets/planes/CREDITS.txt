@@ -1,3 +1,3 @@
 TPA plane map icons (10 Nov 2026): made by the owner, Rob Burnett, with ChatGPT (OpenAI terms: the output belongs to the user).
-Glossy top-down, nose up, no logos or markings. Originals in private v4/design/planes/icons. cargo.webp is darkened by TPA so it
+Glossy top-down, nose up, no logos or markings. Originals in private v4/design/planes/icons and icons2 (second ten, 11 Nov 00:32). cargo.webp is darkened by TPA so it
 differs from the airliner at map size (owner 11 Nov 00:11).

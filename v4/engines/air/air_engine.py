@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.6.4'
+ENGINE_VERSION = '0.6.5'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -426,7 +426,9 @@ def airport_name(icao: str) -> str:
     if not row:
         return icao
     name = re.sub(r'\s+(International\s+)?Airport$', '', row[0] or icao).strip() or icao
-    if row[2] and row[2].lower() not in name.lower():
+    # 0.6.5 (owner 11 Nov 00:42: "Sharm el-Sheikh Sharm El Sheikh"): compared without capitals, hyphens or spaces
+    squash = lambda x: re.sub(r'[^a-z]', '', (x or '').lower())
+    if row[2] and squash(row[2]) not in squash(name):
         name = f'{row[2]} {name}'
     return f'{name} ({row[1]})' if row[1] else name
 
@@ -516,7 +518,7 @@ def details(entity_id: str) -> dict:
         known = ('', '', '', 0, '', '')            # out of date: the plane says it is something else
     # ADSB.lol's name is in capitals ("BOEING 777-300ER"): "Boeing 777-300ER", model numbers left alone
     desc = ' '.join(w.capitalize() if w.isalpha() and w.isupper() and len(w) > 2 else w for w in (a.get('desc') or '').split())
-    aircraft = desc or known[1] or a['type']
+    aircraft = desc or known[1] or TYPE_NAMES.get((a['type'] or '').upper()) or a['type']
     add('Aircraft', aircraft, more=False)
     operator = a.get('operator') or ('Private' if known[3] else known[2])
     if operator and not (airline and operator.lower() == airline[0].lower()):
@@ -666,6 +668,23 @@ def plane_kind(a) -> tuple:
     if by_cat:
         return by_cat, KIND_WORDS[by_cat], reported
     return '', 'Not known', ''
+
+
+# 0.6.5 (owner 11 Nov 00:42: "Aircraft A20N"): names for the commonest type codes, when the plane sends none
+TYPE_NAMES = {'A318': 'Airbus A318', 'A319': 'Airbus A319', 'A320': 'Airbus A320', 'A321': 'Airbus A321', 'A19N': 'Airbus A319neo',
+              'A20N': 'Airbus A320neo', 'A21N': 'Airbus A321neo', 'BCS1': 'Airbus A220-100', 'BCS3': 'Airbus A220-300',
+              'A332': 'Airbus A330-200', 'A333': 'Airbus A330-300', 'A339': 'Airbus A330-900neo', 'A359': 'Airbus A350-900',
+              'A35K': 'Airbus A350-1000', 'A388': 'Airbus A380', 'B737': 'Boeing 737-700', 'B738': 'Boeing 737-800',
+              'B739': 'Boeing 737-900', 'B38M': 'Boeing 737 MAX 8', 'B39M': 'Boeing 737 MAX 9', 'B752': 'Boeing 757-200',
+              'B763': 'Boeing 767-300', 'B772': 'Boeing 777-200', 'B77W': 'Boeing 777-300ER', 'B788': 'Boeing 787-8',
+              'B789': 'Boeing 787-9', 'B78X': 'Boeing 787-10', 'B744': 'Boeing 747-400', 'B748': 'Boeing 747-8',
+              'E190': 'Embraer E190', 'E195': 'Embraer E195', 'E75L': 'Embraer E175', 'E290': 'Embraer E190-E2',
+              'E295': 'Embraer E195-E2', 'DH8D': 'De Havilland Dash 8-400', 'AT76': 'ATR 72-600', 'AT75': 'ATR 72-500',
+              'AT45': 'ATR 42-500', 'SF34': 'Saab 340', 'CRJ9': 'Bombardier CRJ900', 'C172': 'Cessna 172', 'PA28': 'Piper PA-28',
+              'EC35': 'Airbus H135', 'EC45': 'Airbus H145', 'A139': 'Leonardo AW139', 'A169': 'Leonardo AW169',
+              'A189': 'Leonardo AW189', 'S92': 'Sikorsky S-92', 'EUFI': 'Eurofighter Typhoon', 'A400': 'Airbus A400M Atlas',
+              'C17': 'Boeing C-17 Globemaster III', 'C30J': 'Lockheed C-130J Hercules', 'H47': 'Boeing CH-47 Chinook',
+              'P8': 'Boeing P-8 Poseidon', 'E3TF': 'Boeing E-3 Sentry', 'K35R': 'Boeing KC-135 Stratotanker'}
 
 
 # ADS-B "emitter category" (what kind of aircraft the plane says it is)

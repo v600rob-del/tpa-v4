@@ -196,9 +196,10 @@ const PIC_ICON=Object.freeze({bus:'/assets/icons/bus.webp',rail:'/assets/icons/t
 // kind is not known shows the airliner. Balloons stay upright (they point no particular way).
 const PLANE_PIC=Object.freeze({airliner:'airliner',widebody:'widebody',turboprop:'turboprop',bizjet:'bizjet',light:'light',
   helicopter:'helicopter',cargo:'cargo',glider:'glider',balloon:'balloon','mil-fighter':'fighter',
-  // until his military and emergency icons come: the nearest of his pictures (the pin colour still says which)
-  'mil-tanker':'widebody','mil-transport':'turboprop','mil-helicopter':'helicopter','mil-surveillance':'widebody',military:'light',
-  police:'helicopter',ambulance:'helicopter',coastguard:'helicopter','police-plane':'turboprop','ambulance-plane':'turboprop','coastguard-plane':'turboprop'});
+  // 4.37.0 (owner 11 Nov 00:32, his second ten): military and emergency services; other military (trainers) the light aircraft
+  'mil-tanker':'tanker','mil-transport':'miltransport','mil-helicopter':'milheli','mil-surveillance':'surveillance',military:'light',
+  police:'policeheli',ambulance:'ambulanceheli',coastguard:'coastguardheli','police-plane':'policeplane','ambulance-plane':'ambulanceplane',
+  'coastguard-plane':'coastguardplane'});
 function planePic(e){if(e.component!=='air')return null;if(e.variant==null)return 'airliner';
   return typeof e.variant==='string'&&Object.hasOwn(PLANE_PIC,e.variant)?PLANE_PIC[e.variant]:null;}
 function planeTurn(e){return e.variant!=='balloon'&&e.position?.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';}
