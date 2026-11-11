@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.8.1'
+ENGINE_VERSION = '0.8.2'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -915,7 +915,13 @@ PHOTOS = {'a320': ('Airbus A320 family', ('A318', 'A319', 'A320', 'A321', 'A19N'
           'cessna': ('Cessna high-wing light aircraft', ('C150', 'C152', 'C170', 'C172', 'C182', 'C72R')),
           'piper': ('Piper PA-28', ('P28A', 'P28B', 'P28R', 'P28T')),
           'typhoon': ('Eurofighter Typhoon', ('EUFI',)),
-          'kingair': ('Beechcraft King Air', ('BE20', 'BE30', 'B350', 'BE9L', 'BE9T'))}
+          'kingair': ('Beechcraft King Air', ('BE20', 'BE30', 'B350', 'BE9L', 'BE9T')),
+          # 0.8.2: the owner's third batch (11 Nov 17:05)
+          'a330': ('Airbus A330', ('A332', 'A333', 'A338', 'A339')),
+          'a350': ('Airbus A350', ('A359', 'A35K')),
+          'embraer': ('Embraer E-Jet', ('E170', 'E75L', 'E75S', 'E190', 'E195', 'E290', 'E295')),
+          'robinson': ('Robinson helicopter', ('R22', 'R44', 'R66')),
+          'trainer': ('BAE Hawk', ('HAWK',))}
 PHOTO_BY_CODE = {code: key for key, (_name, codes) in PHOTOS.items() for code in codes}
 
 # 0.8.1 (owner 11 Nov 16:16: "for the first couple of weeks a daily scan should be done, that way we can capture what aircraft
