@@ -36,7 +36,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.6.5'
+ENGINE_VERSION = '0.6.6'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -574,12 +574,17 @@ def details(entity_id: str) -> dict:
         who = f'{"an" if aircraft[:1].upper() in "AEIOU" else "a"} {aircraft}' + (f' ({reg})' if reg else '')
     else:
         who = f'aircraft {reg or a["hex"].upper()}'
+    doing = doing_words(a, stops if shown_route else [])
     trip = ''
     if shown_route:
-        trip = f', from {short_airport(stops[0])}' + (f' via {", ".join(short_airport(x) for x in stops[1:-1])}' if len(stops) > 2 else '') \
-               + f' to {short_airport(stops[-1])}'
+        # 0.6.6 (owner 11 Nov 01:04, EZY58JU near Bedford: "it just looked strange that it hadn't set off from liverpool but was
+        # reporting it did"): the route is the one the flight number usually flies, so it is said that way - unless the plane is
+        # plainly on it (just taken off from, coming in to land at, or on the ground at one of its airports).
+        ends = {short_airport(stops[0]), short_airport(stops[-1])}
+        sure = any(doing.startswith(p) and doing[len(p):] in ends for p in ('Just taken off from ', 'Coming in to land at ', 'On the ground at '))
+        trip = (', from ' if sure else ', which usually flies from ') + short_airport(stops[0]) \
+            + (f' via {", ".join(short_airport(x) for x in stops[1:-1])}' if len(stops) > 2 else '') + f' to {short_airport(stops[-1])}'
     out['summary'] = f'This is {who}{trip}.'
-    doing = doing_words(a, stops if shown_route else [])
     if doing:
         out['doing'] = doing
     if shown_route and len(stops) == 2 and not a['ground']:
