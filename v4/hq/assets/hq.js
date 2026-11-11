@@ -92,7 +92,12 @@ let airShow=(()=>{try{const v=localStorage.getItem('tpa-air-show');return ['all'
 // 4.35.0 (owner 23:21): police / air ambulance / coastguard under a filter of their own, and in "All" (and Non-military)
 function isMilitary(e){return e.variant==='military'||(typeof e.variant==='string'&&e.variant.startsWith('mil-'));}
 function isService(e){return typeof e.variant==='string'&&/^(police|ambulance|coastguard)(-plane)?$/.test(e.variant);}
-function airShown(e){return e.component!=='air'||airShow==='all'||(airShow==='military'?isMilitary(e):airShow==='services'?isService(e):!isMilitary(e));}
+// 4.45.0 (owner 11 Nov 16:31, option B): airport towers, service vehicles and fire engines (they carry transmitters too) are
+// never drawn or counted as planes; they show only when zoomed right in (an airport fills the screen), in any filter but Military.
+const GROUND_ZOOM=13;
+function isGround(e){return e.component==='air'&&typeof e.variant==='string'&&/^ground-(emer|gnd|twr)$/.test(e.variant);}
+function airShown(e){if(isGround(e))return state.z>=GROUND_ZOOM&&airShow!=='military';
+  return e.component!=='air'||airShow==='all'||(airShow==='military'?isMilitary(e):airShow==='services'?isService(e):!isMilitary(e));}
 function listEntities(){return IDS.flatMap(id=>{
   if(!state.visible[id]||state.status[id]==='not_installed')return [];
   const entities=(state.frames[id]?.entities||[]).filter(airShown);
@@ -203,13 +208,17 @@ const PLANE_PIC=Object.freeze({airliner:'airliner',widebody:'widebody',turboprop
   // 4.37.0 (owner 11 Nov 00:32, his second ten): military and emergency services; other military (trainers) the light aircraft
   'mil-tanker':'tanker','mil-transport':'miltransport','mil-helicopter':'milheli','mil-surveillance':'surveillance',military:'light',
   police:'policeheli',ambulance:'ambulanceheli',coastguard:'coastguardheli','police-plane':'policeplane','ambulance-plane':'ambulanceplane',
-  'coastguard-plane':'coastguardplane'});
+  'coastguard-plane':'coastguardplane','ground-emer':'icon-emer','ground-gnd':'icon-gnd','ground-twr':'icon-twr'});   // 4.45.0
 function planePic(e){if(e.component!=='air')return null;if(e.variant==null)return 'airliner';
   return typeof e.variant==='string'&&Object.hasOwn(PLANE_PIC,e.variant)?PLANE_PIC[e.variant]:null;}
-function planeTurn(e){return e.variant!=='balloon'&&e.position?.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';}
+function planeTurn(e){if(e.variant==='ground-twr')return '';
+  // 4.45.0: the owner's van and fire engine icons are drawn front-down, so they turn half a turn further
+  const extra=e.variant==='ground-emer'||e.variant==='ground-gnd'?180:0;
+  return e.variant!=='balloon'&&e.position?.headingDeg!=null?'rotate('+((e.position.headingDeg+extra)%360)+'deg)':'';}
 // 4.39.0 (owner 11 Nov 13:04, traffic: incident markers and roadworks happening now): TPA's own road-sign style icons,
 // drawn here (no outside pictures): warning triangles for incidents, the red ring for a closed road.
-const PLANE_PHOTOS=new Set(['a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair','a330','a350','embraer','robinson','trainer']);   // 4.43.0
+const PLANE_PHOTOS=new Set(['a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair','a330','a350','embraer','robinson','trainer',
+  'a380','b747','b767','apache','wildcat','twinotter','global','falcon','texan','l159','emer','gnd','twr']);   // 4.45.0: the fourth batch and airport vehicles   // 4.43.0
 // 4.43.0: when the type has no picture of its own, a typical picture of its kind, tagged as such; no kind known: a faded
 // airliner tagged "Type not known" (as for buses). Kinds without a picture yet show none.
 const PLANE_KIND_PHOTOS={airliner:['airliner','Typical airliner'],widebody:['widebody','Typical large airliner'],
@@ -640,7 +649,7 @@ function markers(){
     // a side-on train faces the way it is going (west-ish: mirrored), and keeps facing that way when it stops
     if(e.component==='rail'&&!KIDS){const a=estimate(e,now+2000);if(a){const mx=metresXY(pos,a)[0];if(Math.abs(mx)>2){if(FACE.size>5000)FACE.clear();FACE.set(k,mx<0);}}}
     const faceLeft=e.component==='rail'&&FACE.get(k)===true;
-    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&isMilitary(e)?' k-military':''}${e.component==='air'&&isService(e)?' k-'+e.variant.split('-')[0]:''}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&isMilitary(e)?' k-military':''}${e.component==='air'&&isService(e)?' k-'+e.variant.split('-')[0]:''}${isGround(e)?' k-ground':''}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
     // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
     // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
     const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id;
@@ -942,7 +951,8 @@ function layerName(id){return ($(id+'-toggle').closest('.layer-toggle')?.querySe
 const kidsSeen=Object.create(null);
 function counts(){const d=dims();const anyLive=IDS.some(id=>state.live[id]&&!state.parked[id]);
 for(const id of IDS){let entries=state.frames[id]?.entities;
-let count=(entries||[]).filter(e=>{if(!e.position)return false;let [x,y]=pixel(e.position.lon,e.position.lat);return x>=0&&x<=d.w&&y>=0&&y<=d.h;}).length;
+let count=(entries||[]).filter(e=>{if(!e.position||isGround(e))return false;   // 4.45.0: airport vehicles are not planes
+let [x,y]=pixel(e.position.lon,e.position.lat);return x>=0&&x<=d.w&&y>=0&&y<=d.h;}).length;
 kidsSeen[id]=state.live[id]&&state.visible[id]&&!state.parked[id]&&state.status[id]==='ready'&&!(state.frames[id]?.notice||'').startsWith('Zoom in')?count:0;
 const status=$(id+'-source-status'),chip=$(id+'-chip').querySelector('strong'),n=$(id+'-count');
 if(state.parked[id]){status.textContent='Unavailable · coming soon';chip.textContent='SOON';if(n)n.textContent='—';continue;}

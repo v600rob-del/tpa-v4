@@ -336,3 +336,7 @@ body.vector-ready .vector-map{z-index:4}
 .marker-layer .review-pin.road{background:transparent;border:0;box-shadow:none;padding:0;width:max(20px,calc(34px*var(--pin-s,1)));height:max(20px,calc(34px*var(--pin-s,1)));border-radius:0}
 .review-pin.road .review-art.road-sign svg{width:100%;height:100%;filter:drop-shadow(0 1px 2px #000a)}
 .marker-layer .review-pin.road.selected-pin{outline:2px solid #ffd23f;outline-offset:2px;border-radius:6px}
+
+/* 4.45.0: airport vehicles and towers - small, no frame (they only show close in) */
+.marker-layer .review-pin.air.k-ground{background:transparent;border:0;box-shadow:none;padding:0;width:28px;height:28px}
+.marker-layer .review-pin.air.k-ground .plane-pic{width:26px;height:26px;filter:drop-shadow(0 1px 2px #000a)}

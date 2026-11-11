@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.8.2'
+ENGINE_VERSION = '0.8.3'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -783,6 +783,12 @@ def details(entity_id: str) -> dict:
         sure = any(doing.startswith(p) and doing[len(p):] in ends for p in ('Just taken off from ', 'Coming in to land at ', 'On the ground at '))
         trip = (', from ' if sure else ', which usually flies from ') + short_airport(stops[0]) \
             + (f' via {", ".join(short_airport(x) for x in stops[1:-1])}' if len(stops) > 2 else '') + f' to {short_airport(stops[-1])}'
+    if kind.startswith('ground-'):                 # 0.8.3: an airport vehicle or tower, not a plane
+        out['summary'] = f'This is {"an" if kind_words[:1] in "AEIOU" else "a"} {kind_words.lower()}' + (f' ({call})' if call else '') + '.'
+        out['photo'], out['photoName'] = kind[7:], kind_words
+        if doing:
+            out['doing'] = doing
+        return out
     out['summary'] = f'This is {who}{trip}.'
     if doing:
         out['doing'] = doing
@@ -832,12 +838,22 @@ SERVICES = {'UKP': ('police', 'Police'), 'HLE': ('ambulance', 'Air ambulance'), 
             'SRG': ('coastguard', 'Coastguard')}
 KIND_WORDS = {'military': 'Military', 'mil-fighter': 'Military fast jet', 'mil-tanker': 'Military tanker',
               'mil-transport': 'Military transport', 'mil-helicopter': 'Military helicopter', 'mil-surveillance': 'Military surveillance', 'cargo': 'Cargo plane', 'helicopter': 'Helicopter', 'glider': 'Glider', 'widebody': 'Large airliner',
-              'airliner': 'Airliner', 'turboprop': 'Propeller airliner', 'bizjet': 'Business jet', 'light': 'Light aircraft'}
+              'airliner': 'Airliner', 'turboprop': 'Propeller airliner', 'bizjet': 'Business jet', 'light': 'Light aircraft',
+              'ground-emer': 'Airport fire and rescue vehicle', 'ground-gnd': 'Airport service vehicle',
+              'ground-twr': 'Airport tower transmitter'}
+
+
+# 0.8.3 (owner 11 Nov 15:45 count: TWR 8, GND 7, EMER 4 "planes"; 16:31 option B): airport towers, service vehicles and fire
+# engines carry transmitters too. They are their own kinds: never counted or drawn as planes; the map shows them only close in.
+GROUND = {'EMER': 'ground-emer', 'GND': 'ground-gnd', 'TWR': 'ground-twr', 'C1': 'ground-emer', 'C2': 'ground-gnd', 'C3': 'ground-twr'}
 
 
 def plane_kind(a) -> tuple:
     """(kind, words, where it came from) - or ('', 'Not known', '') when there is nothing to go on. Never a guess."""
     t, cat, call = (a.get('type') or '').upper(), a.get('category') or '', (a.get('flight') or '').upper()
+    if t in GROUND or cat in GROUND:
+        kind = GROUND[t] if t in GROUND else GROUND[cat]
+        return kind, KIND_WORDS[kind], 'from its type code' if t in GROUND else 'from what it reports'
     if re.match(r'^[A-Z]{3}\d', call) and call[:3] in SERVICES:
         # 0.6.4 (owner 23:53: "the police for example use planes and helicopters"): a plane gets "-plane" (its own icon)
         kind, words = SERVICES[call[:3]]
@@ -921,7 +937,18 @@ PHOTOS = {'a320': ('Airbus A320 family', ('A318', 'A319', 'A320', 'A321', 'A19N'
           'a350': ('Airbus A350', ('A359', 'A35K')),
           'embraer': ('Embraer E-Jet', ('E170', 'E75L', 'E75S', 'E190', 'E195', 'E290', 'E295')),
           'robinson': ('Robinson helicopter', ('R22', 'R44', 'R66')),
-          'trainer': ('BAE Hawk', ('HAWK',))}
+          'trainer': ('BAE Hawk', ('HAWK',)),
+          # 0.8.3: the owner's fourth batch (11 Nov 18:13)
+          'a380': ('Airbus A380', ('A388',)),
+          'b747': ('Boeing 747', ('B741', 'B742', 'B743', 'B744', 'B748', 'B74S', 'B74F')),
+          'b767': ('Boeing 767', ('B762', 'B763', 'B764')),
+          'apache': ('Boeing AH-64 Apache', ('H64',)),
+          'wildcat': ('Leonardo Wildcat', ('LYNX',)),
+          'twinotter': ('De Havilland Canada Twin Otter', ('DHC6',)),
+          'global': ('Bombardier Global', ('GLEX', 'GL5T', 'GL7T')),
+          'falcon': ('Dassault Falcon 20', ('FA20',)),
+          'texan': ('Beechcraft Texan T1', ('TEX2',)),
+          'l159': ('Aero L-159', ('L159',))}
 PHOTO_BY_CODE = {code: key for key, (_name, codes) in PHOTOS.items() for code in codes}
 
 # 0.8.1 (owner 11 Nov 16:16: "for the first couple of weeks a daily scan should be done, that way we can capture what aircraft
