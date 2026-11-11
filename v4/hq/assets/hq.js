@@ -517,6 +517,8 @@ function noteNewFrame(f,now,fresh){
 function infoText(e,est){
   const seen=new Date(e.observedAt).toLocaleTimeString('en-GB',{hour12:false});
   if(!state.live[e.component])return e.component.toUpperCase()+' · '+e.quality.toUpperCase()+' · STATIC MOCK POSITION';
+  // 4.40.0 (owner 11 Nov 13:43): roadworks and incidents do not move - "Reported position" read oddly
+  if(e.component==='road')return 'Checked at '+seen.slice(0,5)+' · live from TomTom';
   if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
   if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
@@ -1116,7 +1118,7 @@ if(o&&typeof o==='object'&&o.type==='raster'&&o.tiles===`/api/v4/components/${id
     hide:Array.isArray(o.hideColours)&&Number.isInteger(o.hideFromZoom)&&o.hideFromZoom>=0&&o.hideFromZoom<=22?
       {from:o.hideFromZoom,tol:validNum(o.hideTolerance)?clamp(o.hideTolerance,0,120):40,
        rgb:o.hideColours.filter(c=>typeof c==='string'&&/^#[0-9a-fA-F]{6}$/.test(c)).slice(0,12).map(c=>[1,3,5].map(i=>parseInt(c.slice(i,i+2),16)))}:null};
-const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,5000,120000):30000;
+const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,2000,120000):30000;   // 4.40.0: 2 s floor (was 5 s), for 'still loading'
 // 4.25.0 (owner 5 Nov 22:05, "belt and braces"): a layer may say it is showing its timetable (scheduled) rather than live
 // reports, and give the real reason for a break (noticeDetail) - shown only on the owner's full page. Generic.
 const noticeDetail=typeof f.noticeDetail==='string'?f.noticeDetail.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,200):'';

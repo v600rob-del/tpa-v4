@@ -39,7 +39,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.4.0'
+ENGINE_VERSION = '0.4.1'
 COMPONENT = 'road'
 CONTRACT = '1.0'
 TOMTOM_TILE = 'https://api.tomtom.com/maps/orbis/traffic/flow/raster/tile/{z}/{x}/{y}'
@@ -286,8 +286,10 @@ ROAD_WORDS = {'motorway': 'Motorway', 'motorway_link': 'Motorway slip road', 'tr
               'street': 'Street', 'service': 'Service road', 'track': 'Track'}
 INC_CACHE: 'OrderedDict[tuple, tuple[list, float]]' = OrderedDict()    # (z,x,y) -> (incidents, keep until)
 INC_ITEMS: dict = {}                                                   # id -> incident (for the details box)
-INC_QUEUE: list = []
-INC_PENDING: set = set()
+INC_QUEUE: list = []          # 0.4.1: newest first; each entry (key, last asked for)
+INC_PENDING: dict = {}        # key -> last asked for
+INC_WORKERS = 3               # 0.4.1: three tiles at a time (TomTom allows at least 5 a second)
+INC_ABANDONED = 1 if os.environ.get('TPA_ROAD_INC_TEST_ABANDON') and _inc_override else 20   # seconds: a queued tile nobody has asked for again is dropped (the view moved on)
 INC = {'requests': 0, 'lastError': '', 'consecutiveErrors': 0, 'pausedUntil': 0.0, 'lastSuccessAt': 0.0}
 INC_WAKE = threading.Event()
 
@@ -504,16 +506,32 @@ def incidents_in_tile(z, x, y, raw, now) -> list:
     return found
 
 
+def inc_next():
+    """The newest wanted tile, dropping ones for views the viewer has moved away from. Call with LOCK held."""
+    now = time.time()
+    while INC_QUEUE:
+        key = INC_QUEUE.pop(0)
+        asked = INC_PENDING.get(key)
+        if asked is None:
+            continue
+        if now - asked > INC_ABANDONED:
+            INC_PENDING.pop(key, None)
+            continue
+        return key
+    return None
+
+
 def inc_worker() -> None:
-    """Fetches the incident tiles viewers are waiting for, one at a time (about 4 a second at most)."""
+    """Fetches the incident tiles viewers are waiting for - the newest view first (0.4.1, owner 11 Nov 13:47: "it does
+    take a while for the roadworks to appear": zooming in had queued tiles for every level passed on the way)."""
     while True:
-        INC_WAKE.wait(timeout=30)
-        INC_WAKE.clear()
+        INC_WAKE.wait(timeout=1)
         while True:
             with LOCK:
-                if not INC_QUEUE:
+                key = inc_next()
+                if key is None:
+                    INC_WAKE.clear()
                     break
-                key = INC_QUEUE.pop(0)
                 if time.time() < INC['pausedUntil'] or not inc_take():
                     INC_PENDING.clear(); INC_QUEUE.clear()
                     if not INC['lastError']:
@@ -527,7 +545,7 @@ def inc_worker() -> None:
                     INC_CACHE[key] = (items, now + INC_KEEP_SECONDS)
                     INC_CACHE.move_to_end(key)
                     while len(INC_CACHE) > 2000:
-                        old, _ = INC_CACHE.popitem(last=False)
+                        INC_CACHE.popitem(last=False)
                     for it in items:
                         INC_ITEMS[it['id']] = it
                     if len(INC_ITEMS) > 20000:
@@ -546,8 +564,15 @@ def inc_worker() -> None:
                     INC['consecutiveErrors'] += 1
             finally:
                 with LOCK:
-                    INC_PENDING.discard(key)
-            time.sleep(0.25)
+                    INC_PENDING.pop(key, None)
+            time.sleep(0.1)
+
+
+def same_job(a, b) -> bool:
+    """0.4.1 (owner's screenshot 11 Nov 13:43, Bilton Main Road: one set of roadworks shown as two signs): TomTom gives each
+    direction of a two-way road its own start point. Same kind, same times and within about 400 m = one job, one sign."""
+    return a['kind'] == b['kind'] and a['start'] == b['start'] and a['end'] == b['end'] and \
+        abs(a['lat'] - b['lat']) < 0.0036 and abs(a['lon'] - b['lon']) < 0.006
 
 
 def inc_entities(view, now) -> tuple[list, str, bool]:
@@ -567,16 +592,31 @@ def inc_entities(view, now) -> tuple[list, str, bool]:
                 for it in hit[0]:
                     if it['id'] not in seen and s <= it['lat'] <= n and w <= it['lon'] <= e:
                         seen.add(it['id']); out.append(it)
-            if (not hit or hit[1] <= now) and key not in INC_PENDING and now >= INC['pausedUntil']:
-                INC_PENDING.add(key); INC_QUEUE.append(key); ask = True
-            if key in INC_PENDING:
+            if (not hit or hit[1] <= now) and now >= INC['pausedUntil']:
+                if key in INC_PENDING:                # still wanted: move it to the front
+                    try:
+                        INC_QUEUE.remove(key)
+                    except ValueError:
+                        pass                          # already being fetched
+                    else:
+                        INC_QUEUE.insert(0, key)
+                else:
+                    INC_QUEUE.insert(0, key)
+                INC_PENDING[key] = now; ask = True
                 loading = True
     if ask:
         INC_WAKE.set()
     clat, clon = (s + n) / 2, (w + e) / 2
     out.sort(key=lambda it: (it['lat'] - clat) ** 2 + (it['lon'] - clon) ** 2)
+    merged = []
+    for it in out:
+        twin = next((i for i, m in enumerate(merged[-200:], max(0, len(merged) - 200)) if same_job(it, m)), None)
+        if twin is None:
+            merged.append(it)
+        elif it['delay'] and not merged[twin]['delay']:
+            merged[twin] = it                       # keep the one that says how long the delay is
     ents = []
-    for it in out[:INC_MAX_PER_VIEW]:
+    for it in merged[:INC_MAX_PER_VIEW]:
         label = it['what'][0] + (f' · {round(it["delay"] / 60)} min delay' if it['delay'] and it['delay'] >= 60 else '')
         ents.append({'id': 'road:' + it['id'], 'label': label[:160], 'variant': it['kind'], 'quality': 'observed',
                      'observedAt': iso(it['seen']), 'position': {'lon': it['lon'], 'lat': it['lat'], 'headingDeg': None}})
@@ -666,7 +706,7 @@ def snapshot(view=None) -> dict:
     ents, inc_note, loading = inc_entities(view, now) if h != 'unavailable' else ([], '', False)
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(now), 'receivedAt': iso(now), 'expiresAt': iso(now + 300),
-             'nextPollAfterMs': 5000 if loading else 60000, 'attribution': ATTRIBUTION, 'entities': ents,
+             'nextPollAfterMs': 2000 if loading else 60000, 'attribution': ATTRIBUTION, 'entities': ents,
              'overlay': {'type': 'raster', 'tiles': f'/api/v4/components/{COMPONENT}/tiles/{{z}}/{{x}}/{{y}}.png',
                          'minZoom': MIN_ZOOM, 'maxZoom': MAX_ZOOM, 'opacity': 0.85, 'refreshSeconds': REFRESH_SECONDS,   # owner 31 Oct 22:29: every 10 minutes is plenty
                          'tileSize': TILE_SIZE,
@@ -746,7 +786,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     port = int(os.environ.get('TPA_ROAD_ENGINE_PORT', '8782'))
-    threading.Thread(target=inc_worker, daemon=True).start()
+    for _ in range(INC_WORKERS):
+        threading.Thread(target=inc_worker, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA ROAD TRAFFIC ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)
