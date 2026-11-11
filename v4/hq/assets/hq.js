@@ -406,7 +406,8 @@ function selectEntity(e){
 // and a fresh report is reached by a short slide, never a jump. Any position that is not
 // exactly the last real report is marked and described as ESTIMATED.
 const REDUCED=!!(window.matchMedia&&matchMedia('(prefers-reduced-motion: reduce)').matches);
-const BLEND_MS=2000,pins=new Map(),shown=new Map(),blends=new Map();
+const BLEND_MS=2000,pins=new Map(),shown=new Map(),blends=new Map(),lastReport=new Map();
+const corrections=new Map();window.TPA_HQ_CORRECTIONS=id=>corrections.get(id)||0;   // 4.48.0: how often a vehicle's correction was (re)started (tests read it)
 // 4.1.2 fluid movement: positions are worked out about once a second and the browser
 // animates each marker smoothly between them (a linear CSS transition on its transform,
 // drawn by the graphics side at full frame rate, which costs almost nothing). While the
@@ -524,6 +525,12 @@ function noteNewFrame(f,now,fresh){
     const next=estimate(e,now);if(!next||(Math.abs(next.lon-was.lon)<=1e-6&&Math.abs(next.lat-was.lat)<=1e-6))continue;
     // not being drawn (or just back): no corrections against frozen spots - apply directly, fading in if far
     if(fresh||notDrawing()){const [fx,fy]=metresXY(was,next);if(Math.hypot(fx,fy)>20&&!REDUCED)blends.set(k,{hop:true,t0:now});else blends.delete(k);continue;}
+    // 4.48.0 (owner 11 Nov 21:26: planes "speed up then slow down, then appear a bit slow motion then speed up again ... a
+    // cycle somewhere around the 6 second mark"): the page asks every 5 s but a plane's report changes only every ~12 s.
+    // Each ask with the SAME report restarted the correction from the icon's current spot (gentle start, gentle end), so
+    // the speed went up and down in waves. The same report as last time now leaves the correction already under way alone.
+    {const sig=e.observedAt+'|'+e.position.lon+'|'+e.position.lat;if(lastReport.get(k)===sig&&blends.has(k))continue;lastReport.set(k,sig);
+     if(corrections.size>5000)corrections.clear();corrections.set(e.id,(corrections.get(e.id)||0)+1);}
     // 4.2.1: a replayed ("timed") vehicle is never slid across a big gap: its track is where it really went,
     // so a big difference means it was seen somewhere else (a jump) - fade it in there.
     if(e.motion&&e.motion.mode==='timed'){const [tx,ty]=metresXY(was,next);if(Math.hypot(tx,ty)>30&&!REDUCED)blends.set(k,{hop:true,jump:true,t0:now});else blends.delete(k);continue;}   // 4.13.2: the same track again: no correction (it slowed every bus down at each new answer)
