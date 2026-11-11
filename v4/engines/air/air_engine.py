@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.8.0'
+ENGINE_VERSION = '0.8.1'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -342,6 +342,7 @@ def fetch_national(src: str = 'lol') -> None:
         STATE.update(aircraft=list(got.values()), fetchedAt=started, circle='national', downloadBytes=size, source=src)
         succeeded(src)
     print(f'{NAMES[src]} OK: {len(got)} aircraft over the UK, {size//1024} KB', flush=True)
+    count_types(list(got.values()))
 
 
 def fetch_part(circle, src: str = 'lol'):
@@ -386,6 +387,7 @@ def fetch_once(circle, src: str = 'lol') -> None:
     with LOCK:
         STATE.update(aircraft=aircraft, fetchedAt=time.time(), circle=circle, downloadBytes=raw_len, source=src)
         succeeded(src)
+    count_types(aircraft)
     print(f'{NAMES[src]} OK: {len(aircraft)} aircraft within {circle[2]} nm, {raw_len//1024} KB', flush=True)
 
 
@@ -751,6 +753,9 @@ def details(entity_id: str) -> dict:
         add('Privacy', "The owner asked trackers to hide it: shown on this page only")
     if kind:
         out['picture'] = kind
+    photo = PHOTO_BY_CODE.get((a['type'] or known[5] or '').upper())
+    if photo:
+        out['photo'], out['photoName'] = photo, PHOTOS[photo][0]      # 0.8.1: TPA's own picture of the type
     add('Squawk', sq)
     add('ICAO code', a['hex'].upper())
     cat = a.get('category') or ''
@@ -883,7 +888,119 @@ TYPE_NAMES = {'A318': 'Airbus A318', 'A319': 'Airbus A319', 'A320': 'Airbus A320
               'EC35': 'Airbus H135', 'EC45': 'Airbus H145', 'A139': 'Leonardo AW139', 'A169': 'Leonardo AW169',
               'A189': 'Leonardo AW189', 'S92': 'Sikorsky S-92', 'EUFI': 'Eurofighter Typhoon', 'A400': 'Airbus A400M Atlas',
               'C17': 'Boeing C-17 Globemaster III', 'C30J': 'Lockheed C-130J Hercules', 'H47': 'Boeing CH-47 Chinook',
-              'P8': 'Boeing P-8 Poseidon', 'E3TF': 'Boeing E-3 Sentry', 'K35R': 'Boeing KC-135 Stratotanker'}
+              'P8': 'Boeing P-8 Poseidon', 'E3TF': 'Boeing E-3 Sentry', 'K35R': 'Boeing KC-135 Stratotanker',
+              # 0.8.1 (owner's count 11 Nov 15:45: these showed as bare codes)
+              'C150': 'Cessna 150', 'C152': 'Cessna 152', 'C182': 'Cessna 182', 'P28A': 'Piper PA-28 Cherokee',
+              'P28R': 'Piper PA-28R Arrow', 'P28B': 'Piper PA-28 Cherokee', 'PA38': 'Piper PA-38 Tomahawk',
+              'G115': 'Grob Tutor', 'G12T': 'Grob G120TP Prefect', 'TEX2': 'Beechcraft Texan T1', 'GLEX': 'Bombardier Global',
+              'B350': 'Beechcraft King Air 350', 'BE20': 'Beechcraft King Air 200', 'FA20': 'Dassault Falcon 20',
+              'L159': 'Aero L-159', 'H64': 'Boeing AH-64 Apache', 'R22': 'Robinson R22', 'R44': 'Robinson R44',
+              'DA42': 'Diamond DA42', 'DA40': 'Diamond DA40', 'CL60': 'Bombardier Challenger', 'B77L': 'Boeing 777-200LR/F',
+              'S22T': 'Cirrus SR22T', 'SR22': 'Cirrus SR22', 'C42': 'Ikarus C42', 'DHC6': 'De Havilland Canada Twin Otter',
+              'LYNX': 'Leonardo Wildcat', 'A109': 'Leonardo AW109', 'PC12': 'Pilatus PC-12', 'HAWK': 'BAE Hawk',
+              'F35': 'Lockheed Martin F-35 Lightning', 'A320': 'Airbus A320', 'B733': 'Boeing 737-300', 'B734': 'Boeing 737-400',
+              'B736': 'Boeing 737-600', 'B773': 'Boeing 777-300', 'AT72': 'ATR 72', 'AT43': 'ATR 42-300'}
+
+# 0.8.1 (owner 11 Nov 15:43: "I would like to add plane pictures ... static ones"): TPA's own picture of a plane type
+# (made by the owner with one fixed prompt, neutral colours, no logos), for the type codes each one honestly shows.
+# Other planes get none for now (kind pictures come next) - never a picture of the wrong type.
+PHOTOS = {'a320': ('Airbus A320 family', ('A318', 'A319', 'A320', 'A321', 'A19N', 'A20N', 'A21N')),
+          'b737': ('Boeing 737', ('B733', 'B734', 'B735', 'B736', 'B737', 'B738', 'B739', 'B37M', 'B38M', 'B39M', 'B3XM')),
+          'b787': ('Boeing 787 Dreamliner', ('B788', 'B789', 'B78X')),
+          'b777': ('Boeing 777', ('B772', 'B773', 'B77L', 'B77W', 'B778', 'B779')),
+          'a220': ('Airbus A220', ('BCS1', 'BCS3')),
+          'atr72': ('ATR 42 / 72', ('AT43', 'AT44', 'AT45', 'AT46', 'AT72', 'AT73', 'AT75', 'AT76')),
+          'tutor': ('Grob Tutor', ('G115',)),
+          'prefect': ('Grob G120TP Prefect', ('G12T',)),
+          'cessna': ('Cessna high-wing light aircraft', ('C150', 'C152', 'C170', 'C172', 'C182', 'C72R')),
+          'piper': ('Piper PA-28', ('P28A', 'P28B', 'P28R', 'P28T')),
+          'typhoon': ('Eurofighter Typhoon', ('EUFI',)),
+          'kingair': ('Beechcraft King Air', ('BE20', 'BE30', 'B350', 'BE9L', 'BE9T'))}
+PHOTO_BY_CODE = {code: key for key, (_name, codes) in PHOTOS.items() for code in codes}
+
+# 0.8.1 (owner 11 Nov 16:16: "for the first couple of weeks a daily scan should be done, that way we can capture what aircraft
+# will be seen more and have them better represented graphically"): every plane seen is counted once a day by its type code
+# (from what the engine already downloads - no extra requests). Kept 21 days in DATA_DIR/type-counts.json; /types shows it.
+TYPE_DAYS = 21
+TYPES = {'today': '', 'seen': {}, 'past': {}, 'savedAt': 0.0}   # seen: code -> set of hex (today); past: day -> {code: count}
+
+
+def types_file():
+    return os.path.join(DATA_DIR, 'type-counts.json') if DATA_DIR else ''
+
+
+def types_load() -> None:
+    try:
+        with open(types_file()) as f:
+            saved = json.load(f)
+        TYPES['past'] = {d: {c: int(n) for c, n in v.items()} for d, v in saved.get('past', {}).items()}
+        if saved.get('today') == time.strftime('%Y-%m-%d', time.gmtime()):
+            TYPES['today'] = saved['today']
+            TYPES['seen'] = {c: set(v) for c, v in saved.get('seen', {}).items()}
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+
+
+def types_save() -> None:
+    path = types_file()
+    if not path:
+        return
+    try:
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'today': TYPES['today'], 'seen': {c: sorted(v) for c, v in TYPES['seen'].items()}, 'past': TYPES['past']}, f)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
+TYPES_LOCK = threading.Lock()
+
+
+def count_types(aircraft) -> None:
+    """Its own lock, so looking up types never holds up the map."""
+    with TYPES_LOCK:
+        _count_types(aircraft)
+
+
+def _count_types(aircraft) -> None:
+    day = time.strftime('%Y-%m-%d', time.gmtime())
+    if TYPES['today'] != day:
+        if TYPES['today'] and TYPES['seen']:
+            TYPES['past'][TYPES['today']] = {c: len(v) for c, v in TYPES['seen'].items()}
+        for old in sorted(TYPES['past'])[:-TYPE_DAYS]:
+            TYPES['past'].pop(old, None)
+        TYPES.update(today=day, seen={})
+    known = set().union(*TYPES['seen'].values()) if TYPES['seen'] else set()
+    for a in aircraft:
+        if a['hex'] in known:
+            continue
+        code = (a.get('type') or '').upper()
+        if not code:
+            row = lookup('SELECT type FROM aircraft WHERE hex=?', (a['hex'],)) if STANDING['path'] else None
+            code = (row[0] or '').upper() if row else ''
+        TYPES['seen'].setdefault(code or '?', set()).add(a['hex'])
+        known.add(a['hex'])
+    if time.time() - TYPES['savedAt'] > 300:
+        TYPES['savedAt'] = time.time()
+        types_save()
+
+
+def types_report(days: int) -> dict:
+    """Call with TYPES_LOCK held."""
+    days = max(1, min(TYPE_DAYS, days))
+    per_day = dict(TYPES['past'])
+    if TYPES['today']:
+        per_day[TYPES['today']] = {c: len(v) for c, v in TYPES['seen'].items()}
+    chosen = sorted(per_day)[-days:]
+    totals = {}
+    for d in chosen:
+        for c, n in per_day[d].items():
+            totals[c] = totals.get(c, 0) + n
+    order = sorted(totals, key=lambda c: -totals[c])
+    return {'days': chosen, 'planesPerDay': {d: sum(per_day[d].values()) for d in chosen},
+            'types': [{'code': c, 'count': totals[c], 'name': TYPE_NAMES.get(c, ''), 'picture': PHOTO_BY_CODE.get(c, '')}
+                      for c in order[:150]]}
 
 
 # ADS-B "emitter category" (what kind of aircraft the plane says it is)
@@ -1169,6 +1286,14 @@ class Handler(BaseHTTPRequestHandler):
                                                          'error': STANDING['error'], 'rows': STANDING['rows']}})
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
+        if split.path == '/types':               # 0.8.1: the daily count of plane types (look-only)
+            try:
+                days = int((parse_qs(split.query).get('days') or ['14'])[0])
+            except ValueError:
+                days = 14
+            with TYPES_LOCK:
+                report = types_report(days)
+            return self.reply(200, report)
         if split.path == '/details':
             return self.reply(200, details((parse_qs(split.query).get('id') or [''])[0][:140]))
         return self.reply(404, {'error': 'not found'})
@@ -1183,6 +1308,7 @@ class Handler(BaseHTTPRequestHandler):
 def main() -> None:
     port = int(os.environ.get('TPA_AIR_ENGINE_PORT', '8783'))
     budget_load()
+    types_load()
     threading.Thread(target=poller, daemon=True).start()
     if DATA_DIR:
         threading.Thread(target=standing_keeper, daemon=True).start()

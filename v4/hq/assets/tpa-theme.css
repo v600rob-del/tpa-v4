@@ -115,10 +115,10 @@ h1 em{color:var(--amber)}
 /* 4.21.2: the owner's front-on bus and train pictures sit inside the frame (option B), sized with the zoom like the drawings */
 .review-pin .pic-icon{display:block;width:30px;height:30px;object-fit:contain;pointer-events:none;user-select:none;filter:drop-shadow(0 1px 1px #0007)}
 .marker-layer .review-pin.bus .pic-icon,.marker-layer .review-pin.rail .pic-icon{width:calc(34px*var(--pin-s,1));height:calc(34px*var(--pin-s,1))}
-.detail-picture.bus img{mix-blend-mode:multiply}   /* 4.22.1: the bus picture has a white background; it melts into the light panel */
-.detail-picture.bus{position:relative}
+.detail-picture.bus img,.detail-picture.air img{mix-blend-mode:multiply}   /* 4.43.0: planes too */   /* 4.22.1: the bus picture has a white background; it melts into the light panel */
+.detail-picture.bus,.detail-picture.air{position:relative}
 /* 4.30.0: kind of bus not known - a faded, grey picture and a small tag, so it never looks like a fact */
-.detail-picture.bus.unknown img{filter:grayscale(1) contrast(.7);opacity:.38}
+.detail-picture.bus.unknown img,.detail-picture.air.unknown img{filter:grayscale(1) contrast(.7);opacity:.38}
 .detail-picture .pic-tag{position:absolute;left:8px;top:8px;padding:3px 7px;border-radius:4px;background:#0d1626e0;color:var(--amber);
   font:600 10px/1.2 'Barlow Semi Condensed',Barlow,sans-serif;letter-spacing:.08em;text-transform:uppercase}
 

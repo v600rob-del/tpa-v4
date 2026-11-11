@@ -209,6 +209,12 @@ function planePic(e){if(e.component!=='air')return null;if(e.variant==null)retur
 function planeTurn(e){return e.variant!=='balloon'&&e.position?.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';}
 // 4.39.0 (owner 11 Nov 13:04, traffic: incident markers and roadworks happening now): TPA's own road-sign style icons,
 // drawn here (no outside pictures): warning triangles for incidents, the red ring for a closed road.
+const PLANE_PHOTOS=new Set(['a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair']);   // 4.43.0
+// 4.43.0: when the type has no picture of its own, a typical picture of its kind, tagged as such; no kind known: a faded
+// airliner tagged "Type not known" (as for buses). Kinds without a picture yet show none.
+const PLANE_KIND_PHOTOS={airliner:['airliner','Typical airliner'],widebody:['widebody','Typical large airliner'],
+  turboprop:['turboprop','Typical propeller airliner'],bizjet:['bizjet','Typical business jet'],light:['light','Typical light aircraft'],
+  helicopter:['helicopter','Typical helicopter'],cargo:['cargo','Typical cargo plane'],'mil-transport':['miltransport','Typical military transport']};
 const TRI='<path d="M16 2.5 30.5 28H1.5Z" fill="#c8102e"/><path d="M16 8.2 25.6 25H6.4Z" fill="#fff"/>';
 const ROAD_ART={
   roadworks:TRI+'<circle cx="17.6" cy="13.2" r="1.5" fill="#111"/><path d="M17 15.2 14.4 18.4 12.6 22.6M17 15.2l1.5 4.2 1.7 3.2M16.3 16.8l-3.5 1M14 18.6 9.6 15.2" stroke="#111" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M19.4 23.2h4.6l-2.3-3z" fill="#111"/>',
@@ -336,6 +342,18 @@ async function loadDetails(e,box){
       const img=document.createElement('img');img.src='/assets/buses/'+kind+'.webp';img.alt=known?BUS_PICTURES[kind]:'Picture of a bus (type not known)';img.decoding='async';
       if(!known){box3.classList.add('unknown');const tag=document.createElement('span');tag.className='pic-tag';tag.textContent='Type not known';box3.append(tag);}
       img.addEventListener('error',()=>box3.remove(),{once:true});box3.append(img);rows.unshift(box3);}
+    // 4.43.0 (owner 11 Nov 15:43: "I would like to add plane pictures ... static ones"): TPA's own picture of the plane's type
+    // (made by the owner, neutral colours, no logos) on the same light panel as trains and buses; none when the type has
+    // no picture yet - never a picture of the wrong type. Left out if it fails to load.
+    if(e.component==='air'){
+      const own=typeof d.photo==='string'&&PLANE_PHOTOS.has(d.photo),kind=!own&&typeof d.picture==='string'&&Object.hasOwn(PLANE_KIND_PHOTOS,d.picture)?PLANE_KIND_PHOTOS[d.picture]:null;
+      const unknown=!own&&!kind&&!d.picture;
+      if(own||kind||unknown){const box4=document.createElement('div');box4.className='detail-picture air photo';
+        const img=document.createElement('img');img.src='/assets/planes/box/'+(own?d.photo:kind?kind[0]:'airliner')+'.webp';img.decoding='async';
+        img.alt=own?'Picture of the aircraft type: '+(typeof d.photoName==='string'?d.photoName:d.photo):kind?kind[1]:'Picture of an aircraft (type not known)';
+        if(kind||unknown){const tag=document.createElement('span');tag.className='pic-tag';tag.textContent=kind?kind[1]:'Type not known';box4.append(tag);}
+        if(unknown)box4.classList.add('unknown');
+        img.addEventListener('error',()=>box4.remove(),{once:true});box4.append(img);rows.unshift(box4);}}
     box.replaceChildren(...rows);
   }catch(err){}
   // the next stop changes as the vehicle moves: ask again while it stays selected
