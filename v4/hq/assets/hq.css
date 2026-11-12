@@ -469,3 +469,13 @@ body.vector-ready .vector-map{z-index:4}
 .map-selection .board .route-pick[aria-pressed="true"]{background:#ffc94a;color:#14100a;border-color:#ffc94a}
 .board-routes:has(.route-pick){max-height:92px;overflow-y:auto}
 @media(max-width:760px){.bus-board.bus-station .board-cols,.bus-board.bus-station .board-row{grid-template-columns:42px 1fr 36px 56px}}
+/* 4.54.1 (owner 12 Nov 21:14: station icons "larger than the buses and trains themselves but not get in the way of the
+   vehicles ... for easier spotting"): the owner's own railway and bus station pictures, about 1.35 times a vehicle's
+   picture, with no extra frame (they have their own), always drawn UNDER the vehicles (bus stops under the stations). */
+.marker-layer .review-pin.stations,.marker-layer .review-pin.busstations{width:calc(46px*var(--pin-s,1));height:calc(46px*var(--pin-s,1));
+  background:transparent;border:0;box-shadow:none;padding:0;border-radius:12px;z-index:-1}
+.marker-layer .review-pin.stations .pic-icon,.marker-layer .review-pin.busstations .pic-icon{width:calc(46px*var(--pin-s,1));height:calc(46px*var(--pin-s,1));filter:drop-shadow(0 1px 2px #000a)}
+.marker-layer .review-pin.stations .review-route{top:calc(43px*var(--pin-s,1))}
+.marker-layer .review-pin.stations.selected-pin,.marker-layer .review-pin.busstations.selected-pin{z-index:1}
+.marker-layer .review-pin.stops{z-index:-2}
+.marker-layer .review-pin.stops.selected-pin{z-index:1}

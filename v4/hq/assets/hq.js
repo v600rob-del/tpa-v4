@@ -217,7 +217,8 @@ const KID_ART={
   air:'<svg viewBox="0 0 64 48" focusable="false"><path d="M7 24 L3 8 L17 21 Z" fill="#ff6b6b" stroke="#c74343" stroke-width="1.5" stroke-linejoin="round"/><ellipse cx="32" cy="26" rx="27" ry="9.5" fill="#fff" stroke="#3d8bd9" stroke-width="2"/><path d="M25 27 L38 43 L45 43 L39 27 Z" fill="#3d8bd9"/><circle cx="20" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="26" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="32" cy="23.5" r="1.9" fill="#9fd3ff"/><circle cx="50" cy="21.5" r="3.2" fill="#fff" stroke="#3d8bd9" stroke-width="1.2"/><circle cx="50.8" cy="21.8" r="1.6" fill="#222"/><path d="M48 29 q4 3 8 0" stroke="#7a3b00" stroke-width="1.8" fill="none" stroke-linecap="round"/></svg>'
 };
 function kidFlip(e){return e.component==='air'&&e.position?.headingDeg!=null&&e.position.headingDeg>180?'scaleX(-1)':'';}
-const PIC_ICON=Object.freeze({bus:'/assets/icons/bus.webp',rail:'/assets/icons/train.webp'});   // 4.21.2
+const PIC_ICON=Object.freeze({bus:'/assets/icons/bus.webp',rail:'/assets/icons/train.webp',
+  stations:'/assets/icons/trainstation.webp',busstations:'/assets/icons/busstation.webp'});   // 4.21.2; 4.54.1: the owner's station icons (12 Nov 21:25)
 // 4.36.0 (owner 11 Nov 00:09-00:11: his own glossy top-down plane icons, "all central to the icon to allow for rotation"):
 // the kind (air engine "variant") -> his picture; a kind the page does not know keeps the stand-in drawing. A plane whose
 // kind is not known shows the airliner. Balloons stay upright (they point no particular way).

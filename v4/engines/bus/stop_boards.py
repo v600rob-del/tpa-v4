@@ -46,7 +46,7 @@ try:
 except Exception:            # no time zone data: UTC (an hour out in summer, never a crash)
     LONDON = timezone.utc
 
-FORMAT = 2                   # 2: bus stations (0.14.0)
+FORMAT = 3                   # 2: bus stations (0.14.0); 3: bays marked as street stops count too (0.14.1)
 CELL = 50                    # cells of 1/50 degree (~2 km north-south) for "stops in view"
 BATCH = 50_000
 VIEW_SPAN = 0.06             # stops are shown only when the view is under ~6.5 km tall (street level)
@@ -230,7 +230,7 @@ def read_naptan(path):
     with open(path, encoding='utf-8-sig', newline='') as f:
         for r in csv.DictReader(f):
             kind = (r.get('StopType') or '').strip().upper()
-            if kind not in STAND_TYPES + HUB_TYPES:
+            if kind not in STAND_TYPES + HUB_TYPES and not (kind == 'BCT' and street_bay(r.get('CommonName'), r.get('Indicator'))):
                 continue
             if (r.get('Status') or 'active').strip().lower() not in ('active', 'act', ''):
                 continue
@@ -252,9 +252,25 @@ def read_naptan(path):
     return stands, hubs
 
 
+STATION_WORDS = re.compile(r'(?i)\b(bus station|bs|bus stn|bus sta|coach station|coach stn|interchange|bus park)\b')
+
+
+def street_bay(common, indicator):
+    """0.14.1 (owner 12 Nov 21:25, Beverley: its six bays are in NaPTAN as street stops, "Beverley BS", "Bay A"..."Bay F"):
+    a street stop counts as a station stand when it is a bay, stand or stance AND its name says it is at a bus or coach
+    station or an interchange."""
+    return bool(re.match(r'(?i)\s*(bay|stand|stance)\b', indicator or '')) and bool(STATION_WORDS.search(common or ''))
+
+
+def tidy_station(common):
+    """'Beverley BS' / 'Beverley Bs' / 'Beverley Bus Stn' -> 'Beverley Bus Station'."""
+    common = re.sub(r'\s+', ' ', (common or '').replace('_', ' ')).strip()
+    return re.sub(r'(?i)\b(bs|bus stn|bus sta)\b', 'Bus Station', common)
+
+
 def station_name(common, place):
     """'Bus Station' in Beverley -> 'Beverley Bus Station'; 'Hull Paragon Interchange' stays as it is."""
-    common = re.sub(r'\s+', ' ', common or '').strip() or 'Bus Station'
+    common = tidy_station(common) or 'Bus Station'
     if place and place.lower() not in common.lower():
         return f'{place} {common}'[:80]
     return common[:80]
@@ -293,8 +309,8 @@ def group_stations(stands, hubs):
         else:
             loose.append((atco, name, place, lat, lon))
     by_name = {}
-    for x in loose:
-        by_name.setdefault((x[1].lower(), x[2].lower()), []).append(x)
+    for x in loose:      # 0.14.1: "Beverley BS", "Beverley Bs" and "Beverley Bus Station" are one name
+        by_name.setdefault((station_name(x[1], x[2]).lower(), x[2].lower()), []).append(x)
     for (_, _), members in by_name.items():
         clusters = []
         for m in members:
@@ -304,7 +320,8 @@ def group_stations(stands, hubs):
             else:
                 home.append(m)
         for c in clusters:
-            name = station_name(c[0][1], c[0][2])
+            names = [station_name(o[1], o[2]) for o in c]
+            name = max(set(names), key=names.count)
             if len(c) < 2 and not re.search(r'(?i)bus station|coach station|interchange|bus park', name):
                 continue                       # one lonely stand is just a stop
             c.sort()
