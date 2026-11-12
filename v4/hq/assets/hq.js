@@ -66,6 +66,18 @@ function clamp(n,a,b){return Math.max(a,Math.min(b,n));}
 function merc(lon,lat,z){const size=256*2**z,r=clamp(lat,-85.051128,85.051128)*Math.PI/180;return [(lon+180)/360*size,(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*size];}
 function inverse(px,py,z){const size=256*2**z,y=Math.PI*(1-2*py/size);return {lon:px/size*360-180,lat:180/Math.PI*Math.atan(Math.sinh(y))};}
 function dims(){return {w:root.clientWidth,h:root.clientHeight};}
+// 4.51.0 (owner 12 Nov 15:08-15:09, Galaxy A06: the bus box covered the map so the followed bus could not be seen; "we
+// definitely need to work on making the phone experience as good as the pc"): on phones the box is a pull-up panel along
+// the bottom, the map keeps the vehicle above it, stop codes are tidied away, credits sit behind a (c) button, and busy
+// zoomed-out views are calmer.
+const PHONE_W=760;
+function isPhone(){return root.clientWidth<=PHONE_W&&!KIDS;}
+function sheetHeight(){return isPhone()&&!selected.classList.contains('hidden')?selected.getBoundingClientRect().height:0;}
+function focusY(h){const s=sheetHeight();return s?Math.max(60,(h-s)/2):h/2;}      // where a followed vehicle is kept
+// numeric stop codes (NaPTAN, e.g. "(22000624)") mean nothing to a passenger; "(Stop RD)" and "(Bay 22)" stay
+function tidyName(s){return String(s).replace(/\s\((?=[0-9A-Z]*\d{4})[0-9A-Z]{6,14}\)/g,'');}
+function phoneCap(z){return z<13?PHONE_CAP_OUT:PHONE_CAP;}
+window.TPA_HQ_PHONE={tidyName:s=>tidyName(s),cap:z=>phoneCap(z),join:()=>PHONE_JOIN};
 function pixel(lon,lat){if(map){let p=map.latLngToContainerPoint([lat,lon]);return [p.x,p.y];}
 const d=dims(),p=merc(lon,lat,state.z),c=merc(state.lon,state.lat,state.z);return [p[0]-c[0]+d.w/2,p[1]-c[1]+d.h/2];}
 // 4.1.12 (owner 31 Oct 22:11: "Icons could be smaller for buses and trains ... a zoom in to max or nearly
@@ -299,7 +311,7 @@ async function loadDetails(e,box){
     // scrollable list, within the box"). Generic: any engine may send a summary and its stops (done / here / due).
     const stops=Array.isArray(d.stops)?d.stops.filter(s=>s&&typeof s.name==='string'&&['done','here','due'].includes(s.state)).slice(0,120):[];   // names up to 80 letters, wrapped
     const trip=[];
-    if(typeof d.summary==='string'&&d.summary){const p=document.createElement('p');p.className='detail-summary';p.textContent=d.summary.slice(0,200);trip.push(p);}
+    if(typeof d.summary==='string'&&d.summary){const p=document.createElement('p');p.className='detail-summary';p.textContent=tidyName(d.summary.slice(0,200));trip.push(p);}
     // 4.33.0: what it is doing ("Coming in to land at Leeds Bradford") and how far along ("About halfway: ...")
     for(const [key,cls] of [['doing','detail-doing'],['progress','detail-progress']])
       if(typeof d[key]==='string'&&d[key]){const p=document.createElement('p');p.className=cls;p.textContent=d[key].slice(0,120);trip.push(p);}
@@ -307,15 +319,15 @@ async function loadDetails(e,box){
       const when=s=>s.expected&&s.expected!==s.time?`${s.time||''} (expected ${s.expected})`:(s.time||'');
       const here=stops.find(s=>s.state==='here'),next=stops.find(s=>s.state==='due');
       const line=document.createElement('p');line.className='detail-next';
-      if(here){const b=document.createElement('b');b.textContent='Now at ';line.append(b,here.name);}
-      if(next){const b=document.createElement('b');b.textContent=(here?' · ':'')+'Next stop: ';line.append(b,`${next.name}, ${when(next)}`.replace(/, $/,''));}
+      if(here){const b=document.createElement('b');b.textContent='Now at ';line.append(b,tidyName(here.name));}
+      if(next){const b=document.createElement('b');b.textContent=(here?' · ':'')+'Next stop: ';line.append(b,`${tidyName(next.name)}, ${when(next)}`.replace(/, $/,''));}
       if(!here&&!next){const b=document.createElement('b');b.textContent='Journey finished';line.append(b);}
       trip.push(line);
       const head=document.createElement('div');head.className='detail-stops-head';head.textContent='Calling at';trip.push(head);
       const list=document.createElement('ol');list.className='detail-stops';list.setAttribute('aria-label','Calling at');
       for(const s of stops){const li=document.createElement('li');li.className='stop '+s.state;
         const t=document.createElement('span');t.className='stop-time';t.textContent=s.time||'';
-        const n=document.createElement('span');n.className='stop-name';n.textContent=s.name.slice(0,80);
+        const n=document.createElement('span');n.className='stop-name';n.textContent=tidyName(s.name.slice(0,80));
         li.append(t,n);
         if(s.state==='due'&&s.expected&&s.expected!==s.time){const x=document.createElement('span');x.className='stop-exp';x.textContent='exp '+s.expected;li.append(x);}
         if(s.state==='here'){const x=document.createElement('span');x.className='stop-exp';x.textContent='here now';li.append(x);}
@@ -397,7 +409,12 @@ function selectEntity(e){
   if(fb){fb.type='button';fb.className='follow-button';fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};}
   const rb=REPORT_ON?el('button','report-button','Report this'):null;
   if(rb){rb.type='button';rb.onclick=()=>copyReport(e);}
-  selected.replaceChildren(...[h,info,more,fb,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
+  // 4.51.0: on phones the box is a pull-up panel; this bar (or a swipe) shows more or less of it. Short each time it opens.
+  const grab=document.createElement('button');grab.type='button';grab.className='sheet-grab';
+  const setOpen=open=>{selected.classList.toggle('open',open);grab.setAttribute('aria-expanded',String(open));grab.setAttribute('aria-label',open?'Show less':'Show more');};
+  grab.onclick=ev=>{ev.stopPropagation();setOpen(!selected.classList.contains('open'));};setOpen(false);
+  selected.replaceChildren(...[grab,h,info,more,fb,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
+  if(isPhone())requestAnimationFrame(()=>keepAboveSheet(e));
   $('map-place').textContent=e.label.toUpperCase();paint();
   loadDetails(e,more);
 }
@@ -572,7 +589,7 @@ function infoText(e,est){
 }
 // Phone-sized screens show at most this many vehicles per layer (engines already send the
 // ones nearest the middle of the view first); hundreds of overlapping icons can't be read.
-const PHONE_CAP=150;
+const PHONE_CAP=150,PHONE_CAP_OUT=60,PHONE_JOIN=1.6;   // 4.51.0: zoomed out (below 13) on a phone, at most 60 of each layer; grouped sooner
 let glideOK=new Set();
 // 4.1.7 (owner 31 Oct: "when you zoom in or out the icons stay where they were until you stop and
 // then move to their positions, giving the feeling of a mad scramble"):
@@ -618,7 +635,7 @@ function markers(){
   else if(map){const ll=map.getCenter(),c=map.latLngToContainerPoint(ll);paintRef={ll,z:map.getZoom(),x:c.x,y:c.y};markerLayer.style.transform='';
     const r=map.latLngToContainerPoint([54,-2]),sig=map.getZoom()+'|'+r.x.toFixed(1)+'|'+r.y.toFixed(1);viewMoved=sig!==viewSig;viewSig=sig;}
   lastFull=performance.now();lastDrawAt=lastFull;
-  const d=dims(),now=serverNow(),keep=new Set(),M=40,cap=d.w<760?PHONE_CAP:Infinity,perLayer=Object.create(null);moving=0;
+  const d=dims(),now=serverNow(),keep=new Set(),M=40,cap=d.w<760?(KIDS?PHONE_CAP:phoneCap(map?map.getZoom():state.z)):Infinity,perLayer=Object.create(null);moving=0;
   // Which vehicles may glide this second: the nearest to the middle of the screen, up to the budget.
   {const cx=d.w/2,cy=d.h/2,list=[];
    for(const [k,p] of pins)if(p.tf&&p.e&&state.live[p.e.component]&&(p.e.motion||blends.has(k))){const m=p.tf.match(/translate\(([-0-9.]+)px,([-0-9.]+)px\)/);if(m)list.push([k===follow?.key?-1:(m[1]-cx)**2+(m[2]-cy)**2,k]);}
@@ -745,7 +762,7 @@ function groupStacks(items){
   const out=new Set();stackNow=[];
   const z=map?map.getZoom():state.z;
   if(!map||z>=GROUP_BELOW_ZOOM){stackOf=new Map();return out;}
-  const s=pinScale(z),join=GROUP_JOIN*s,leave=GROUP_LEAVE*s,sel=state.selected;
+  const k=isPhone()?PHONE_JOIN:1,s=pinScale(z),join=GROUP_JOIN*s*k,leave=GROUP_LEAVE*s*k,sel=state.selected;   // 4.51.0: sooner on phones
   const byLayer=new Map();
   for(const it of items){
     if(state.frames[it.e.component]?.groupStacks!==true)continue;   // each engine switches it on (bus first)
@@ -811,6 +828,24 @@ function zoomToStack(st){
 // in a straight line from where it was to its new place, over glideMs), so each frame the map is slid by the
 // tiny gap between that point and the middle of the map. Grabbing the map, choosing another vehicle, closing
 // its box (or Escape) or the vehicle leaving the map stops following. Zooming keeps it in the middle.
+// 4.51.0: a vehicle picked on a phone is slid into view above the panel (never hidden behind it)
+function keepAboveSheet(e){
+  if(!map||!isPhone()||follow)return;const k=keyOf(e),pin=pins.get(k);if(!pin)return;
+  const r=pin.b.getBoundingClientRect(),m=root.getBoundingClientRect(),y=r.top+r.height/2-m.top,top=m.height-sheetHeight();
+  if(y>top-24||y<70)map.panBy([0,y-focusY(m.height)],{animate:true,duration:0.35});
+}
+// swipe up on the panel's top for more, down for less (phones)
+(()=>{let y0=null;
+  selected.addEventListener('touchstart',ev=>{y0=isPhone()&&ev.touches.length===1&&ev.touches[0].clientY-selected.getBoundingClientRect().top<70?ev.touches[0].clientY:null;},{passive:true});
+  selected.addEventListener('touchend',ev=>{if(y0==null)return;const dy=ev.changedTouches[0].clientY-y0;y0=null;
+    const g=selected.querySelector('.sheet-grab');if(!g)return;
+    if(dy<-35&&!selected.classList.contains('open'))g.click();else if(dy>35&&selected.classList.contains('open'))g.click();},{passive:true});
+})();
+// the panel being up is known to the page (phones tuck the credits away under it)
+new MutationObserver(()=>document.body.classList.toggle('sheet-up',!selected.classList.contains('hidden'))).observe(selected,{attributes:true,attributeFilter:['class']});
+// 4.51.0: on phones the credits sit behind a small (c) button
+(()=>{const t=$('credit-toggle');if(!t)return;t.addEventListener('click',()=>{const on=!document.body.classList.contains('credits-open');
+  document.body.classList.toggle('credits-open',on);t.setAttribute('aria-expanded',String(on));});})();
 let follow=null,followPanning=false,followMenu=null;
 function isFollowing(e){return !!follow&&follow.comp===e.component&&follow.id===e.id;}
 function followAt(now){if(!follow?.to)return null;const f=follow.dur>0?Math.min(1,(now-follow.t0)/follow.dur):1;
@@ -850,7 +885,7 @@ function followFrame(now){
   if(!sel||sel.id!==follow.id||sel.component!==follow.comp||selected.classList.contains('hidden')||!pins.has(follow.key)){stopFollow();return;}
   const p=followAt(now);if(!p)return;
   let ox=0,oy=0;if(paintRef&&paintRef.z===map.getZoom()){const q=map.latLngToContainerPoint(paintRef.ll);ox=q.x-paintRef.x;oy=q.y-paintRef.y;}
-  const size=map.getSize(),dx=p[0]+ox-size.x/2,dy=p[1]+oy-size.y/2;
+  const size=map.getSize(),dx=p[0]+ox-size.x/2,dy=p[1]+oy-focusY(size.y);   // 4.51.0: above the phone panel
   if(Math.abs(dx)+Math.abs(dy)<0.002)return;
   const f=now-follow.started<900?0.12:1;          // glide in when following starts, then stay locked on
   followPanning=true;try{slideMap(dx*f,dy*f);}finally{followPanning=false;}
