@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.14.0'
+ENGINE_VERSION = '0.14.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1410,6 +1410,8 @@ def stops_snapshot(view) -> dict:
     s, w, n, e = view
     for atco, lat, lon, name, ind, bearing in idx.in_view(s, w, n, e):
         if not re.fullmatch(r'[A-Za-z0-9]{2,20}', atco or ''):
+            continue
+        if not idx.stand_shown(atco, n - s):   # 0.14.2: a bus station's stands wait behind its icon until they sit apart
             continue
         ent = {'id': 'stops:' + atco, 'label': stop_boards.stop_title(name, ind)[:80], 'variant': 'stop',
                'quality': 'observed', 'observedAt': iso(now), 'position': {'lon': lon, 'lat': lat, 'headingDeg': None}}

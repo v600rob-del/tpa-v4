@@ -479,3 +479,13 @@ body.vector-ready .vector-map{z-index:4}
 .marker-layer .review-pin.stations.selected-pin,.marker-layer .review-pin.busstations.selected-pin{z-index:1}
 .marker-layer .review-pin.stops{z-index:-2}
 .marker-layer .review-pin.stops.selected-pin{z-index:1}
+/* 4.54.2 (owner 12 Nov 22:31: the station icon "still needs to be bigger anyway to distinguish it more"): about 1.9 times a
+   vehicle's picture (was 1.35), still always under the vehicles. */
+.marker-layer .review-pin.stations,.marker-layer .review-pin.busstations{width:calc(64px*var(--pin-s,1));height:calc(64px*var(--pin-s,1));border-radius:15px}
+.marker-layer .review-pin.stations .pic-icon,.marker-layer .review-pin.busstations .pic-icon{width:calc(64px*var(--pin-s,1));height:calc(64px*var(--pin-s,1))}
+.marker-layer .review-pin.stations .review-route{top:calc(60px*var(--pin-s,1))}
+/* 4.54.2 (owner 12 Nov 22:50): the owner's own bus stop picture (a flag on a pole), no frame; the stop's letter beside the
+   pole. Still under the stations and the vehicles. */
+.marker-layer .review-pin.stops{width:calc(44px*var(--pin-s,1));height:calc(44px*var(--pin-s,1));background:transparent;border:0;box-shadow:none;padding:0}
+.marker-layer .review-pin.stops .pic-icon{width:calc(44px*var(--pin-s,1));height:calc(44px*var(--pin-s,1));filter:drop-shadow(0 1px 1px #0008)}
+.marker-layer .review-pin.stops .review-route{top:calc(24px*var(--pin-s,1));left:calc(50% + 14px*var(--pin-s,1));font-size:calc(9px*var(--pin-s,1));line-height:calc(13px*var(--pin-s,1));min-width:0;padding:0 calc(3px*var(--pin-s,1))}

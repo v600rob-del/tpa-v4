@@ -1,2 +1,4 @@
 TPA map icons (assets/icons/*.webp): front-on bus and train, made by Rob Burnett (TPA) with ChatGPT image generation, 5 Nov 2026; cleaned and sized for TPA. Originals: v4/design/icons (private).
 Railway station and bus station icons (trainstation.webp, busstation.webp): made by Rob Burnett (TPA) with ChatGPT image generation, 12 Nov 2026; sized for TPA. Originals: v4/design/icons (private).
+
+Bus stop icon (busstop.webp): made by Rob Burnett (TPA), 12 Nov 2026; sized for TPA. Original: v4/design/icons (private).

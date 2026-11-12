@@ -56,6 +56,8 @@ LOOKBACK = 20 * 60           # ...and up to 20 minutes back (a late bus is still
 ROWS = 20
 STATION_ROWS = 50            # a bus station's board: more buses (the route filter picks from them)
 STATION_SPAN = 1.2           # bus stations show from about county level, like railway stations
+SCREEN_PX = 800              # 0.14.2: a typical map height in screen pixels (PC ~900, phone ~840)
+STAND_GAP_PX = 34            # 0.14.2: a station's stands are shown once they would sit a whole stop pin apart on screen (owner 22:32: Hull's still piled up at max zoom)
 HUB_REACH_M = 400            # a stand belongs to the bus station point (NaPTAN 'BST') this close
 CLUSTER_M = 250              # stands with the same name and place this close make one station when there is no BST
 CALLS_SHOWN = 60
@@ -405,7 +407,29 @@ class StopIndex:
     def load_stations(self):
         with self.lock:
             self.stations = self.db.execute('SELECT code, name, low, lat, lon, kind, stands, routes, locality FROM stations').fetchall()
+            rows = self.db.execute('SELECT t.code, s.atco, s.lat, s.lon FROM station_stands t JOIN stops s ON s.stop = t.stop').fetchall()
+        by_station = {}
+        for code, atco, lat, lon in rows:
+            by_station.setdefault(code, []).append((atco, lat, lon))
+        # 0.14.2 (owner 12 Nov 22:20-22:31, Beverley's six bays piled under the station icon; Hull's 38 in a long smear): how
+        # far apart each station's stands are (the typical gap to the nearest other stand), so the map can leave them out
+        # while they would overlap on screen and show them once zoomed in far enough for them to sit apart.
+        self.stand_gap = {}
+        for code, pts in by_station.items():
+            gaps = sorted(min(_metres(a[1], a[2], b[1], b[2]) for b in pts if b is not a) for a in pts) if len(pts) > 1 else [1e9]
+            gap = gaps[len(gaps) // 2]
+            for atco, _, _ in pts:
+                self.stand_gap[atco] = gap
         return len(self.stations)
+
+    def stand_shown(self, atco, view_height_deg):
+        """False for a station's stand while it would sit on top of its neighbours: closer than STAND_GAP_PX on a screen
+        about SCREEN_PX tall showing this much of the map. Stops that are not stands are always shown."""
+        gap = getattr(self, 'stand_gap', {}).get(atco)
+        if gap is None:
+            return True
+        metres_per_px = view_height_deg * 110_574.0 / SCREEN_PX
+        return gap / max(metres_per_px, 1e-6) >= STAND_GAP_PX
 
     def stations_in_view(self, s, w, n, e, limit=MAX_STOPS):
         cl, co = (s + n) / 2, (w + e) / 2

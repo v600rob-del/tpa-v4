@@ -218,7 +218,8 @@ const KID_ART={
 };
 function kidFlip(e){return e.component==='air'&&e.position?.headingDeg!=null&&e.position.headingDeg>180?'scaleX(-1)':'';}
 const PIC_ICON=Object.freeze({bus:'/assets/icons/bus.webp',rail:'/assets/icons/train.webp',
-  stations:'/assets/icons/trainstation.webp',busstations:'/assets/icons/busstation.webp'});   // 4.21.2; 4.54.1: the owner's station icons (12 Nov 21:25)
+  stations:'/assets/icons/trainstation.webp',busstations:'/assets/icons/busstation.webp',
+  stops:'/assets/icons/busstop.webp'});   // 4.54.2: the owner's bus stop icon (12 Nov 22:50)   // 4.21.2; 4.54.1: the owner's station icons (12 Nov 21:25)
 // 4.36.0 (owner 11 Nov 00:09-00:11: his own glossy top-down plane icons, "all central to the icon to allow for rotation"):
 // the kind (air engine "variant") -> his picture; a kind the page does not know keeps the stand-in drawing. A plane whose
 // kind is not known shows the airliner. Balloons stay upright (they point no particular way).
