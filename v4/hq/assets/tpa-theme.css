@@ -82,7 +82,7 @@ h1 em{color:var(--amber)}
 /* 4.15.0: TPA's own icons - white shapes on the layer's tile, one amber detail */
 .review-pin{color:#f2f7fb}
 .review-pin svg .acc{fill:var(--amber)}
-.review-pin:not(.bus):not(.rail):not(.sea):not(.road):not(:where(.stations)):not(:where(.stops)){background:#0f2a3d;border-color:#6fd3ff}
+.review-pin:not(.bus):not(.rail):not(.sea):not(.road):not(:where(.stations)):not(:where(.stops)):not(:where(.busstations)){background:#0f2a3d;border-color:#6fd3ff}
 .review-pin.sea{background:#3a2410;border-color:#ffb36a;color:#f2f7fb}
 .review-pin.rail{color:#f2f7fb}
 

@@ -46,7 +46,7 @@ try:
 except Exception:            # no time zone data: UTC (an hour out in summer, never a crash)
     LONDON = timezone.utc
 
-FORMAT = 1
+FORMAT = 2                   # 2: bus stations (0.14.0)
 CELL = 50                    # cells of 1/50 degree (~2 km north-south) for "stops in view"
 BATCH = 50_000
 VIEW_SPAN = 0.06             # stops are shown only when the view is under ~6.5 km tall (street level)
@@ -54,6 +54,10 @@ MAX_STOPS = 400
 AHEAD = 2 * 3600             # departures up to 2 hours ahead
 LOOKBACK = 20 * 60           # ...and up to 20 minutes back (a late bus is still to come)
 ROWS = 20
+STATION_ROWS = 50            # a bus station's board: more buses (the route filter picks from them)
+STATION_SPAN = 1.2           # bus stations show from about county level, like railway stations
+HUB_REACH_M = 400            # a stand belongs to the bus station point (NaPTAN 'BST') this close
+CLUSTER_M = 250              # stands with the same name and place this close make one station when there is no BST
 CALLS_SHOWN = 60
 LIVE_FRESH = 300             # a bus report older than this is not used for "due in"
 NEAR_ROUTE_M = 600           # a live bus further than this from its journey's stops is not placed on it
@@ -69,8 +73,9 @@ def cell_of(lat, lon):
 
 
 # ---------------------------------------------------------------- building (a low-priority child of the bus engine)
-def build(data_dir, status=lambda **kw: None):
-    """Build stops.sqlite from timetable.sqlite. Returns counts. Nothing half-built is ever left at stops.sqlite."""
+def build(data_dir, status=lambda **kw: None, naptan_csv=None):
+    """Build stops.sqlite from timetable.sqlite. Returns counts. Nothing half-built is ever left at stops.sqlite.
+    0.14.0: with the NaPTAN stop list (naptan_csv), bus station stands are grouped into bus stations."""
     src = os.path.join(data_dir, 'timetable.sqlite')
     out = os.path.join(data_dir, 'stops.sqlite')
     tmp, raw_path = out + '.building', out + '.raw'
@@ -181,9 +186,27 @@ def build(data_dir, status=lambda **kw: None):
     db.commit()
     db.execute('CREATE INDEX stops_cell ON stops (cell)')
     db.execute('CREATE UNIQUE INDEX stops_atco ON stops (atco)')
+    status(state='building', step='bus stations')
+    stations_error = ''
+    for q in ('CREATE TABLE stations (code TEXT PRIMARY KEY, name TEXT, low TEXT, lat REAL, lon REAL, kind TEXT, '
+              'stands INTEGER, routes TEXT, locality TEXT)',
+              'CREATE TABLE station_stands (code TEXT, stop INTEGER)'):
+        db.execute(q)
+    if naptan_csv:
+        try:
+            add_stations(db, read_naptan(naptan_csv))
+        except Exception as exc:     # the boards for single stops still work without stations
+            stations_error = (type(exc).__name__ + ': ' + str(exc))[:120]
+    else:
+        stations_error = 'no NaPTAN stop list'
+    db.execute('CREATE INDEX station_stands_code ON station_stands (code)')
+    db.execute('CREATE INDEX station_stands_stop ON station_stands (stop)')
+    db.commit()
     counts = {'calls': db.execute('SELECT COUNT(*) FROM calls').fetchone()[0],
-              'stops': db.execute('SELECT COUNT(*) FROM stops').fetchone()[0], 'journeys': n_trips}
-    meta = {'format': FORMAT, 'timetableBuiltAt': built_at, 'builtAt': int(time.time()), 'counts': counts}
+              'stops': db.execute('SELECT COUNT(*) FROM stops').fetchone()[0], 'journeys': n_trips,
+              'busStations': db.execute('SELECT COUNT(*) FROM stations').fetchone()[0]}
+    meta = {'format': FORMAT, 'timetableBuiltAt': built_at, 'builtAt': int(time.time()), 'counts': counts,
+            'stationsError': stations_error}
     db.executemany('INSERT INTO meta VALUES (?, ?)', ((k, json.dumps(v)) for k, v in meta.items()))
     db.commit(); db.close(); tt.close()
     os.replace(tmp, out)
@@ -194,6 +217,118 @@ def route_order(name):
     """'2' < '10' < '10A' < 'X46' < 'Skylink': numbers by size, then letters."""
     m = re.match(r'(\D*)(\d+)(.*)', name)
     return (1, m.group(1).lower(), int(m.group(2)), m.group(3).lower()) if m and len(m.group(1)) <= 2 else (2, name.lower(), 0, '')
+
+
+STAND_TYPES = ('BCS', 'BCQ')          # NaPTAN: a stand/bay in a bus or coach station (fixed or variable)
+HUB_TYPES = ('BST',)                   # NaPTAN: a bus or coach station's access area (the station itself)
+
+
+def read_naptan(path):
+    """The stands and station points from the NaPTAN stop list (CSV), read a line at a time."""
+    import csv
+    stands, hubs = {}, []
+    with open(path, encoding='utf-8-sig', newline='') as f:
+        for r in csv.DictReader(f):
+            kind = (r.get('StopType') or '').strip().upper()
+            if kind not in STAND_TYPES + HUB_TYPES:
+                continue
+            if (r.get('Status') or 'active').strip().lower() not in ('active', 'act', ''):
+                continue
+            try:
+                lat, lon = float(r.get('Latitude') or 'x'), float(r.get('Longitude') or 'x')
+            except ValueError:
+                continue
+            if not (49 < lat < 61.5 and -9 < lon < 2.5):
+                continue
+            atco = (r.get('ATCOCode') or '').strip()
+            name = (r.get('CommonName') or '').replace('_', ' ').strip()[:80]
+            place = (r.get('LocalityName') or '').strip()[:60]
+            if not re.fullmatch(r'[A-Za-z0-9]{2,20}', atco):
+                continue
+            if kind in HUB_TYPES:
+                hubs.append((atco, name, place, lat, lon))
+            else:
+                stands[atco] = (name, place, lat, lon)
+    return stands, hubs
+
+
+def station_name(common, place):
+    """'Bus Station' in Beverley -> 'Beverley Bus Station'; 'Hull Paragon Interchange' stays as it is."""
+    common = re.sub(r'\s+', ' ', common or '').strip() or 'Bus Station'
+    if place and place.lower() not in common.lower():
+        return f'{place} {common}'[:80]
+    return common[:80]
+
+
+def station_kind(name):
+    low = name.lower()
+    return 'coach' if 'coach' in low else 'interchange' if 'interchange' in low else 'bus'
+
+
+def _metres(a_lat, a_lon, b_lat, b_lon):
+    x = (b_lon - a_lon) * 111_320.0 * math.cos(math.radians((a_lat + b_lat) / 2))
+    return math.hypot(x, (b_lat - a_lat) * 110_574.0)
+
+
+def group_stations(stands, hubs):
+    """[{code, name, lat, lon, locality, stands: [atco]}]. stands: {atco: (name, place, lat, lon)} for stands that buses
+    call at; hubs: [(atco, name, place, lat, lon)] NaPTAN station points. Each stand joins the nearest station point
+    within HUB_REACH_M; the rest are grouped by name and place, stands within CLUSTER_M of each other."""
+    groups = {h[0]: {'code': h[0], 'name': station_name(h[1], h[2]), 'lat': h[3], 'lon': h[4], 'locality': h[2], 'stands': []}
+              for h in hubs}
+    cell = {}
+    for h in hubs:
+        cell.setdefault((round(h[3] * 50), round(h[4] * 30)), []).append(h)
+    loose = []
+    for atco, (name, place, lat, lon) in stands.items():
+        best = None
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                for h in cell.get((round(lat * 50) + dy, round(lon * 30) + dx), ()):
+                    d = _metres(lat, lon, h[3], h[4])
+                    if d <= HUB_REACH_M and (best is None or d < best[0]):
+                        best = (d, h[0])
+        if best:
+            groups[best[1]]['stands'].append(atco)
+        else:
+            loose.append((atco, name, place, lat, lon))
+    by_name = {}
+    for x in loose:
+        by_name.setdefault((x[1].lower(), x[2].lower()), []).append(x)
+    for (_, _), members in by_name.items():
+        clusters = []
+        for m in members:
+            home = next((c for c in clusters if any(_metres(m[3], m[4], o[3], o[4]) <= CLUSTER_M for o in c)), None)
+            if home is None:
+                clusters.append([m])
+            else:
+                home.append(m)
+        for c in clusters:
+            name = station_name(c[0][1], c[0][2])
+            if len(c) < 2 and not re.search(r'(?i)bus station|coach station|interchange|bus park', name):
+                continue                       # one lonely stand is just a stop
+            c.sort()
+            groups['X' + c[0][0]] = {'code': ('X' + c[0][0])[:20], 'name': name, 'lat': sum(o[3] for o in c) / len(c),
+                                     'lon': sum(o[4] for o in c) / len(c), 'locality': c[0][2], 'stands': [o[0] for o in c]}
+    return [g for g in groups.values() if g['stands']]
+
+
+def add_stations(db, naptan):
+    """Write the bus stations (and which stops are their stands) into the stop index being built."""
+    stands, hubs = naptan
+    called = {}
+    for n, atco, routes in db.execute('SELECT stop, atco, routes FROM stops'):
+        if atco in stands:
+            called[atco] = (n, routes)
+    groups = group_stations({a: v for a, v in stands.items() if a in called}, hubs)
+    for g in groups:
+        names = set()
+        for a in g['stands']:
+            names.update(r for r in called[a][1].split(' ') if r)
+        db.execute('INSERT OR REPLACE INTO stations VALUES (?,?,?,?,?,?,?,?,?)',
+                   (g['code'], g['name'], g['name'].lower(), g['lat'], g['lon'], station_kind(g['name']), len(g['stands']),
+                    ' '.join(sorted(names, key=route_order))[:600], g['locality']))
+        db.executemany('INSERT INTO station_stands VALUES (?,?)', ((g['code'], called[a][0]) for a in g['stands']))
 
 
 def needs_build(data_dir, tt_built_at):
@@ -209,7 +344,10 @@ def needs_build(data_dir, tt_built_at):
             db.close()
     except Exception:
         return True
-    return meta.get('format') != FORMAT or meta.get('timetableBuiltAt') != tt_built_at
+    if meta.get('format') != FORMAT or meta.get('timetableBuiltAt') != tt_built_at:
+        return True
+    # 0.14.0: the NaPTAN stop list could not be fetched last time: try again after a few hours
+    return bool(meta.get('stationsError')) and time.time() - meta.get('builtAt', 0) > 6 * 3600
 
 
 # ---------------------------------------------------------------- reading
@@ -246,6 +384,42 @@ class StopIndex:
         with self.lock:
             return self.db.execute('SELECT stop, atco, lat, lon, name, indicator, bearing, routes FROM stops WHERE atco=?',
                                    (atco,)).fetchone()
+
+    def load_stations(self):
+        with self.lock:
+            self.stations = self.db.execute('SELECT code, name, low, lat, lon, kind, stands, routes, locality FROM stations').fetchall()
+        return len(self.stations)
+
+    def stations_in_view(self, s, w, n, e, limit=MAX_STOPS):
+        cl, co = (s + n) / 2, (w + e) / 2
+        got = [r for r in getattr(self, 'stations', ()) if s <= r[3] <= n and w <= r[4] <= e]
+        got.sort(key=lambda r: (r[3] - cl) ** 2 + (r[4] - co) ** 2)
+        return got[:limit]
+
+    def search_stations(self, q, limit=8):
+        """By name: names starting with it first, then a word starting with it, then anywhere in the name."""
+        q = re.sub(r'\s+', ' ', q or '').strip().lower()[:60]
+        if len(q) < 2:
+            return []
+        starts, words, inside = [], [], []
+        for r in getattr(self, 'stations', ()):
+            low = r[2]
+            if low.startswith(q):
+                starts.append(r)
+            elif any(w.startswith(q) for w in re.split(r'[\s(/-]+', low)):
+                words.append(r)
+            elif q in low:
+                inside.append(r)
+        return (sorted(starts, key=lambda r: (len(r[1]), r[1])) + sorted(words, key=lambda r: (-r[6], r[1])) + inside)[:limit]
+
+    def station(self, code):
+        with self.lock:
+            row = self.db.execute('SELECT code, name, lat, lon, kind, stands, routes, locality FROM stations WHERE code=?', (code,)).fetchone()
+            if row is None:
+                return None, []
+            stands = self.db.execute('SELECT s.stop, s.atco, s.indicator FROM station_stands t JOIN stops s ON s.stop = t.stop '
+                                     'WHERE t.code=?', (code,)).fetchall()
+        return row, stands
 
     def calls(self, stop, lo, hi):
         with self.lock:
@@ -376,19 +550,14 @@ class BoardMaker:
             self.journeys.popitem(last=False)
         return got
 
-    def board(self, atco, now, live, today=None):
-        """{'title', 'about', 'routes', 'tabs': [Departures, Arrivals]} for one stop, or None if it is unknown.
-        live: {trip_id: {'key', 'lat', 'lon', 'recorded'}} - buses near the stop matched to their journeys."""
-        st = self.index.stop(atco)
-        if st is None:
-            return None
-        stop_n, atco, lat, lon, name, indicator, bearing, routes = st
-        local = datetime.fromtimestamp(now, LONDON) if today is None else today
+    def _clock_now(self, now):
+        local = datetime.fromtimestamp(now, LONDON)
         midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
-        day0 = midnight.strftime('%Y%m%d')
-        midnight_ts = midnight.timestamp()
-        s_now = now - midnight_ts                      # seconds after today's midnight
-        deps, arrs, seen = [], [], set()
+        return midnight, midnight.timestamp(), now - midnight.timestamp()
+
+    def _window(self, stop_n, midnight, s_now):
+        """(secs, trip facts, flags, base) for every call at one stop from LOOKBACK ago to AHEAD from now, on journeys
+        that run - yesterday's late ones (GTFS times past 24:00), today's, and tomorrow's early ones."""
         for shift in (-1, 0, 1):
             day = (midnight + timedelta(days=shift)).strftime('%Y%m%d')
             base = -shift * 86400                      # today's clock -> that service day's clock
@@ -397,12 +566,26 @@ class BoardMaker:
                 continue
             for secs, trip_n, flags in self.index.calls(stop_n, int(lo), int(hi)):
                 f = self._trip(trip_n)
-                if f is None or (f['trip'], secs) in seen or not self.tt.runs_on(f['service'], day):
-                    continue
-                seen.add((f['trip'], secs))
-                row = self._row(f, secs, flags, base, s_now, now, midnight_ts, atco, live)
-                if row is not None:
-                    (arrs if flags & 2 else deps).append(row)
+                if f is not None and self.tt.runs_on(f['service'], day):
+                    yield secs, f, flags, base
+
+    def board(self, atco, now, live):
+        """{'title', 'about', 'routes', 'tabs': [Departures, Arrivals]} for one stop, or None if it is unknown.
+        live: {trip_id: {'key', 'lat', 'lon', 'recorded'}} - buses near the stop matched to their journeys."""
+        st = self.index.stop(atco)
+        if st is None:
+            return None
+        stop_n, atco, lat, lon, name, indicator, bearing, routes = st
+        midnight, midnight_ts, s_now = self._clock_now(now)
+        deps, arrs, seen = [], [], set()
+        for secs, f, flags, base in self._window(stop_n, midnight, s_now):
+            if (f['trip'], secs) in seen:
+                continue
+            seen.add((f['trip'], secs))
+            arriving = bool(flags & 2)
+            row = self._row(f, secs, arriving, base, s_now, now, midnight_ts, atco, live)
+            if row is not None:
+                (arrs if arriving else deps).append(row)
         deps.sort(key=lambda r: r.pop('_order')); arrs.sort(key=lambda r: r.pop('_order'))
         deps, arrs = deps[:ROWS], arrs[:ROWS]
         about = []
@@ -423,8 +606,44 @@ class BoardMaker:
                 'tabs': [{'name': 'Departures', 'empty': 'No buses due in the next 2 hours.', 'rows': deps},
                          {'name': 'Arrivals', 'empty': 'No journeys finish here in the next 2 hours.', 'rows': arrs}]}
 
-    def _row(self, f, secs, flags, base, s_now, now, midnight_ts, atco, live):
-        arriving = bool(flags & 2)
+    def station_board(self, code, now, live):
+        """0.14.0 (owner 12 Nov 20:22: bus stations "need to be like the train ones"): one board for all of a station's
+        stands, with the stand each bus uses. Departures: every bus leaving (not those finishing here); Arrivals: every
+        bus arriving (not those starting here), as on a railway station's board. A journey calling at two stands is
+        shown once: leaving from the last one, arriving at the first."""
+        st, stands = self.index.station(code)
+        if st is None:
+            return None
+        code, name, lat, lon, kind, n_stands, routes, place = st
+        midnight, midnight_ts, s_now = self._clock_now(now)
+        leave, come = {}, {}
+        for stop_n, atco, indicator in stands:
+            for secs, f, flags, base in self._window(stop_n, midnight, s_now):
+                key = (f['trip'], base)
+                if not flags & 2 and (key not in leave or secs > leave[key][0]):
+                    leave[key] = (secs, f, base, atco, indicator)
+                if not flags & 1 and (key not in come or secs < come[key][0]):
+                    come[key] = (secs, f, base, atco, indicator)
+        tabs = []
+        for picks, arriving in ((leave, False), (come, True)):
+            rows = []
+            for secs, f, base, atco, indicator in picks.values():
+                row = self._row(f, secs, arriving, base, s_now, now, midnight_ts, atco, live)
+                if row is not None:
+                    stand = badge_of(indicator)
+                    if stand:
+                        row['platform'] = stand[:4]
+                    rows.append(row)
+            rows.sort(key=lambda r: r.pop('_order'))
+            tabs.append(rows[:STATION_ROWS])
+        word = {'coach': 'Coach station', 'interchange': 'Interchange'}.get(kind, 'Bus station')
+        about = f'{word} · {n_stands} stand{"s" if n_stands != 1 else ""}'
+        return {'title': name[:80], 'about': about[:120], 'routes': [r for r in (routes or '').split(' ') if r][:60],
+                'updated': clock(s_now),
+                'tabs': [{'name': 'Departures', 'empty': 'No buses due in the next 2 hours.', 'rows': tabs[0]},
+                         {'name': 'Arrivals', 'empty': 'No buses arriving in the next 2 hours.', 'rows': tabs[1]}]}
+
+    def _row(self, f, secs, arriving, base, s_now, now, midnight_ts, atco, live):
         sched_today = secs - base                      # on today's clock
         place = (f['from'] if arriving else (f['headsign'] or f['to'])) or ('Bus' if arriving else 'Not given')
         row = {'time': clock(sched_today), 'place': place[:80], 'state': 'unknown', 'status': 'Timetable'}
@@ -437,7 +656,7 @@ class BoardMaker:
         k = None
         if bus is not None and now - bus['recorded'] <= LIVE_FRESH:
             stops = self._stops(f['trip'])
-            k = next((i for i, s in enumerate(stops) if s[0] == atco and (s[5] if arriving else s[6]) == secs), None)
+            k = next((i for i, s in enumerate(stops) if s[0] == atco and secs in (s[5], s[6])), None)
             if k is None:
                 k = next((i for i, s in enumerate(stops) if s[0] == atco), None)
             report_clock = bus['recorded'] - midnight_ts + base
@@ -460,7 +679,7 @@ class BoardMaker:
         row['_order'] = sched_today
         if stops is None:
             stops = self._stops(f['trip'])
-            k = next((i for i, s in enumerate(stops) if s[0] == atco and (s[5] if arriving else s[6]) == secs), None)
+            k = next((i for i, s in enumerate(stops) if s[0] == atco and secs in (s[5], s[6])), None)
         if k is not None:
             row['calls'] = self._calls(stops, k, arriving, None)
         return row
@@ -486,11 +705,27 @@ if __name__ == '__main__':
 
         def report(**kw):
             print('STOPS ' + json.dumps(kw), flush=True)
+        naptan = None
+        try:     # 0.14.0: the NaPTAN stop list, for bus stations (the boards for single stops work without it)
+            import importlib.util
+            spec = importlib.util.spec_from_file_location('tpa_bus_timetable_sb', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'timetable.py'))
+            timetable = importlib.util.module_from_spec(spec); spec.loader.exec_module(timetable)
+            url = os.environ.get('TPA_BUS_NAPTAN_TEST_URL', '').strip() or timetable.NAPTAN_URL
+            if url != timetable.NAPTAN_URL and not url.startswith('http://127.0.0.1:'):
+                raise ValueError('test address must be 127.0.0.1')
+            naptan = timetable.download(url, os.path.join(sys.argv[2], 'naptan-stations.csv'), timetable.MAX_NAPTAN_BYTES,
+                                        report, 'bus stops (NaPTAN)')
+        except Exception as exc:
+            report(state='warning', warning=('bus stations: ' + type(exc).__name__ + ' ' + str(exc))[:120])
         try:
-            report(state='built', **build(sys.argv[2], report))
+            report(state='built', **build(sys.argv[2], report, naptan))
         except Exception as exc:   # one clear line for the engine; never a traceback wall
             report(state='error', error=(type(exc).__name__ + ': ' + str(exc))[:120])
             sys.exit(1)
+        finally:
+            for p in (naptan, os.path.join(sys.argv[2], 'naptan-stations.csv.part')):
+                if p and os.path.exists(p):
+                    os.remove(p)
     else:
         print(__doc__)
         sys.exit(2)

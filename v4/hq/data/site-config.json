@@ -85,6 +85,13 @@
       "short": "NaPTAN · BODS"
     },
     {
+      "layer": "Bus stations",
+      "text": "Bus and coach stations and their stands: NaPTAN, Department for Transport (Open Government Licence). Departure and arrival times: BODS timetables, Department for Transport (Open Government Licence); live \"due\" times are worked out by TPA from BODS bus positions.",
+      "url": "https://www.gov.uk/government/publications/national-public-transport-access-node-schema",
+      "status": "Live in test",
+      "short": "NaPTAN · BODS"
+    },
+    {
       "layer": "Road traffic",
       "text": "Traffic flow © TomTom.",
       "url": "https://www.tomtom.com/",

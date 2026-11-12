@@ -202,11 +202,12 @@ unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_
 # kit 4.20 (owner 12 Nov 17:03, live departure boards): stations.env holds the Rail Data Marketplace board address and key
 # kit 4.21 (owner 12 Nov 18:38-18:40, bus stop boards): bus stops and their boards come from the bus engine (/stops), so
 # HQ is told "stops=" at the bus engine's address below. No new service, user or key.
+# kit 4.22 (owner 12 Nov 20:22, bus stations "like the train ones"): the same for "busstations=".
 unit stations "railway stations and live departure boards (National Rail)" TPA_STATIONS_ENGINE_PORT 8785 \
     "Environment=TPA_STATIONS_DATA_DIR=/var/lib/tpa/stations" 100M stations.env v4/engines/stations/stations_engine.py
 unit hq "HQ map page" TPA_HQ_PORT 8778 \
     "Environment=TPA_HQ_PARKED=sea TPA_HQ_LAN_TEST=0 TPA_HQ_OPEN_BROWSER=0 TPA_HQ_BASEMAP=direct TPA_HQ_DEFAULT_VIEW=user TMPDIR=/var/lib/tpa/hq
-Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://${REMOTE_BUS:-${BUS_BIND:-127.0.0.1}}:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784,stations=http://127.0.0.1:8785,stops=http://${REMOTE_BUS:-${BUS_BIND:-127.0.0.1}}:8781/stops" \
+Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://${REMOTE_BUS:-${BUS_BIND:-127.0.0.1}}:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784,stations=http://127.0.0.1:8785,stops=http://${REMOTE_BUS:-${BUS_BIND:-127.0.0.1}}:8781/stops,busstations=http://${REMOTE_BUS:-${BUS_BIND:-127.0.0.1}}:8781/busstations" \
     200M hq.env v4/hq/serve_hq.py
 
 cat > /etc/systemd/system/tpa-web.service <<'EOF'

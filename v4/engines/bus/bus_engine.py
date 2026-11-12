@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.13.0'
+ENGINE_VERSION = '0.14.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1213,7 +1213,7 @@ def seconds_until_night(now: float | None = None) -> float:
 # departures (route, where to, company, "due in X min" for buses seen live, timetable-only buses marked as such) and
 # arrivals, each journey's next stops, and a way to show a live bus on the map. stop_boards.py has the details. The stop
 # index (stops.sqlite) is built from each new timetable by a low-priority helper, paused during bus downloads like the others.
-STOPS = {'index': None, 'maker': None, 'state': 'starting', 'detail': '', 'error': '', 'boards': 0, 'shared': 0}
+STOPS = {'index': None, 'maker': None, 'state': 'starting', 'detail': '', 'error': '', 'boards': 0, 'shared': 0, 'stationsError': ''}
 STOPS_LOCK = threading.Lock()
 BOARDS: OrderedDict = OrderedDict()   # stop code -> (made at, board)
 BOARD_SECONDS = max(5, int(os.environ.get('TPA_BUS_STOP_BOARD_SECONDS', '30') or 30))
@@ -1252,10 +1252,13 @@ def open_stop_index() -> bool:
             STOPS['error'] = ('open: ' + type(exc).__name__ + ' ' + str(exc))[:100]
         return False
     c = idx.meta.get('counts', {})
+    idx.load_stations()
     with STOPS_LOCK:
         old = STOPS['index']
         STOPS.update(index=idx, maker=stop_boards.BoardMaker(tt, idx), state='ready', error='',
-                     detail=f"{c.get('stops', 0)} stops, {c.get('calls', 0)} calls, built {iso(idx.meta.get('builtAt', 0))}")
+                     detail=f"{c.get('stops', 0)} stops, {c.get('calls', 0)} calls, {c.get('busStations', 0)} bus stations, "
+                            f"built {iso(idx.meta.get('builtAt', 0))}",
+                     stationsError=idx.meta.get('stationsError', ''))
         BOARDS.clear()
     if old is not None:
         old.close()
@@ -1278,10 +1281,12 @@ def build_stop_index() -> bool:
             with STOPS_LOCK:
                 if info.get('state') == 'error':
                     STOPS['error'], ok = str(info.get('error', ''))[:120], False
+                elif info.get('state') == 'warning':
+                    STOPS['stationsError'] = str(info.get('warning', ''))[:120]
                 elif info.get('state') == 'building' and STOPS['index'] is None:
                     STOPS['detail'] = ' '.join(str(x) for x in ('building', info.get('step', ''),
                                                                 f"{info['rows']} rows" if 'rows' in info else '') if x)
-            if info.get('state') in ('built', 'error'):
+            if info.get('state') in ('built', 'error', 'warning'):
                 print('Bus stops:', line[6:].strip(), flush=True)
     BUILDER['stops'] = None
     return ok and proc.returncode == 0
@@ -1446,8 +1451,112 @@ def stops_status() -> dict:
     with STOPS_LOCK:
         return {'component': STOPS_COMPONENT, 'engine': 'tpa-bus-engine', 'engineVersion': ENGINE_VERSION,
                 'contractVersion': CONTRACT, 'live': True, 'health': h, 'notice': notice, 'stopIndex': STOPS['state'],
-                'stopIndexDetail': STOPS['detail'], 'stopIndexError': STOPS['error'],
+                'stopIndexDetail': STOPS['detail'], 'stopIndexError': STOPS['error'], 'stationsError': STOPS['stationsError'],
                 'boardsMade': STOPS['boards'], 'boardsShared': STOPS['shared'], 'boardSeconds': BOARD_SECONDS}
+
+
+# 0.14.0 (owner 12 Nov 20:22: "Bus STATIONS next, they need to be like the train ones"; every box ticked): bus, coach
+# stations and interchanges are their own layer - shown from about county level, found by tapping or by name - with one
+# board for all the station's stands: stand, route, where to, company, live "due" or "Timetable", Arrivals too.
+STATIONS_COMPONENT = 'busstations'
+STATIONS_ATTRIBUTION = ('Bus and coach stations: NaPTAN, Department for Transport (OGL) · times: BODS timetables (OGL), '
+                        'live times worked out by TPA from BODS bus positions')
+
+
+def station_code(entity_id: str) -> str:
+    code = entity_id[12:] if entity_id.startswith('busstations:') else ''
+    return code if re.fullmatch(r'[A-Za-z0-9]{2,21}', code) else ''
+
+
+def station_board(code: str):
+    """One bus station's board, shared by every viewer for BOARD_SECONDS."""
+    now = time.time()
+    key = 'S:' + code
+    with STOPS_LOCK:
+        maker = STOPS['maker']
+        got = BOARDS.get(key)
+        if got and now - got[0] < BOARD_SECONDS:
+            STOPS['shared'] += 1
+            return got[1]
+    if maker is None:
+        return None
+    st, _ = maker.index.station(code)
+    if st is None:
+        return None
+    b = maker.station_board(code, now, live_trips_near(st[2], st[3]))
+    with STOPS_LOCK:
+        STOPS['boards'] += 1
+        BOARDS[key] = (now, b)
+        BOARDS.move_to_end(key)
+        while len(BOARDS) > 2000:
+            BOARDS.popitem(last=False)
+    return b
+
+
+def stations_snapshot(view) -> dict:
+    now = time.time()
+    h, notice = stops_health()
+    frame = {'component': STATIONS_COMPONENT, 'contractVersion': CONTRACT, 'health': h,
+             'observedAt': iso(now), 'receivedAt': iso(now), 'expiresAt': iso(now + 3600),
+             'nextPollAfterMs': 300000, 'attribution': STATIONS_ATTRIBUTION, 'entities': []}
+    with STOPS_LOCK:
+        idx = STOPS['index']
+    if view is None or view[2] - view[0] > stop_boards.STATION_SPAN:
+        frame['notice'] = (notice or 'Zoom in to see bus stations').replace('Bus stops', 'Bus stations')
+        return frame
+    if notice:
+        frame['notice'] = notice.replace('Bus stops', 'Bus stations')
+    if idx is None:
+        return frame
+    s, w, n, e = view
+    for code, name, low, lat, lon, kind, stands, routes, place in idx.stations_in_view(s, w, n, e):
+        frame['entities'].append({'id': 'busstations:' + code, 'label': name[:80], 'variant': kind, 'quality': 'observed',
+                                  'observedAt': iso(now), 'position': {'lon': lon, 'lat': lat, 'headingDeg': None}})
+    return frame
+
+
+def stations_details(entity_id: str) -> dict:
+    code = station_code(entity_id)
+    out = {'component': STATIONS_COMPONENT, 'id': entity_id, 'rows': []}
+    if not code:
+        out['note'] = 'This bus station is not known.'
+        return out
+    with STOPS_LOCK:
+        ready = STOPS['maker'] is not None
+    if not ready:
+        out['note'] = 'Bus station boards are being prepared. Please try again in a few minutes.'
+        return out
+    try:
+        b = station_board(code)
+    except Exception as exc:   # one odd station must never break the layer
+        with STOPS_LOCK:
+            STOPS['error'] = ('station board: ' + type(exc).__name__ + ' ' + str(exc))[:100]
+        b = None
+    if b is None:
+        out['note'] = 'No board for this bus station right now.'
+        return out
+    out['board'] = {k: b[k] for k in ('tabs', 'updated', 'about', 'routes')}
+    out['note'] = '"Due" times are worked out by TPA from where each bus is. Timetable times are for buses not seen live yet.'
+    return out
+
+
+def stations_search(q: str) -> dict:
+    with STOPS_LOCK:
+        idx = STOPS['index']
+    if idx is None:
+        return {'results': []}
+    return {'results': [{'id': 'busstations:' + r[0], 'label': r[1], 'lat': r[3], 'lon': r[4]}
+                        for r in idx.search_stations(q)]}
+
+
+def stations_status() -> dict:
+    h, notice = stops_health()
+    with STOPS_LOCK:
+        idx = STOPS['index']
+        return {'component': STATIONS_COMPONENT, 'engine': 'tpa-bus-engine', 'engineVersion': ENGINE_VERSION,
+                'contractVersion': CONTRACT, 'live': True, 'health': h, 'notice': notice.replace('Bus stops', 'Bus stations'),
+                'busStations': len(getattr(idx, 'stations', ())) if idx is not None else 0,
+                'stationsError': STOPS.get('stationsError', '')}
 
 
 def count_matches() -> dict | None:
@@ -2254,6 +2363,16 @@ class Handler(BaseHTTPRequestHandler):
         if split.path == '/stops/details':
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
             return self.reply(200, stops_details(want))
+        # 0.14.0: bus stations, their own layer in HQ too (busstations=http://<this engine>/busstations)
+        if split.path == '/busstations/status':
+            return self.reply(200, stations_status())
+        if split.path == '/busstations/snapshot':
+            return self.reply(200, stations_snapshot(parse_bbox(split.query)))
+        if split.path == '/busstations/details':
+            want = (parse_qs(split.query).get('id') or [''])[0][:140]
+            return self.reply(200, stations_details(want))
+        if split.path == '/busstations/search':
+            return self.reply(200, stations_search((parse_qs(split.query).get('q') or [''])[0][:60]))
         return self.reply(404, {'error': 'not found'})
 
     def do_POST(self):  # noqa: N802
@@ -2291,6 +2410,7 @@ motion_for = _metered('old-style moves', motion_for)
 placed_for = _metered('placing on roads', placed_for)
 details = _metered('bus boxes', details)
 stop_board = _metered('stop boards', stop_board)
+station_board = _metered('station boards', station_board)
 stops_snapshot = _metered('stop pins', stops_snapshot)
 Handler.reply = _metered('packaging', Handler.reply)
 

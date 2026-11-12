@@ -454,3 +454,18 @@ body.vector-ready .vector-map{z-index:4}
 .map-selection .board .b-show{display:inline-block;margin:0 0 8px;padding:6px 12px;border-radius:7px;background:#14202c;color:#ffc94a;border:1px solid #3a4b5a;font-size:13px;font-weight:600;min-height:32px}
 .map-selection .board .b-show:hover,.map-selection .board .b-show:focus-visible{background:#1d2c3a;outline:none}
 @media(max-width:760px){.bus-board .board-cols,.bus-board .board-row{grid-template-columns:44px 1fr 42px 56px}}
+/* 4.54.0 (owner 12 Nov 20:22): bus, coach stations and interchanges - TPA's own canopy-over-a-bus icon, green like the buses
+   and the size of a railway station; the board reads like a railway station's (time, route + where to, stand, due) and a row
+   of route buttons shows one route only. */
+.review-pin.busstations{color:#eafff0;border-color:#5fd38a;background:#0f3322;border-radius:9px}
+.marker-layer .review-pin.busstations{width:calc(32px*var(--pin-s,1));height:calc(32px*var(--pin-s,1))}
+.marker-layer .review-pin.busstations svg{width:calc(24px*var(--pin-s,1));height:calc(24px*var(--pin-s,1))}
+.review-pin.busstations svg .acc{fill:#ffc94a}
+.layer-icon.busstations{background:#0f3322;color:#d6ffe4;border:1px solid #3f8f5e}
+.bus-board.bus-station .board-cols,.bus-board.bus-station .board-row{grid-template-columns:44px 1fr 40px 62px}
+.bus-board.bus-station .board-cols span:nth-child(3),.bus-board.bus-station .b-plat{text-align:center}
+.route-chip.in-row{margin-right:6px;font-size:12px;vertical-align:1px}
+.map-selection .board .route-pick{display:inline-block;min-width:26px;padding:3px 7px;border-radius:5px;background:#14202c;color:#ffc94a;border:1px solid #3a4b5a;font-size:12px;font-weight:700;text-align:center;min-height:26px}
+.map-selection .board .route-pick[aria-pressed="true"]{background:#ffc94a;color:#14100a;border-color:#ffc94a}
+.board-routes:has(.route-pick){max-height:92px;overflow-y:auto}
+@media(max-width:760px){.bus-board.bus-station .board-cols,.bus-board.bus-station .board-row{grid-template-columns:42px 1fr 36px 56px}}

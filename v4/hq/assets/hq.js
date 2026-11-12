@@ -3,7 +3,7 @@
  * No supplier/feed logic, motion algorithms, Admin controls or external URLs.
  */
 (()=>{'use strict';
-const IDS=Object.freeze(['stops','air','sea','rail','bus','road','stations']);   // 4.52.0: stations and their live boards; 4.53.0: bus stops (first, so they sit under the buses)
+const IDS=Object.freeze(['stops','air','sea','rail','bus','road','stations','busstations']);   // 4.52.0: stations and their live boards; 4.53.0: bus stops (first, so they sit under the buses); 4.54.0: bus stations
 const SOCKETS=Object.freeze(Object.fromEntries(IDS.map(id=>[id,Object.freeze({id,contractVersion:'1.0',type:'data-only',path:'/api/v4/components/'+id})])));
 Object.defineProperty(window,'TPA_HQ_SOCKETS',{value:SOCKETS,writable:false,configurable:false});
 const $=id=>document.getElementById(id),root=$('map'),canvas=$('geo-canvas'),ctx=canvas.getContext('2d');
@@ -128,6 +128,8 @@ const ICON_PATHS=Object.freeze({
   rail:['M3 11h18.5c3.6 0 6.2 1.6 7.7 4.6l.9 1.8c.6 1.3-.3 2.6-1.7 2.6H3ZM5 13.2h3v3H5ZM10 13.2h3v3h-3ZM15 13.2h3v3h-3ZM21 13.2h2.6c1.5 0 2.8.8 3.5 2.2l.4.8H21ZM5.4 21.2a1.7 1.7 0 1 0 3.4 0ZM9.8 21.2a1.7 1.7 0 1 0 3.4 0ZM19.4 21.2a1.7 1.7 0 1 0 3.4 0ZM23.8 21.2a1.7 1.7 0 1 0 3.4 0ZM2 23.4h28v1.3H2Z','M3.6 17.4h24.6v1.1H3.6Z'],   // 4.15.1 (owner 21:56): side-on, so trains and buses differ at a glance
   // 4.52.0: TPA's own station: a small station building (clock in the gable) beside the track. No National Rail sign.
   stations:['M3 13 16 4l13 9v2H3ZM6 15.6h20V26H6ZM13.6 26v-5a2.4 2.4 0 0 1 4.8 0v5ZM8.6 18h3v3h-3ZM20.4 18h3v3h-3ZM2 27.6h28v2H2Z','M16 8.6a1.9 1.9 0 1 1 0 3.8 1.9 1.9 0 0 1 0-3.8Z'],
+  // 4.54.0: TPA's own bus station: a canopy on two posts over a bus front; the windscreen is amber
+  busstations:['M2 9.5 16 3l14 6.5V12H2ZM3.6 12h2.2v15H3.6ZM26.2 12h2.2v15h-2.2ZM10 13.6h12a2 2 0 0 1 2 2V25a1 1 0 0 1-1 1h-1v2h-3v-2h-6v2h-3v-2H9a1 1 0 0 1-1-1v-9.4a2 2 0 0 1 2-2ZM2 28.6h28v1.8H2Z','M10.2 15.6h11.6v4.2H10.2ZM10.4 22.2h2.2v1.6h-2.2ZM19.4 22.2h2.2v1.6h-2.2Z'],
   // 4.53.0: TPA's own bus stop: a flag on a pole (no operator or council signs); the little bus on the flag is amber
   stops:['M9 3h14a2.5 2.5 0 0 1 2.5 2.5v8a2.5 2.5 0 0 1-2.5 2.5H9a2.5 2.5 0 0 1-2.5-2.5v-8A2.5 2.5 0 0 1 9 3ZM15 16h2v11h-2ZM11 27.2h10v2H11Z','M11.4 6h9.2a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-.6v1h-1.6v-1h-4.8v1H12v-1h-.6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Z'],
   bus:['M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z','M9.7 5.7h12.6v1.6H9.7Z']
@@ -195,7 +197,7 @@ function airArt(v){const a=Object.hasOwn(AIR_KINDS_ALIAS,v)?AIR_KINDS_ALIAS[v]:v
 function artPair(e){return (e.component==='rail'&&typeof e.variant==='string'&&Object.hasOwn(RAIL_KINDS,e.variant)&&RAIL_KINDS[e.variant])||
   (e.component==='air'&&typeof e.variant==='string'&&airArt(e.variant))||ICON_PATHS[e.component];}
 const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
-function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋',stations:'🚉',stops:'🚏'}[id]||'•';}
+function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋',stations:'🚉',stops:'🚏',busstations:'🚍'}[id]||'•';}
 // 4.15.1 (owner 3 Nov 22:01: "get the whole site glittered", all in house): the side menu, the vehicle box, the welcome
 // tiles and the logo use TPA's own drawings too. The map picture is ours as well; traffic keeps its plain wave sign.
 const UI_PATHS=Object.freeze({map:['M3.5 7.2 11 4l10 3.2L28.5 4v21L21 28.2 11 25l-7.5 3.2ZM10.4 5.6v18.9h1.2V5.6ZM20.4 8.3v18.9h1.2V8.3Z','']});
@@ -388,7 +390,7 @@ async function loadDetails(e,box){
     selected.scrollTop=keepScroll[0];const bl=box.querySelector('.board-list');if(bl)bl.scrollTop=keepScroll[1];
   }catch(err){}
   // the next stop changes as the vehicle moves: ask again while it stays selected (a station's board: every 30 s)
-  detailsTimer=setTimeout(()=>{if(state.selected&&state.selected.id===e.id&&box.isConnected)loadDetails(e,box);},e.component==='stations'||e.component==='stops'?30000:20000);
+  detailsTimer=setTimeout(()=>{if(state.selected&&state.selected.id===e.id&&box.isConnected)loadDetails(e,box);},e.component==='stations'||e.component==='stops'||e.component==='busstations'?30000:20000);
 }
 // 4.52.0: a station's live board. Tabs (Departures | Arrivals), the station's alerts, then one line per train: time,
 // where to (or from), platform, on time / expected / cancelled. Tap a train for its calling points and any reason given.
@@ -398,15 +400,24 @@ function buildBoard(e,b){
   if(boardUI.id!==e.id){boardUI.id=e.id;boardUI.tab=0;boardUI.open=new Set();boardUI.alerts=false;}
   const tabsList=b.tabs.filter(t=>t&&typeof t.name==='string'&&Array.isArray(t.rows)).slice(0,3);
   if(boardUI.tab>=tabsList.length)boardUI.tab=0;
-  const bus=e.component==='stops';   // 4.53.0: a bus stop's board
-  const wrap=el('div','board'+(bus?' bus-board':''));const redraw=()=>{const list=wrap.querySelector('.board-list'),top=list?list.scrollTop:0;
+  const bus=e.component==='stops'||e.component==='busstations';   // 4.53.0: a bus stop's board; 4.54.0: a bus station's
+  const station=e.component==='busstations';
+  if(boardUI.id!==e.id||!station)boardUI.route='';
+  const wrap=el('div','board'+(bus?' bus-board':'')+(station?' bus-station':''));const redraw=()=>{const list=wrap.querySelector('.board-list'),top=list?list.scrollTop:0;
     const fresh=buildBoard(e,b);wrap.replaceWith(fresh);const l2=fresh.querySelector('.board-list');if(l2)l2.scrollTop=top;};
   // 4.53.0 (owner 12 Nov 18:40: "Stop letter + direction", "Routes from this stop"): above the tabs
   if(bus&&typeof b.about==='string'&&b.about)wrap.append(el('p','board-about',b.about.slice(0,120)));
-  if(bus&&Array.isArray(b.routes)&&b.routes.length){const rr=el('div','board-routes');rr.setAttribute('aria-label','Routes from this stop');
-    for(const r of b.routes.slice(0,40))if(typeof r==='string'&&r)rr.append(el('span','route-chip',r.slice(0,12)));wrap.append(rr);}
-  const head=el('div','board-head'),tabs=el('div','board-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label',bus?'Bus stop board':'Station board');
-  tabsList.forEach((t,i)=>{const n=t.rows.length,btn=el('button','board-tab',t.name.slice(0,20)+(n?' ('+n+')':''));btn.type='button';btn.setAttribute('role','tab');
+  if(bus&&Array.isArray(b.routes)&&b.routes.length){const rr=el('div','board-routes');rr.setAttribute('aria-label',station?'Show one route only':'Routes from this stop');
+    const names=b.routes.slice(0,60).filter(r=>typeof r==='string'&&r).map(r=>r.slice(0,12));
+    if(station){   // 4.54.0 (owner 12 Nov 20:22, "Filter by route"): tap a route to see only its buses; tap again (or All) for every bus
+      if(boardUI.route&&!names.includes(boardUI.route))boardUI.route='';
+      const pick=r=>{const c=el('button','route-chip route-pick'+(r===''?' all':''),r===''?'All':r);c.type='button';c.setAttribute('aria-pressed',String(boardUI.route===r));
+        c.onclick=ev=>{ev.stopPropagation();boardUI.route=boardUI.route===r?'':r;boardUI.open=new Set();redraw();};return c;};
+      rr.append(pick(''),...names.map(pick));}
+    else for(const r of names)rr.append(el('span','route-chip',r));
+    wrap.append(rr);}
+  const head=el('div','board-head'),tabs=el('div','board-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label',station?'Bus station board':bus?'Bus stop board':'Station board');
+  tabsList.forEach((t,i)=>{const n=station&&boardUI.route?t.rows.filter(r=>r&&r.route===boardUI.route).length:t.rows.length,btn=el('button','board-tab',t.name.slice(0,20)+(n?' ('+n+')':''));btn.type='button';btn.setAttribute('role','tab');
     btn.setAttribute('aria-selected',String(i===boardUI.tab));btn.onclick=ev=>{ev.stopPropagation();if(boardUI.tab!==i){boardUI.tab=i;redraw();}};tabs.append(btn);});
   head.append(tabs);
   if(typeof b.updated==='string'&&/^\d\d:\d\d$/.test(b.updated))head.append(el('span','board-updated','Updated '+b.updated));
@@ -421,7 +432,7 @@ function buildBoard(e,b){
     wrap.append(box);}
   const tab=tabsList[boardUI.tab]||tabsList[0],arr=/arriv/i.test(tab.name);
   if(!tab.rows.length){wrap.append(el('p','board-empty',typeof tab.empty==='string'&&tab.empty?tab.empty.slice(0,80):'Nothing due.'));return wrap;}
-  if(bus)return busBoard(e,b,wrap,tab,arr,redraw);
+  if(bus)return busBoard(e,b,wrap,tab,arr,redraw,station);
   const cols=el('div','board-cols');cols.setAttribute('aria-hidden','true');
   cols.append(el('span','',arr?'Due':'Time'),el('span','',arr?'From':'To'),el('span','','Plat'),el('span','',arr?'Expected':'Expected'));wrap.append(cols);
   const list=el('ul','board-list');
@@ -457,21 +468,30 @@ function buildBoard(e,b){
 // 4.53.0 (owner 12 Nov 18:40, bus stop boards): one line per bus - route number, where it is going (and the company),
 // its timetable time, and "2 min" / "Due" when TPA can see it live (amber when running late) or "Timetable" when it has
 // not been seen yet. Tap a bus for how it is running, its next stops, and "Show on map" for a live one.
-function busBoard(e,b,wrap,tab,arr,redraw){
+// 4.54.0 (owner 12 Nov 20:22, bus stations "like the train ones"): a bus station's board reads like a railway station's -
+// time, where to (with the route number in front), the stand, and "Due" - and can show one route only.
+function busBoard(e,b,wrap,tab,arr,redraw,station){
+  const rows=tab.rows.slice(0,60).filter(r=>r&&typeof r.time==='string'&&typeof r.place==='string'&&(!station||!boardUI.route||r.route===boardUI.route));
+  if(!rows.length){wrap.append(el('p','board-empty','No route '+boardUI.route+' buses in the next 2 hours.'));return wrap;}
   const cols=el('div','board-cols');cols.setAttribute('aria-hidden','true');
-  cols.append(el('span','','Route'),el('span','',arr?'From':'To'),el('span','',arr?'Due':'Time'),el('span','',arr?'Arriving':'Due'));wrap.append(cols);
+  if(station)cols.append(el('span','',arr?'Due':'Time'),el('span','',arr?'From':'To'),el('span','','Stand'),el('span','',arr?'Arriving':'Due'));
+  else cols.append(el('span','','Route'),el('span','',arr?'From':'To'),el('span','',arr?'Due':'Time'),el('span','',arr?'Arriving':'Due'));
+  wrap.append(cols);
   const list=el('ul','board-list');
-  for(const r of tab.rows.slice(0,20)){
-    if(!r||typeof r.time!=='string'||typeof r.place!=='string')continue;
+  for(const r of rows){
     const route=typeof r.route==='string'?r.route.slice(0,12):'';
     const key=tab.name+'|'+r.time+'|'+route+'|'+r.place,open=boardUI.open.has(key);
     const li=el('li','board-item '+(['ontime','late','cancelled'].includes(r.state)?r.state:'unknown')+(r.live===true?' live':' timetable')+(open?' open':''));
     const btn=el('button','board-row');btn.type='button';btn.setAttribute('aria-expanded',String(open));
-    const place=el('span','b-place');place.append(el('span','b-name',tidyName(r.place.slice(0,80))));
+    const place=el('span','b-place');
+    if(station){const line=el('span','b-name');if(route)line.append(el('span','route-chip in-row',route));line.append(tidyName(r.place.slice(0,80)));place.append(line);}
+    else place.append(el('span','b-name',tidyName(r.place.slice(0,80))));
     if(typeof r.operator==='string'&&r.operator)place.append(el('small','b-sub',r.operator.slice(0,40)));
     const status=typeof r.status==='string'?r.status.slice(0,20):'';
-    btn.append(el('span','b-time b-route',route||'—'),place,el('span','b-plat b-clock',r.time.slice(0,5)),el('span','b-status',status));
-    btn.setAttribute('aria-label',`${route?'Route '+route+' ':''}${arr?'from':'to'} ${r.place}, ${r.time}${status?', '+(status==='Timetable'?'timetable time, not seen live yet':status):''}. ${open?'Hide':'Show'} ${arr?'previous':'next'} stops`);
+    const stand=typeof r.platform==='string'?r.platform.slice(0,4):'';
+    if(station)btn.append(el('span','b-time',r.time.slice(0,5)),place,el('span','b-plat',stand),el('span','b-status',status));
+    else btn.append(el('span','b-time b-route',route||'—'),place,el('span','b-plat b-clock',r.time.slice(0,5)),el('span','b-status',status));
+    btn.setAttribute('aria-label',`${route?'Route '+route+' ':''}${arr?'from':'to'} ${r.place}, ${r.time}${stand?', stand '+stand:''}${status?', '+(status==='Timetable'?'timetable time, not seen live yet':status):''}. ${open?'Hide':'Show'} ${arr?'previous':(station?'calling':'next')} stops`);
     btn.onclick=ev=>{ev.stopPropagation();if(boardUI.open.has(key))boardUI.open.delete(key);else boardUI.open.add(key);redraw();};
     li.append(btn);
     if(open){const more=el('div','board-more');
@@ -484,7 +504,7 @@ function busBoard(e,b,wrap,tab,arr,redraw){
           gotoPlace(r.lon,r.lat,Math.max(16,state.z||16),label);selectEntity(v);};
         more.append(go);}
       const calls=(Array.isArray(r.calls)?r.calls:[]).filter(c=>c&&typeof c.name==='string').slice(0,60);
-      if(calls.length){more.append(el('div','b-calls-head',arr?'Calling before here at':'Next stops'));
+      if(calls.length){more.append(el('div','b-calls-head',arr?'Calling before here at':station?'Calling at':'Next stops'));
         const ol=el('ol','b-calls');
         for(const c of calls){const s=el('li','b-call');
           s.append(el('span','b-call-time',typeof c.time==='string'?c.time:''),el('span','b-call-name',tidyName(c.name.slice(0,60))));
@@ -520,7 +540,7 @@ function selectEntity(e){
   // 4.4.0 (owner 1 Nov 13:42): more about this vehicle from its own engine (start, end, next stop for a bus)
   const more=document.createElement('div');more.className='vehicle-details';
   // 4.10.0 (owner 1 Nov 17:49): "Follow me!" - also here, for phones and tablets (no right-click)
-  const fb=e.component==='road'||e.component==='stations'||e.component==='stops'?null:document.createElement('button');   // 4.39.0: roadworks and incidents stay put (4.52.0: and stations, 4.53.0: and bus stops)
+  const fb=e.component==='road'||e.component==='stations'||e.component==='stops'||e.component==='busstations'?null:document.createElement('button');   // 4.39.0: roadworks and incidents stay put (4.52.0: and stations, 4.53.0: and bus stops)
   if(fb){fb.type='button';fb.className='follow-button';fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};}
   const rb=REPORT_ON?el('button','report-button','Report this'):null;
   if(rb){rb.type='button';rb.onclick=()=>copyReport(e);}
@@ -528,7 +548,7 @@ function selectEntity(e){
   const grab=document.createElement('button');grab.type='button';grab.className='sheet-grab';
   const setOpen=open=>{selected.classList.toggle('open',open);grab.setAttribute('aria-expanded',String(open));grab.setAttribute('aria-label',open?'Show less':'Show more');};
   grab.onclick=ev=>{ev.stopPropagation();setOpen(!selected.classList.contains('open'));};setOpen(false);
-  selected.classList.toggle('station-box',e.component==='stations'||e.component==='stops');   // 4.52.0: a wider box for a departure board
+  selected.classList.toggle('station-box',e.component==='stations'||e.component==='stops'||e.component==='busstations');   // 4.52.0: a wider box for a departure board
   selected.replaceChildren(...[grab,h,info,more,fb,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
   if(isPhone())requestAnimationFrame(()=>keepAboveSheet(e));
   $('map-place').textContent=e.label.toUpperCase();paint();
@@ -700,6 +720,7 @@ function infoText(e,est){
   if(e.component==='road')return 'Checked at '+seen.slice(0,5)+' · live from TomTom';
   if(e.component==='stations')return 'Railway station'+(e.badge?' · code '+e.badge:'');   // 4.52.0
   if(e.component==='stops')return 'Bus stop'+(e.badge?' '+e.badge:'')+' · live times where buses are seen';   // 4.53.0
+  if(e.component==='busstations')return ({coach:'Coach station',interchange:'Interchange'}[e.variant]||'Bus station')+' · live times where buses are seen';   // 4.54.0
   if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
   if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
@@ -1527,7 +1548,7 @@ async function discover(){
   if(discovering)return;discovering=true;
   try{
     const data=await requestBounded('/api/v4/manifest',32768,5000);
-    if(data.contractVersion!=='1.0'||!Array.isArray(data.components)||data.components.length>7)throw Error('manifest-contract');
+    if(data.contractVersion!=='1.0'||!Array.isArray(data.components)||data.components.length>8)throw Error('manifest-contract');
     // 4.39.0: the version label shows the real HQ version (it said 4.32.0 since then: written by hand in the page)
     {const v=typeof data.hq==='string'&&/^\d+\.\d+\.\d+/.exec(data.hq),st=document.querySelector('.preview-stamp');if(v&&st&&st.textContent!=='HQ '+v[0]+' · TEST VERSION')st.textContent='HQ '+v[0]+' · TEST VERSION';}
     const seen=new Set();
@@ -1570,23 +1591,27 @@ function search(query){let q=query.trim().toLowerCase(),out=$('target-list');out
 // 4.52.0 (owner 12 Nov 17:25: open a board by "search by name"): stations from the stations engine, by name or
 // three-letter code, at the top of the results. Choosing one goes there and opens its board.
 let stationAsk=0,stationTimer=0;
+// 4.54.0 (owner 12 Nov 20:22, bus stations found by "Search by name"): railway stations first, then bus stations.
 function stationSearch(q){clearTimeout(stationTimer);const ask=++stationAsk;
-  if(q.length<2||!state.live.stations||state.parked.stations||!state.visible.stations)return;
+  if(q.length<2)return;
   stationTimer=setTimeout(async()=>{
-    try{const r=await fetch('/api/v4/components/stations/search?q='+encodeURIComponent(q.slice(0,60)));if(!r.ok)return;
-      const d=await r.json();if(ask!==stationAsk||!Array.isArray(d.results)||!d.results.length)return;
-      const out=$('target-list');out.querySelector('p.empty')?.remove();out.querySelectorAll('.station-result').forEach(n=>n.remove());
+    const out=$('target-list');
+    for(const [comp,word] of [['busstations','Bus station'],['stations','Station']]){
+    if(!state.live[comp]||state.parked[comp]||!state.visible[comp])continue;
+    try{const r=await fetch('/api/v4/components/'+comp+'/search?q='+encodeURIComponent(q.slice(0,60)));if(!r.ok)continue;
+      const d=await r.json();if(ask!==stationAsk)return;if(!Array.isArray(d.results)||!d.results.length)continue;
+      out.querySelector('p.empty')?.remove();out.querySelectorAll('.station-result.'+comp).forEach(n=>n.remove());
       const first=out.firstChild;
       for(const x of d.results.slice(0,8)){
         if(!x||typeof x.id!=='string'||typeof x.label!=='string'||!Number.isFinite(x.lat)||!Number.isFinite(x.lon))continue;
-        const b=document.createElement('button');b.type='button';b.className='search-result station-result';
+        const b=document.createElement('button');b.type='button';b.className='search-result station-result '+comp;
         const name=document.createElement('strong');name.textContent=x.label.slice(0,80);
-        const type=document.createElement('small');type.textContent='Station'+(typeof x.badge==='string'?' · '+x.badge:'');b.append(name,type);
-        b.onclick=()=>{const e={component:'stations',id:x.id,label:x.label.slice(0,80),badge:typeof x.badge==='string'?x.badge:null,variant:'station',
+        const type=document.createElement('small');type.textContent=word+(typeof x.badge==='string'?' · '+x.badge:'');b.append(name,type);
+        b.onclick=()=>{const e={component:comp,id:x.id,label:x.label.slice(0,80),badge:typeof x.badge==='string'?x.badge:null,variant:comp==='stations'?'station':'bus',
             quality:'observed',observedAt:new Date(serverNow()).toISOString(),position:{lon:x.lon,lat:x.lat,headingDeg:null}};
           gotoPlace(x.lon,x.lat,15,x.label);$('search').value=x.label;selectEntity(e);};
         out.insertBefore(b,first);}
-    }catch(_){}},250);}
+    }catch(_){}}},250);}
 for(const id of IDS){$(id+'-toggle').addEventListener('change',()=>{state.visible[id]=$(id+'-toggle').checked;paint();});}
 function clock(){$('localclock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false});}clock();setInterval(clock,1000);
 $('home-button').onclick=home;$('zoom-in').onclick=()=>zoom(1);$('zoom-out').onclick=()=>zoom(-1);$('menu-button').onclick=()=>setMenu(!$('sidebar').classList.contains('open'));$('sidebar-close').onclick=()=>setMenu(false);$('sidebar-backdrop').onclick=()=>setMenu(false);$('search').addEventListener('input',e=>search(e.target.value));
@@ -1768,7 +1793,7 @@ function buildWelcome(w,tip,credits){
 const shortCredit=Object.create(null);
 function liveCredit(){const box=$('map-credit');if(!box)return;
   const live=IDS.filter(id=>state.live[id]&&state.visible[id]&&!state.parked[id]&&(state.status[id]==='ready'||state.status[id]==='stale'))
-    .map(id=>shortCredit[layerName(id)]).filter(Boolean);
+    .map(id=>shortCredit[layerName(id)]).filter((c,i,all)=>c&&all.indexOf(c)===i);   // 4.54.0: each source once (bus stops and stations share theirs)
   const text='© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'+(live.length?' · Live data: '+live.join(' · '):'');
   if(box.textContent!==text)box.textContent=text;}
 // ---- 4.11.0 Kids mode ------------------------------------------------------------------------------------
