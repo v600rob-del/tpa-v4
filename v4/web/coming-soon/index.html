@@ -7,7 +7,8 @@
 <meta name="description" content="TPA: buses, trains, planes and road traffic moving live on one map of the UK. Free for everyone. Coming soon.">
 <meta name="theme-color" content="#05080e">
 <style>
-/* TPA coming-soon page (kit 4.16; 4.22.1: new icons, the fleet, Geoff's bus). Control-room look: navy-black, departure-board amber, signal teal.
+/* TPA coming-soon page (kit 4.16; 4.22.1: new icons, the fleet, Geoff's bus; 12 Nov 2026: shows what launch day looks like -
+   planes and their pictures, bus types, traffic signs, the owner's plane icon). Control-room look: navy-black, departure-board amber, signal teal.
    Self-contained: own fonts, no outside requests, nothing collected. */
 @font-face{font-family:'TPA Sans';src:url(fonts/Barlow-Regular.woff) format('woff');font-weight:400;font-display:swap}
 @font-face{font-family:'TPA Sans';src:url(fonts/Barlow-SemiBold.woff) format('woff');font-weight:600;font-display:swap}
@@ -59,21 +60,24 @@ h1 em{font-style:normal;color:var(--amber)}
 .m3{color:var(--teal);animation-duration:9s;animation-delay:-3s;border-radius:50%;top:28%}
 .m4{color:var(--purple);animation-duration:17s;animation-delay:-12s}
 @keyframes glide{from{transform:translateX(0)}to{transform:translateX(calc(100vw + 120px))}}
-.m3 svg{transform:rotate(90deg)}
+.m3{border:none;background:none}.m3 img{transform:rotate(90deg)}
 
 .mover.pic{padding:2px;overflow:hidden}.mover.pic img,.card .ic.pic img{width:100%;height:100%;object-fit:contain;display:block}
 .card .ic.pic{padding:2px;overflow:hidden}
 /* the fleet: click any bus or train for a picture of its type */
 .fleet-sec{padding-block:34px 40px}
 .fleet-lead{margin:-6px 0 16px;color:#c9d4e2;max-width:62ch}
-.fleet{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(0,2fr);gap:12px}
-@media (max-width:760px){.fleet{grid-template-columns:minmax(0,1fr)}}
+.fleet{display:grid;gap:18px}
+.group h3{margin:0 0 8px;font-family:var(--sign);font-weight:700;font-size:.85rem;letter-spacing:.18em;text-transform:uppercase}
+.row6{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:8px}
+@media (max-width:860px){.row6{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media (max-width:420px){.row6{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.fleet .plate{padding:6px}
+.fleet .plate figcaption{font-size:.68rem;padding-top:2px}
+.card .ic.sign{border:none;background:none}.card .ic.sign svg{width:42px;height:42px}
 .plate{margin:0;border-radius:12px;border:1px solid #cfd8e3;background:radial-gradient(ellipse at 50% 35%,#ffffff 0,#eef2f7 60%,#dfe5ed 100%);padding:10px;display:grid;align-content:space-between}
 .plate img{display:block;width:100%;height:auto;mix-blend-mode:multiply}
 .plate figcaption{color:#3a4a5e;font-size:.8rem;font-family:var(--sign);letter-spacing:.1em;text-transform:uppercase;padding:4px 4px 0}
-.trains{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.trains .plate{padding:6px}
-.trains .plate figcaption{font-size:.68rem;padding-top:2px}
 /* screen */
 .screen-sec{padding-block:30px}
 .monitor{border:1px solid var(--line2);border-radius:12px;background:var(--panel);padding:10px;box-shadow:0 30px 80px -30px rgba(255,178,30,.18),0 0 0 1px rgba(255,255,255,.02)}
@@ -130,7 +134,7 @@ footer .wrap{padding-block:18px 26px;color:var(--soft);font-size:.82rem;display:
     <div class="rail"></div>
     <div class="mover m1 pic"><img src="pics/icon-train.webp" alt=""></div>
     <div class="mover m2 pic"><img src="pics/icon-bus.webp" alt=""></div>
-    <div class="mover m3"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z"/></svg></div>
+    <div class="mover m3 pic"><img src="pics/icon-plane.webp" alt=""></div>
     <div class="mover m4 pic"><img src="pics/icon-train.webp" alt=""></div>
   </div>
 
@@ -138,34 +142,47 @@ footer .wrap{padding-block:18px 26px;color:var(--soft);font-size:.82rem;display:
     <h2 id="ph">A first look</h2>
     <div class="monitor">
       <div class="bar"><span>TPA · live UK transport map</span><span class="live">● Preview</span></div>
-      <img src="preview.jpg" alt="A preview of TPA: a dark map of the UK with bus, train and plane icons and coloured road traffic" width="1600" height="722" onerror="document.getElementById('preview-sec').hidden=true">
+      <img src="preview.jpg" alt="A preview of TPA over York: buses, trains and planes on the map, roads coloured by traffic, and roadworks signs" width="1600" height="720" onerror="document.getElementById('preview-sec').hidden=true">
     </div>
-    <p class="caption">Taken from the test version over York. Map data © OpenStreetMap contributors, map style by OpenFreeMap, traffic flow © TomTom.</p>
+    <p class="caption">Taken from the test version over York, 12 November 2026. Map data © OpenStreetMap contributors, map style by OpenFreeMap, traffic flow and incidents © TomTom, aircraft from FlyItalyADSB.</p>
   </section>
 
   <section class="fleet-sec" aria-labelledby="fh">
     <h2 id="fh">Click anything</h2>
-    <p class="fleet-lead">Tap a bus or a train to see where it's going, and a picture of what it is: TPA's own drawings, from a Pendolino to a Class 66 freight engine.</p>
+    <p class="fleet-lead">Tap a bus, train or plane to see where it's going, and a picture of what it is: TPA's own drawings, from a double decker to a Pendolino to an Airbus A350.</p>
     <div class="fleet">
-      <figure class="plate"><img src="pics/bus-geoff.webp" alt="Geoff the cat giving a thumbs up from the driver's seat of a TPA bus" width="720" height="400" loading="lazy"><figcaption>Every bus · driver: Geoff</figcaption></figure>
-      <div class="trains">
-        <figure class="plate"><img src="pics/c800.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Azuma</figcaption></figure>
-        <figure class="plate"><img src="pics/c390.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Pendolino</figcaption></figure>
-        <figure class="plate"><img src="pics/c43.webp" alt="" width="720" height="400" loading="lazy"><figcaption>InterCity 125</figcaption></figure>
-        <figure class="plate"><img src="pics/c195.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Civity</figcaption></figure>
-        <figure class="plate"><img src="pics/c755.webp" alt="" width="720" height="400" loading="lazy"><figcaption>FLIRT</figcaption></figure>
-        <figure class="plate"><img src="pics/c66.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Class 66 freight</figcaption></figure>
-      </div>
+      <div class="group"><h3 style="color:var(--green)">Buses</h3><div class="row6">
+          <figure class="plate"><img src="pics/bus-dd.webp" alt="A double decker bus" width="720" height="400" loading="lazy"><figcaption>Double decker</figcaption></figure>
+          <figure class="plate"><img src="pics/bus-sd.webp" alt="A single decker bus" width="720" height="400" loading="lazy"><figcaption>Single decker</figcaption></figure>
+          <figure class="plate"><img src="pics/bus-coach.webp" alt="A coach" width="720" height="400" loading="lazy"><figcaption>Coach</figcaption></figure>
+          <figure class="plate"><img src="pics/bus-mini.webp" alt="A minibus" width="720" height="400" loading="lazy"><figcaption>Minibus</figcaption></figure>
+      </div></div>
+      <div class="group"><h3 style="color:var(--purple)">Trains</h3><div class="row6">
+          <figure class="plate"><img src="pics/c800.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Azuma</figcaption></figure>
+          <figure class="plate"><img src="pics/c390.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Pendolino</figcaption></figure>
+          <figure class="plate"><img src="pics/c43.webp" alt="" width="720" height="400" loading="lazy"><figcaption>InterCity 125</figcaption></figure>
+          <figure class="plate"><img src="pics/c195.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Civity</figcaption></figure>
+          <figure class="plate"><img src="pics/c755.webp" alt="" width="720" height="400" loading="lazy"><figcaption>FLIRT</figcaption></figure>
+          <figure class="plate"><img src="pics/c66.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Class 66 freight</figcaption></figure>
+      </div></div>
+      <div class="group"><h3 style="color:var(--teal)">Planes</h3><div class="row6">
+          <figure class="plate"><img src="pics/p-a350.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Airbus A350</figcaption></figure>
+          <figure class="plate"><img src="pics/p-b747.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Boeing 747</figcaption></figure>
+          <figure class="plate"><img src="pics/p-typhoon.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Typhoon</figcaption></figure>
+          <figure class="plate"><img src="pics/p-police.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Police helicopter</figcaption></figure>
+          <figure class="plate"><img src="pics/p-ambulance.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Air ambulance</figcaption></figure>
+          <figure class="plate"><img src="pics/p-cessna.webp" alt="" width="720" height="400" loading="lazy"><figcaption>Light aircraft</figcaption></figure>
+      </div></div>
     </div>
   </section>
 
   <section aria-labelledby="eh">
     <h2 id="eh">What you'll see</h2>
     <div class="cards">
-      <article class="card"><span class="ic pic" style="color:var(--green)"><img src="pics/icon-bus.webp" alt=""></span><h3>Buses</h3><p>Buses following their real roads, with where they're heading and their next stop. Driven by Geoff, obviously.</p></article>
-      <article class="card"><span class="ic pic" style="color:var(--purple)"><img src="pics/icon-train.webp" alt=""></span><h3>Trains</h3><p>Trains gliding along the real tracks, standing at their platforms, with the train type and how late they're running.</p></article>
-      <article class="card"><span class="ic" style="color:var(--teal)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z"/></svg></span><h3>Planes</h3><p>Aircraft over the UK, from airline and aircraft type to the moment they touch down.</p></article>
-      <article class="card"><span class="ic" style="color:var(--amber)"><svg viewBox="0 0 32 32"><path fill="currentColor" d="M4 26 12 6h3l-1 6h4l-1-6h3l8 20h-6l-1-5h-6l-1 5Zm9-9h6l-.6-3h-4.8Z"/></svg></span><h3>Road traffic</h3><p>Main roads coloured by how busy they are, refreshed every ten minutes.</p></article>
+      <article class="card"><span class="ic pic" style="color:var(--green)"><img src="pics/icon-bus.webp" alt=""></span><h3>Buses</h3><p>Buses following their real roads, with their route, where they're heading and their next stop, and the type of bus where we know it.</p></article>
+      <article class="card"><span class="ic pic" style="color:var(--purple)"><img src="pics/icon-train.webp" alt=""></span><h3>Trains</h3><p>Trains gliding along the real tracks and standing at their platforms, with the train type, how late they're running and every stop they call at.</p></article>
+      <article class="card"><span class="ic pic" style="color:var(--teal)"><img src="pics/icon-plane.webp" alt=""></span><h3>Planes</h3><p>Aircraft over the UK, with the airline, where they're flying from and to, their height and speed, and a picture of the aircraft type.</p></article>
+      <article class="card"><span class="ic sign"><svg viewBox="0 0 32 32"><path d="M16 2.5 30.5 28H1.5Z" fill="#c8102e"/><path d="M16 8.2 25.6 25H6.4Z" fill="#fff"/><circle cx="17.6" cy="13.2" r="1.5" fill="#111"/><path d="M17 15.2 14.4 18.4 12.6 22.6M17 15.2l1.5 4.2 1.7 3.2M16.3 16.8l-3.5 1M14 18.6 9.6 15.2" stroke="#111" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M19.4 23.2h4.6l-2.3-3z" fill="#111"/></svg></span><h3>Road traffic</h3><p>Main roads coloured by how busy they are, plus road signs for accidents, breakdowns, closures and roadworks happening right now.</p></article>
     </div>
     <p class="caption" style="margin-top:12px">Boats are on the list for later.</p>
   </section>
