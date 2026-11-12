@@ -31,12 +31,12 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parent
-COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road', 'stations')   # 4.52.0: stations and their live boards
+COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road', 'stations', 'stops')   # 4.52.0: stations and their live boards; 4.53.0: bus stops
 PLANE_BOX = ('a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair','airliner','widebody','turboprop','bizjet','light','helicopter','cargo','miltransport','a330','a350','embraer','robinson','trainer','glider','milheli','police','ambulance','coastguard','a380','b747','b767','apache','wildcat','twinotter','global','falcon','texan','l159','emer','gnd','twr')   # 4.43.0: plane box pictures
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.52.0'
+HQ_VERSION = '4.53.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -45,7 +45,10 @@ HQ_VERSION = '4.52.0'
 ENGINES = {}
 for _pair in os.environ.get('TPA_HQ_ENGINES', '').split(','):
     _name, _, _url = _pair.strip().partition('=')
-    if _name in COMPONENTS and re.fullmatch(r'http://(127\.0\.0\.1|10(\.\d{1,3}){3}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|192\.168(\.\d{1,3}){2}):\d{2,5}', _url.strip()):
+    # 4.53.0: an engine may serve a second layer under that layer's own name (bus stops: "stops=http://127.0.0.1:8781/stops");
+    # no other path is accepted
+    _m = re.fullmatch(r'http://(127\.0\.0\.1|10(\.\d{1,3}){3}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|192\.168(\.\d{1,3}){2}):\d{2,5}(?P<path>/[a-z]{1,20})?', _url.strip())
+    if _name in COMPONENTS and _m and _m.group('path') in (None, '/' + _name):
         ENGINES[_name] = _url.strip()
 # 4.0.9: owner decision 30 Oct 2026. A component can be "parked" by server
 # setting (e.g. TPA_HQ_PARKED=sea). HQ code is unchanged per component: the
@@ -179,12 +182,16 @@ def engine_get(comp, path, limit, timeout):
 
 
 BOARD_STATES = ('ontime', 'late', 'cancelled', 'unknown')
+ROUTE_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9 &+./-]{0,11}')
+BUS_ID = re.compile(r'bus:[A-Za-z0-9:_.-]{1,124}')
 
 
 def clean_board(b):
     """4.52.0: a station board from an engine, kept to plain text in a fixed shape (or None).
     {updated, alerts:[text], tabs:[{name, empty, rows:[{time, place, via, platform, operator, status, state, reason,
-    calls:[{name, time, expected}]}]}]}"""
+    calls:[{name, time, expected}]}]}]}
+    4.53.0 (bus stop boards): also {about, routes:[route]} for the board, and for a row its route number, whether it is
+    live, and the live bus (its id and where it is) for "Show on map"."""
     if not isinstance(b, dict) or not isinstance(b.get('tabs'), list):
         return None
     def t(v, n):
@@ -216,6 +223,14 @@ def clean_board(b):
                     calls.append(item)
             if calls:
                 row['calls'] = calls
+            if isinstance(r.get('route'), str) and ROUTE_NAME.fullmatch(r['route'].strip()):
+                row['route'] = r['route'].strip()
+            if r.get('live') is True:
+                row['live'] = True
+            lat, lon = r.get('lat'), r.get('lon')
+            if isinstance(r.get('bus'), str) and BUS_ID.fullmatch(r['bus']) and \
+                    all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (lat, lon)) and 49 <= lat <= 61.5 and -9 <= lon <= 2.5:
+                row.update(bus=r['bus'], lat=float(lat), lon=float(lon))
             rows.append(row)
         tabs.append({'name': t(tab['name'], 20), 'empty': t(tab.get('empty'), 80), 'rows': rows})
     if not tabs:
@@ -223,6 +238,12 @@ def clean_board(b):
     out = {'tabs': tabs, 'alerts': [t(a, 400) for a in (b.get('alerts') if isinstance(b.get('alerts'), list) else [])[:5] if t(a, 400)]}
     if hm(b.get('updated')):
         out['updated'] = hm(b['updated'])
+    if t(b.get('about'), 120):
+        out['about'] = t(b['about'], 120)
+    routes = [r.strip() for r in (b.get('routes') if isinstance(b.get('routes'), list) else [])[:40]
+              if isinstance(r, str) and ROUTE_NAME.fullmatch(r.strip())]
+    if routes:
+        out['routes'] = routes
     return out
 
 

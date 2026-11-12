@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.12.7'
+ENGINE_VERSION = '0.13.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -144,6 +144,9 @@ MATCH_SAMPLE = 400
 _spec = importlib.util.spec_from_file_location('tpa_bus_replay', Path(__file__).resolve().parent / 'replay.py')
 replay = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(replay)
+_spec = importlib.util.spec_from_file_location('tpa_bus_stop_boards', Path(__file__).resolve().parent / 'stop_boards.py')
+stop_boards = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(stop_boards)
 _spec = importlib.util.spec_from_file_location('tpa_bus_fleet_lists', Path(__file__).resolve().parent / 'fleet_lists.py')
 fleet_lists = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fleet_lists)
@@ -179,7 +182,7 @@ PATH_WAKE = threading.Event()
 # 0.4.1 (server log 30 Oct: downloads took 5 s normally, 17-42 s and timed out while road work ran):
 # the BODS download always comes first. Road work waits while it runs, and a map rebuild is paused.
 FETCHING = threading.Event()
-BUILDER = {'proc': None, 'tt': None}     # road map / timetable builders (paused during each bus download)
+BUILDER = {'proc': None, 'tt': None, 'stops': None}     # road map / timetable / stop index builders (paused during each bus download)
 TIMING = {'fetch': None, 'pathMs': None}
 VIEWS: list = []             # (time, view) recently looked at closely enough for roads (0.4.2)
 # 0.5.8 (owner 1 Nov 01:21: after an update buses took ~2 minutes to move again, "instead of waiting"):
@@ -632,7 +635,7 @@ def busy_reading() -> None:
     if FETCHING.is_set():
         return
     FETCHING.set()
-    for proc in (BUILDER['proc'], BUILDER['tt']):
+    for proc in (BUILDER['proc'], BUILDER['tt'], BUILDER['stops']):
         if proc is not None and proc.poll() is None:
             try:
                 os.kill(proc.pid, signal.SIGSTOP); _PAUSED.append(proc)
@@ -1204,6 +1207,247 @@ def seconds_until_night(now: float | None = None) -> float:
     if nxt <= local:
         nxt = datetime.fromtimestamp(nxt.timestamp() + 86400 + 3600, timetable.LONDON).replace(hour=NIGHT_HOUR, minute=0, second=0, microsecond=0)
     return max(60.0, nxt.timestamp() - now)
+
+
+# 0.13.0 (owner 12 Nov 17:03-18:40: live departure boards, bus stops after railway stations): every bus stop gets a board -
+# departures (route, where to, company, "due in X min" for buses seen live, timetable-only buses marked as such) and
+# arrivals, each journey's next stops, and a way to show a live bus on the map. stop_boards.py has the details. The stop
+# index (stops.sqlite) is built from each new timetable by a low-priority helper, paused during bus downloads like the others.
+STOPS = {'index': None, 'maker': None, 'state': 'starting', 'detail': '', 'error': '', 'boards': 0, 'shared': 0}
+STOPS_LOCK = threading.Lock()
+BOARDS: OrderedDict = OrderedDict()   # stop code -> (made at, board)
+BOARD_SECONDS = max(5, int(os.environ.get('TPA_BUS_STOP_BOARD_SECONDS', '30') or 30))
+STOP_LIVE_KM = 10.0                   # live buses this close to a stop are matched to their journeys for its board
+STOP_MATCH_BUDGET = 0.4               # seconds a board may spend matching buses nobody has looked at yet
+STOPS_COMPONENT = 'stops'
+STOPS_ATTRIBUTION = ('Bus stops: NaPTAN, Department for Transport (OGL) · times: BODS timetables (OGL), '
+                     'live times worked out by TPA from BODS bus positions')
+
+
+def open_stop_index() -> bool:
+    """Open stops.sqlite if it was made from the timetable in use. True if it is open (or already was)."""
+    tt = TIMETABLE['tt']
+    path = DATA_DIR / 'stops.sqlite'
+    with STOPS_LOCK:
+        stale = STOPS['maker'] is not None and STOPS['maker'].tt is not tt
+        if stale:               # a new timetable (weekly, at night): the old stop index points at the old journeys
+            old, STOPS['index'], STOPS['maker'] = STOPS['index'], None, None
+            STOPS.update(state='building', detail='a new timetable arrived: bus stops are being prepared again')
+            BOARDS.clear()
+    if stale and old is not None:
+        old.close()
+    if tt is None or not path.exists():
+        return False
+    with STOPS_LOCK:
+        cur = STOPS['index']
+        if cur is not None and STOPS['maker'] is not None and STOPS['maker'].tt is tt \
+                and cur.meta.get('timetableBuiltAt') == tt.meta.get('builtAt'):
+            return True
+    if stop_boards.needs_build(str(DATA_DIR), tt.meta.get('builtAt')):
+        return False
+    try:
+        idx = stop_boards.StopIndex(str(path))
+    except Exception as exc:   # damaged: the keeper builds it again
+        with STOPS_LOCK:
+            STOPS['error'] = ('open: ' + type(exc).__name__ + ' ' + str(exc))[:100]
+        return False
+    c = idx.meta.get('counts', {})
+    with STOPS_LOCK:
+        old = STOPS['index']
+        STOPS.update(index=idx, maker=stop_boards.BoardMaker(tt, idx), state='ready', error='',
+                     detail=f"{c.get('stops', 0)} stops, {c.get('calls', 0)} calls, built {iso(idx.meta.get('builtAt', 0))}")
+        BOARDS.clear()
+    if old is not None:
+        old.close()
+    print('Bus stops ready:', STOPS['detail'], flush=True)
+    return True
+
+
+def build_stop_index() -> bool:
+    cmd = [sys.executable, str(Path(__file__).resolve().parent / 'stop_boards.py'), 'build', str(DATA_DIR)]
+    ok = True
+    with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as proc:
+        BUILDER['stops'] = proc
+        for line in proc.stdout:
+            if not line.startswith('STOPS '):
+                continue
+            try:
+                info = json.loads(line[6:])
+            except ValueError:
+                continue
+            with STOPS_LOCK:
+                if info.get('state') == 'error':
+                    STOPS['error'], ok = str(info.get('error', ''))[:120], False
+                elif info.get('state') == 'building' and STOPS['index'] is None:
+                    STOPS['detail'] = ' '.join(str(x) for x in ('building', info.get('step', ''),
+                                                                f"{info['rows']} rows" if 'rows' in info else '') if x)
+            if info.get('state') in ('built', 'error'):
+                print('Bus stops:', line[6:].strip(), flush=True)
+    BUILDER['stops'] = None
+    return ok and proc.returncode == 0
+
+
+def stops_keeper() -> None:
+    """Keeps the stop index in step with the timetable: opens it, or builds it (one at a time, never while the
+    timetable itself is being built)."""
+    time.sleep(float(os.environ.get('TPA_BUS_STOPS_START_DELAY', '90')))
+    while True:
+        tt = TIMETABLE['tt']
+        if tt is None:
+            with STOPS_LOCK:
+                STOPS['state'] = 'waiting'
+                STOPS['detail'] = 'waiting for the bus timetable'
+            time.sleep(5)
+            continue
+        if not open_stop_index() and BUILDER['tt'] is None:
+            with STOPS_LOCK:
+                if STOPS['index'] is None:
+                    STOPS['state'] = 'building'
+            if build_stop_index() and open_stop_index():
+                pass
+            else:
+                with STOPS_LOCK:
+                    if STOPS['index'] is None:
+                        STOPS['state'] = 'unavailable'
+                time.sleep(ROAD_RETRY_HOURS * 3600)
+        time.sleep(60)
+
+
+def live_trips_near(lat: float, lon: float) -> dict:
+    """{trip_id: bus} for live buses within STOP_LIVE_KM of a stop, matched to their timetabled journeys. Buses already
+    matched (the ones people are looking at) cost nothing; the rest are matched now, nearest first, within a budget."""
+    now = time.time()
+    with LOCK:
+        vehicles = STATE['vehicles']
+    dlat = STOP_LIVE_KM / 111.0
+    dlon = dlat / max(0.2, math.cos(math.radians(lat)))
+    near = [v for v in vehicles if now - v['recorded'] <= stop_boards.LIVE_FRESH
+            and abs(v['lat'] - lat) <= dlat and abs(v['lon'] - lon) <= dlon]
+    near.sort(key=lambda v: (v['lat'] - lat) ** 2 + ((v['lon'] - lon) * dlat / dlon) ** 2)
+    tt, out = TIMETABLE['tt'], {}
+    deadline = time.monotonic() + STOP_MATCH_BUDGET
+    for v in near:
+        sig = journey_sig(v)
+        with JOURNEY_LOCK:
+            known = TRIPS.get(v['key'])
+        if (known is None or known[0] != sig) and tt is not None and v.get('origin') and v.get('dep') \
+                and time.monotonic() < deadline:
+            try:
+                got = tt.match(*match_args(v))
+                tid = got[0] if len(got) == 1 else None
+            except Exception:   # one odd bus must never break a board
+                tid = None
+            with JOURNEY_LOCK:
+                cur = TRIPS.get(v['key'])
+                if cur is None or cur[0] != sig:
+                    TRIPS[v['key']] = (sig, tid)
+                    FOLLOW.pop(v['key'], None)
+            known = (sig, tid)
+        if known and known[0] == sig and known[1] and known[1] not in out:
+            out[known[1]] = {'key': v['key'], 'lat': v['lat'], 'lon': v['lon'], 'recorded': v['recorded']}
+    return out
+
+
+def stop_atco(entity_id: str) -> str:
+    code = entity_id[6:] if entity_id.startswith('stops:') else ''
+    return code if re.fullmatch(r'[A-Za-z0-9]{2,20}', code) else ''
+
+
+def stop_board(code: str):
+    """One stop's board, shared by every viewer for BOARD_SECONDS."""
+    now = time.time()
+    with STOPS_LOCK:
+        maker = STOPS['maker']
+        got = BOARDS.get(code)
+        if got and now - got[0] < BOARD_SECONDS:
+            STOPS['shared'] += 1
+            return got[1]
+    if maker is None:
+        return None
+    st = maker.index.stop(code)
+    if st is None:
+        return None
+    b = maker.board(code, now, live_trips_near(st[2], st[3]))
+    with STOPS_LOCK:
+        STOPS['boards'] += 1
+        BOARDS[code] = (now, b)
+        BOARDS.move_to_end(code)
+        while len(BOARDS) > 2000:
+            BOARDS.popitem(last=False)
+    return b
+
+
+def stops_health() -> tuple[str, str]:
+    with STOPS_LOCK:
+        state = STOPS['state']
+    if state == 'ready':
+        return 'ready', ''
+    if state in ('starting', 'waiting', 'building'):
+        return 'ready', 'Bus stops are being prepared'   # "ready" so the layer stays switched on and fills in later
+    return 'unavailable', 'Bus stops not available right now'
+
+
+def stops_snapshot(view) -> dict:
+    now = time.time()
+    h, notice = stops_health()
+    frame = {'component': STOPS_COMPONENT, 'contractVersion': CONTRACT, 'health': h,
+             'observedAt': iso(now), 'receivedAt': iso(now), 'expiresAt': iso(now + 3600),
+             'nextPollAfterMs': 300000, 'attribution': STOPS_ATTRIBUTION, 'entities': []}
+    with STOPS_LOCK:
+        idx = STOPS['index']
+    if view is None or view[2] - view[0] > stop_boards.VIEW_SPAN:
+        frame['notice'] = notice or 'Zoom in to see bus stops'
+        return frame
+    if notice:
+        frame['notice'] = notice
+    if idx is None:
+        return frame
+    s, w, n, e = view
+    for atco, lat, lon, name, ind, bearing in idx.in_view(s, w, n, e):
+        if not re.fullmatch(r'[A-Za-z0-9]{2,20}', atco or ''):
+            continue
+        ent = {'id': 'stops:' + atco, 'label': stop_boards.stop_title(name, ind)[:80], 'variant': 'stop',
+               'quality': 'observed', 'observedAt': iso(now), 'position': {'lon': lon, 'lat': lat, 'headingDeg': None}}
+        b = stop_boards.badge_of(ind)
+        if b:
+            ent['badge'] = b
+        frame['entities'].append(ent)
+    return frame
+
+
+def stops_details(entity_id: str) -> dict:
+    code = stop_atco(entity_id)
+    out = {'component': STOPS_COMPONENT, 'id': entity_id, 'rows': []}
+    if not code:
+        out['note'] = 'This bus stop is not known.'
+        return out
+    with STOPS_LOCK:
+        ready = STOPS['maker'] is not None
+    if not ready:
+        out['note'] = 'Bus stop boards are being prepared. Please try again in a few minutes.'
+        return out
+    try:
+        b = stop_board(code)
+    except Exception as exc:   # one odd stop must never break the layer
+        with STOPS_LOCK:
+            STOPS['error'] = ('board: ' + type(exc).__name__ + ' ' + str(exc))[:100]
+        b = None
+    if b is None:
+        out['note'] = 'No board for this stop right now.'
+        return out
+    out['board'] = {k: b[k] for k in ('tabs', 'updated', 'about', 'routes')}
+    out['rows'] = [{'label': 'Stop code', 'value': code, 'more': True}]
+    out['note'] = ('"Due" times are worked out by TPA from where each bus is. Timetable times are for buses not seen live yet.')
+    return out
+
+
+def stops_status() -> dict:
+    h, notice = stops_health()
+    with STOPS_LOCK:
+        return {'component': STOPS_COMPONENT, 'engine': 'tpa-bus-engine', 'engineVersion': ENGINE_VERSION,
+                'contractVersion': CONTRACT, 'live': True, 'health': h, 'notice': notice, 'stopIndex': STOPS['state'],
+                'stopIndexDetail': STOPS['detail'], 'stopIndexError': STOPS['error'],
+                'boardsMade': STOPS['boards'], 'boardsShared': STOPS['shared'], 'boardSeconds': BOARD_SECONDS}
 
 
 def count_matches() -> dict | None:
@@ -1990,6 +2234,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'timetableMatch': STATE.get('timetableMatch'), 'replaySeconds': REPLAY_SECONDS,
                                         'fleetLists': {'on': FLEET_LISTS, 'have': fleet_lists.counts(), 'last': dict(FLEET_STATUS)},
                                         'journeyRound': STATE.get('journeyRound'),
+                                        'stopBoards': {'index': STOPS['state'], 'detail': STOPS['detail'], 'error': STOPS['error'], 'made': STOPS['boards'], 'shared': STOPS['shared']},
                                         'replayMemo': {'made': STATE.get('replayMemoMade', 0), 'reused': STATE.get('replayMemoHits', 0)},
                                         'cpuSeconds': meter_summary(),
                                         'lastView': STATE.get('lastView')})
@@ -2001,6 +2246,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(200, trace(want))
         if split.path == '/snapshot':
             return self.reply(200, snapshot(parse_bbox(split.query)))
+        # 0.13.0: bus stops and their boards are their own layer in HQ (stops=http://<this engine>/stops)
+        if split.path == '/stops/status':
+            return self.reply(200, stops_status())
+        if split.path == '/stops/snapshot':
+            return self.reply(200, stops_snapshot(parse_bbox(split.query)))
+        if split.path == '/stops/details':
+            want = (parse_qs(split.query).get('id') or [''])[0][:140]
+            return self.reply(200, stops_details(want))
         return self.reply(404, {'error': 'not found'})
 
     def do_POST(self):  # noqa: N802
@@ -2037,6 +2290,8 @@ save_memory = _metered('saving', save_memory)
 motion_for = _metered('old-style moves', motion_for)
 placed_for = _metered('placing on roads', placed_for)
 details = _metered('bus boxes', details)
+stop_board = _metered('stop boards', stop_board)
+stops_snapshot = _metered('stop pins', stops_snapshot)
 Handler.reply = _metered('packaging', Handler.reply)
 
 
@@ -2071,6 +2326,7 @@ def main() -> None:
     threading.Thread(target=fleet_keeper, daemon=True).start()
     threading.Thread(target=match_counter, daemon=True).start()
     threading.Thread(target=journey_worker, daemon=True).start()
+    threading.Thread(target=stops_keeper, daemon=True).start()
     threading.Thread(target=path_worker, daemon=True).start()
     # 0.8.7 (owner 3 Nov 14:41): on its own Ampere server the engine listens on that server's PRIVATE address, so the
     # main server can ask it (both servers' firewalls only allow the main server's private address in)

@@ -37,7 +37,8 @@ keep = ("engineVersion", "health", "notice", "loginConfigured", "keyConfigured",
         "trainsTracked", "stationsKnown", "trackMapLoaded", "busesInLastDownload", "busesWithSpeed",
         "reportAgeMedianSeconds", "lastFetchSeconds", "roadMap", "roadMapSource", "roadMapDetail", "roadPathsKnown", "roadPathMs", "mode", "lastError",
         "referenceError", "trackError", "roadMapError", "roadCacheMB", "roadCacheLimitMB", "lastView",
-        "stations", "boardsSwitchedOn", "boardRequestsToday", "dailySafetyCap")
+        "stations", "boardsSwitchedOn", "boardRequestsToday", "dailySafetyCap",
+        "stopIndex", "stopIndexDetail", "stopIndexError", "boardsMade", "boardsShared")
 keep2 = ("timetable", "timetableDetail", "timetableUpdate", "timetableError", "replaySeconds", "journeyRound", "replayMemo", "cpuSeconds")
 parts = [f"{k}={d[k]}" for k in keep if k in d and d[k] not in ("", None)]
 print(f"{name:8s} " + ", ".join(parts))
@@ -55,12 +56,13 @@ if isinstance(d.get("measure"), dict):   # bus 0.5.9: accuracy figures
 ' "$1" || { printf '%-8s status unreadable\n' "$1"; ok=0; }
 }
 if [[ "$ROLE" == bus ]]; then
-    summary bus 8781 "$BUS_HOST"
+    summary bus 8781 "$BUS_HOST"; summary stops 8781/stops "$BUS_HOST"
     echo; /usr/local/sbin/tpa-update show 2>/dev/null || true; echo
     [[ $ok == 1 ]] && echo "ALL GOOD (bus-only server)" || echo "SOMETHING NEEDS ATTENTION (see above)"
     [[ $ok == 1 ]]; exit
 fi
-summary road 8782; summary bus 8781 "$BUS_HOST"; summary air 8783; summary rail 8784; summary stations 8785
+summary road 8782; summary bus 8781 "$BUS_HOST"; summary stops 8781/stops "$BUS_HOST"   # kit 4.21: bus stop boards (bus engine)
+summary air 8783; summary rail 8784; summary stations 8785
 echo
 # server kit 4.11: which version each layer runs, and which are frozen (signed off)
 if [[ -x /usr/local/sbin/tpa-update ]]; then /usr/local/sbin/tpa-update show 2>/dev/null || true; echo; fi

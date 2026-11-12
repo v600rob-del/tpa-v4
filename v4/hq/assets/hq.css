@@ -431,3 +431,26 @@ body.vector-ready .vector-map{z-index:4}
   .map-selection .board .board-row{font-size:14px}
   .board-more{padding-left:48px}
 }
+/* 4.53.0 (owner 12 Nov 18:40): bus stops and their boards. TPA's own bus stop flag, green like the buses, with the stop's
+   letter underneath; stops sit under the buses on the map. The board: route number, where to, time, and "2 min" / "Due"
+   for buses seen live (amber when late) or "Timetable" (dimmer) for buses not seen yet. */
+.review-pin.stops{color:#eafff0;border-color:#5fd38a;background:#0f3322;border-radius:9px}
+.marker-layer .review-pin.stops{width:calc(28px*var(--pin-s,1));height:calc(28px*var(--pin-s,1));z-index:-1}
+.marker-layer .review-pin.stops.selected-pin{z-index:1}
+.marker-layer .review-pin.stops svg{width:calc(21px*var(--pin-s,1));height:calc(21px*var(--pin-s,1))}
+.review-pin.stops svg .acc{fill:#ffc94a}
+.review-pin.stops .review-route{background:#0f3322;color:#fff;border-color:#5fd38a}
+.marker-layer .review-pin.stops .review-route{top:calc(21px*var(--pin-s,1));font-size:calc(10px*var(--pin-s,1));line-height:calc(14px*var(--pin-s,1))}
+.layer-icon.stops{background:#0f3322;color:#d6ffe4;border:1px solid #3f8f5e}
+.board-about{margin:0 2px;font-size:13px;color:#d9e6f0;font-family:'TPA Sans',Inter,system-ui,sans-serif}
+.board-routes{display:flex;flex-wrap:wrap;gap:4px;margin:0 2px}
+.route-chip{display:inline-block;min-width:22px;padding:1px 6px;border-radius:5px;background:#ffc94a;color:#14100a;font-size:12px;font-weight:700;text-align:center;font-variant-numeric:tabular-nums}
+.bus-board .board-cols,.bus-board .board-row{grid-template-columns:48px 1fr 46px 62px}
+.bus-board .board-cols span:nth-child(3),.bus-board .b-clock{text-align:center}
+.bus-board .b-route{display:inline-block;justify-self:start;min-width:30px;padding:1px 5px;border-radius:5px;background:#ffc94a;color:#14100a;font-size:13px;text-align:center;overflow-wrap:anywhere}
+.bus-board .b-clock{font-weight:400;font-size:13px;color:#d9c08a;font-variant-numeric:tabular-nums}
+.bus-board .board-item.timetable .b-status{color:#8ea2b3;font-weight:500;font-size:12px}
+.bus-board .board-item.timetable .b-name{color:#e3c47e}
+.map-selection .board .b-show{display:inline-block;margin:0 0 8px;padding:6px 12px;border-radius:7px;background:#14202c;color:#ffc94a;border:1px solid #3a4b5a;font-size:13px;font-weight:600;min-height:32px}
+.map-selection .board .b-show:hover,.map-selection .board .b-show:focus-visible{background:#1d2c3a;outline:none}
+@media(max-width:760px){.bus-board .board-cols,.bus-board .board-row{grid-template-columns:44px 1fr 42px 56px}}

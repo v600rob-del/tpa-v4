@@ -36,6 +36,7 @@
       <label class="layer-toggle" for="rail-toggle" data-component="rail"><span class="layer-icon rail">🚂</span><span class="layer-copy"><strong>Trains</strong><small id="rail-source-status">Not installed · connection ready</small></span><input type="checkbox" id="rail-toggle" checked/><span class="switch"></span></label>
       <label class="layer-toggle" for="stations-toggle" data-component="stations"><span class="layer-icon stations">🚉</span><span class="layer-copy"><strong>Stations</strong><small id="stations-source-status">Not installed · connection ready</small></span><input type="checkbox" id="stations-toggle" checked/><span class="switch"></span></label>
       <label class="layer-toggle" for="bus-toggle" data-component="bus"><span class="layer-icon buses">🚌</span><span class="layer-copy"><strong>Buses</strong><small id="bus-source-status">Not installed · connection ready</small></span><input type="checkbox" id="bus-toggle" checked/><span class="switch"></span></label>
+      <label class="layer-toggle" for="stops-toggle" data-component="stops"><span class="layer-icon stops">🚏</span><span class="layer-copy"><strong>Bus stops</strong><small id="stops-source-status">Not installed · connection ready</small></span><input type="checkbox" id="stops-toggle" checked/><span class="switch"></span></label>
       <label class="layer-toggle" for="road-toggle" data-component="road"><span class="layer-icon traffic">≋</span><span class="layer-copy"><strong>Road traffic</strong><small id="road-source-status">Not installed · connection ready</small></span><input type="checkbox" id="road-toggle" checked/><span class="switch"></span></label>
     </section>
     <section class="panel stats-panel" aria-label="Current map counts">
@@ -75,9 +76,10 @@
       <div class="glass-chip" id="bus-chip"><span class="chip-dot green"></span>BUS: <strong>EMPTY</strong></div>
       <div class="glass-chip" id="road-chip"><span class="chip-dot teal"></span>ROAD: <strong>EMPTY</strong></div>
       <div class="glass-chip" id="stations-chip"><span class="chip-dot purple"></span>STATIONS: <strong>EMPTY</strong></div>
+      <div class="glass-chip" id="stops-chip"><span class="chip-dot green"></span>STOPS: <strong>EMPTY</strong></div>
     </div>
     <div class="map-controls" aria-label="Map controls"><button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button></div>
-    <div class="map-bottom"><div class="preview-stamp">HQ 4.52.0 · TEST VERSION</div><button id="credit-toggle" class="credit-toggle" type="button" aria-expanded="false" aria-controls="map-credit" aria-label="Map and data credits">©</button><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
+    <div class="map-bottom"><div class="preview-stamp">HQ 4.53.0 · TEST VERSION</div><button id="credit-toggle" class="credit-toggle" type="button" aria-expanded="false" aria-controls="map-credit" aria-label="Map and data credits">©</button><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </main>
 </div>
