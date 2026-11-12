@@ -36,7 +36,7 @@ PLANE_BOX = ('a320','b737','b787','b777','a220','atr72','tutor','prefect','cessn
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.49.0'
+HQ_VERSION = '4.50.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -256,14 +256,23 @@ def area_query(query):
     return f'?west={w2:.4f}&south={s2:.4f}&east={e2:.4f}&north={n2:.4f}'
 
 
+LONG_SHARE_SECONDS = 8.0   # 4.50.0: the most an answer is shared for
+
+
 def keep_seconds(raw):
     """4.41.0 (owner 11 Nov 14:22: York roadworks took about 8 s to appear): an answer that says "ask again soon"
     (still loading, nextPollAfterMs under 4 s) is shared for half that time, not the full SHARE_SECONDS - otherwise the
-    page's quick second look got the same "still loading" answer back."""
+    page's quick second look got the same "still loading" answer back.
+    4.50.0 (health check 12 Nov, idea 2): the bus engine was the limit at 100 visitors while pages only ask for buses
+    every 10 s, so an answer is shared for up to 80% of the engine's own asking pace, at most 8 s (buses and trains 8 s;
+    planes, asked every 5 s, stay at 4 s)."""
     m = re.search(rb'"nextPollAfterMs":\s*(\d{1,6})', raw[:4096] if isinstance(raw, (bytes, bytearray)) else b'')
-    if m and int(m.group(1)) < SHARE_SECONDS * 1000:
-        return max(0.5, int(m.group(1)) / 2000)
-    return SHARE_SECONDS
+    if not m:
+        return SHARE_SECONDS
+    poll = int(m.group(1)) / 1000
+    if poll < SHARE_SECONDS:
+        return max(0.5, poll / 2)
+    return min(LONG_SHARE_SECONDS, max(SHARE_SECONDS, round(poll * 0.8, 1)))
 
 
 def shared_snapshot(comp, query, fetch):
