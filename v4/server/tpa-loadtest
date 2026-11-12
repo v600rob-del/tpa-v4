@@ -9,8 +9,8 @@ Run it from Oracle Cloud Shell (a separate machine, so the pretend crowd does no
 processor):
     python3 tpa-loadtest
 It asks for the test-site password itself (hidden as you type - never put it in a chat). Each pretend viewer
-behaves like the real page: it looks at a part of a UK city, asks for buses, trains and aircraft as often as
-those layers say (about every 15-30 s), fetches traffic pictures only with --traffic (TomTom's free allowance is 12,000 a month), and every 20-40 s pans or zooms. Read-only:
+behaves like the real page: it looks at a part of a UK city, asks for buses, trains, aircraft and traffic signs as
+often as those layers say (every 5-60 s), accepts gzip like a browser (4.14.0), fetches traffic pictures only with --traffic (TomTom's free allowance is 12,000 a month), and every 20-40 s pans or zooms. Read-only:
 nothing on the server is changed. Between steps it reads the server's memory and processor use over SSH
 (systemctl show - no admin rights needed).
 
@@ -25,6 +25,7 @@ import argparse
 import asyncio
 import base64
 import getpass
+import gzip
 import json
 import math
 import os
@@ -37,7 +38,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.13.4'
+VERSION = '4.14.0'
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
 TRAFFIC = False
@@ -45,7 +46,9 @@ DEFAULT_STEPS = [10, 25, 50, 100, 250, 500, 1000]
 CITIES = [('York', 53.959, -1.082), ('Hull', 53.744, -0.333), ('Leeds', 53.797, -1.547), ('Manchester', 53.479, -2.244),
           ('London', 51.507, -0.128), ('Birmingham', 52.480, -1.899), ('Nottingham', 52.954, -1.150), ('Newcastle', 54.973, -1.613),
           ('Bristol', 51.455, -2.588), ('Glasgow', 55.861, -4.251), ('Sheffield', 53.381, -1.470), ('Liverpool', 53.408, -2.991)]
-LAYERS = ('bus', 'rail', 'air')
+# 4.14.0 (health check 12 Nov 2026, launch rehearsal): the traffic signs too, as the page has asked since HQ 4.39.0
+# (signs come from TomTom incident tiles the server keeps for 5 minutes; the TomTom pictures stay behind --traffic)
+LAYERS = ('bus', 'rail', 'air', 'road')
 UNITS = ('tpa-hq', 'tpa-bus', 'tpa-rail', 'tpa-air', 'tpa-road', 'tpa-web')
 SERVER = 'ubuntu@143.47.230.28'   # replaced at start by the server the site name points to (4.13.4)
 
@@ -88,7 +91,7 @@ class Conn:
                 self.r, self.w = await asyncio.open_connection(self.host, self.port, ssl=ctx, server_hostname=self.host if self.tls else None)
             try:
                 head = (f'GET {path} HTTP/1.1\r\nHost: {self.hosthdr}\r\nAuthorization: Basic {self.auth}\r\n'
-                        'Accept: application/json, image/png\r\nAccept-Encoding: identity\r\nUser-Agent: tpa-loadtest/' + VERSION +
+                        'Accept: application/json, image/png\r\nAccept-Encoding: gzip\r\nUser-Agent: tpa-loadtest/' + VERSION +
                         '\r\nConnection: keep-alive\r\n\r\n')
                 self.w.write(head.encode()); await self.w.drain()
                 status_line = await self.r.readline()
@@ -112,6 +115,8 @@ class Conn:
                     body = bytes(body)
                 else:
                     body = await self.r.readexactly(int(headers.get('content-length', '0')))
+                if headers.get('content-encoding', '').lower() == 'gzip':   # 4.14.0: packed like a real browser gets it
+                    body = gzip.decompress(body)
                 if headers.get('connection', '').lower() == 'close':
                     await self.close()
                 return status, body
@@ -150,7 +155,7 @@ def tiles_for(lat, lon, z):
 async def viewer(i, base, stats, stop, rnd, layers):
     city = rnd.choice(CITIES)
     lat, lon = city[1] + rnd.uniform(-0.03, 0.03), city[2] + rnd.uniform(-0.05, 0.05)
-    z = rnd.choice([12, 13, 14, 15, 16])
+    z = rnd.choice([10, 11, 12, 13, 14, 15, 16])   # 4.14.0: some look zoomed out, where answers are biggest
     conn = Conn(*base)
     now = time.monotonic()
     due = {l: now + rnd.uniform(0, 3) for l in layers}       # a page opens: asks straight away
@@ -165,7 +170,7 @@ async def viewer(i, base, stats, stop, rnd, layers):
             if now >= pan_at:                                   # pans or zooms, then asks again for the new area
                 lat += rnd.uniform(-1, 1) * 900 * 360 / (256 * 2 ** z) * 0.4
                 lon += rnd.uniform(-1, 1) * 1440 * 360 / (256 * 2 ** z) * 0.4
-                z = max(11, min(17, z + rnd.choice([-1, 0, 0, 1])))
+                z = max(10, min(17, z + rnd.choice([-1, 0, 0, 1])))
                 pan_at = now + rnd.uniform(20, 40)
                 for l in layers:
                     due[l] = min(due[l], now + 0.3)
