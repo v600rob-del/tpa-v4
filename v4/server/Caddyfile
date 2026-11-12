@@ -15,7 +15,7 @@
 	basic_auth {
 		tpa {$TPA_SITE_HASH}
 	}
-	encode zstd gzip
+	encode gzip
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
@@ -30,7 +30,7 @@
 # self-contained "coming soon" page, open to everyone, until launch. Switch off = remove the DNS records for
 # tpalive.co.uk and www in Cloudflare. The test site above keeps its password.
 tpalive.co.uk {
-	encode zstd gzip
+	encode gzip
 	header {
 		Strict-Transport-Security "max-age=31536000"
 		X-Content-Type-Options "nosniff"
