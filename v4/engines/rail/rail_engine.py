@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.4.1'
+ENGINE_VERSION = '1.5.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -171,7 +171,7 @@ STATE = {'stations': None, 'referenceError': '', 'trains': {}, 'connected': Fals
          'smartSteps': 0, 'smartError': '', 'smartBuiltAt': 0.0, 'tdMessages': 0, 'tdUseful': 0, 'tdMatched': 0,
          'tdRetimed': 0, 'tdArrived': 0, 'tdPlatforms': 0, 'tdBlockedUntil': 0.0, 'tdThisSession': False,
          'platformsKnown': 0, 'platformsError': '', 'platformsBuiltAt': 0.0, 'drawnOnPlatform': 0,
-         'bookedDays': [], 'bookedTrains': 0, 'scheduleError': '', 'scheduleBuiltAt': 0.0, 'activations': 0, 'withClass': 0,
+         'bookedDays': [], 'bookedTrains': 0, 'scheduleError': '', 'scheduleBuiltAt': 0.0, 'activations': 0, 'placeMatched': 0, 'placeDropped': 0, 'withClass': 0,
          'tiplocs': {}, 'onTimetable': 0, 'routesToday': 0}
 BOOKED = {}      # 0.8.0: 'YYYY-MM-DD' -> {train uid: [power type, timing load]}
 ACTIVATED = {}   # 0.8.0: TRUST train id -> (train uid, day it set off)
@@ -395,6 +395,7 @@ TRAIN_FIELDS = {'lat': float, 'lon': float, 'station': str, 'when': float, 'even
                 'toc': str,   # 0.5.0: the operator's two-digit code
                 'stanox': str, 'nstanox': str, 'platform': str, 'platformAt': str, 'arriveBy': float,   # 0.6.0
                 'uid': str, 'day': str,   # 0.8.0: its timetable entry
+                'uidBy': str,             # 1.5.0: 'place' when the entry was worked out from where and when it reported
                 'arrivingAt': str}        # 0.9.0: the signals say it has arrived here; shown once the map gets it there   # 0.3.0: next place + minutes to it
 
 
@@ -457,6 +458,7 @@ def restore_memory() -> int:
             item[k] = item[k] if re.fullmatch(r'\d{5,6}', item[k]) else ''
         item['platform'] = item['platform'] if re.fullmatch(r'[0-9A-Z]{1,3}', item['platform']) else ''
         item['uid'] = item['uid'] if re.fullmatch(r'[A-Z0-9 ]{6}', item['uid']) else ''
+        item['uidBy'] = 'place' if item['uidBy'] == 'place' and item['uid'] else ''
         item['day'] = item['day'] if re.fullmatch(r'\d{4}-\d{2}-\d{2}', item['day']) else ''
         item['nname'] = clean(item['nname'], 60)
         if not (0 < item['run'] <= 120 and 49 < item['nlat'] < 61 and -9 < item['nlon'] < 3):
@@ -527,7 +529,7 @@ def handle_message(item: dict, now: float) -> None:
                         ACTIVATED.pop(k, None)
                 t = trains.get(train_id)
                 if t:
-                    t.update(uid=ACTIVATED[train_id][0], day=ACTIVATED[train_id][1])
+                    t.update(uid=ACTIVATED[train_id][0], day=ACTIVATED[train_id][1], uidBy='')   # 1.5.0: beats a guess
             return
         if kind != '0003':
             return
@@ -584,7 +586,9 @@ def handle_message(item: dict, now: float) -> None:
                             'toc': toc, 'stanox': stanox, 'nstanox': nstanox if nxt else '',
                             'platform': platform, 'platformAt': stanox if platform else '', 'arriveBy': 0.0,
                             'uid': (ACTIVATED.get(train_id) or (before.get('uid', ''), ''))[0],
-                            'day': (ACTIVATED.get(train_id) or ('', before.get('day', '')))[1]}
+                            'day': (ACTIVATED.get(train_id) or ('', before.get('day', '')))[1],
+                            'uidBy': '' if train_id in ACTIVATED else before.get('uidBy', '')}
+        find_by_place(trains[train_id])
         if match:
             BY_HEAD.setdefault(match.group(1), set()).add(train_id)
         STATE['dirty'] = True
@@ -1142,6 +1146,94 @@ def uk_midnight(day: str) -> float:
         return datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=ZoneInfo('Europe/London')).timestamp()
     except Exception:
         return datetime.strptime(day, '%Y-%m-%d').replace(tzinfo=timezone.utc).timestamp()
+
+
+# ---------------------------------------------------------------- 1.5.0: which timetable entry, from where and when
+# (owner 12 Nov 10:38: "a few greyed out trains on my travels"; launch list 5d part 2). A train whose start Network Rail
+# told us about before we were listening has no link to its timetable entry; the headcode + operator alone only links it
+# when that pair is used once that day, and many are used several times. Without its entry it cannot carry on along its
+# booked route when the reports run out, so it sat at its last place and faded. Now the place it reported at and the
+# time (moved by how late Network Rail says it is) pick the entry, but only a clear winner.
+PLACE_WINDOW = 10 * 60      # the booked time (plus lateness) must be within 10 minutes of the report
+PLACE_MARGIN = 5 * 60       # ... and the next best at least 5 minutes further off, or no guess
+HEAD_INDEX = {'src': None, 'by': {}}
+
+
+def entries_with_headcode(head: str) -> list:
+    """Today's timetable entries carrying this headcode, as (uid, operator)."""
+    src = (BOOKED.get(uk_today()) or {}).get('#headOf') or {}
+    if HEAD_INDEX['src'] is not src:
+        by = {}
+        for uid, key in src.items():
+            h, _, atoc = key.partition('|')
+            by.setdefault(h, []).append((uid, atoc))
+        HEAD_INDEX.update(src=src, by=by)
+    return HEAD_INDEX['by'].get(head) or []
+
+
+def match_by_place(t: dict) -> str:
+    head, stanox = t.get('headcode'), t.get('stanox')
+    if not head or not stanox:
+        return ''
+    found = entries_with_headcode(head)
+    atoc = ATOC_OF.get(t.get('toc', ''), '')
+    if atoc:                                          # an operator we know: only its own trains
+        found = [f for f in found if f[1] == atoc]
+    base = uk_midnight(uk_today())
+    late = t.get('minutes', 0) * 60 * (1 if t.get('variation') == 'LATE' else -1 if t.get('variation') == 'EARLY' else 0)
+    scored = []
+    for uid, _ in found[:60]:
+        gaps = [abs(t['when'] - (base + booked + late)) for tiploc, a, d in stops_of(uid)
+                if STATE['tiplocs'].get(tiploc) == stanox for booked in (a, d)]
+        if gaps:
+            scored.append((min(gaps), uid))
+    scored.sort()
+    if not scored or scored[0][0] > PLACE_WINDOW or (len(scored) > 1 and scored[1][0] - scored[0][0] < PLACE_MARGIN):
+        return ''
+    return scored[0][1]
+
+
+def find_by_place(t: dict) -> None:
+    """Call with LOCK held, after a report. Keeps a guess while the train stays on its route; never touches an activation."""
+    if t.get('uidBy') == 'place':
+        stops = stops_of(t['uid']) if t.get('uid') else []
+        if stops and index_of(stops, t.get('stanox', '')) is not None:
+            return
+        t.update(uid='', day='', uidBy='')            # reported somewhere its guessed entry never goes: think again
+        STATE['placeDropped'] += 1
+    if t.get('uid') or train_uid(t):
+        return
+    uid = match_by_place(t)
+    if uid:
+        t.update(uid=uid, day=uk_today(), uidBy='place')
+        STATE['placeMatched'] += 1
+
+
+def link_counts() -> dict:
+    """Call with LOCK held. Trains heard in the last 10 minutes: how many know their timetable entry, and how."""
+    now, out = time.time(), {'recentTrains': 0, 'recentLinked': 0, 'recentLinkedByPlace': 0, 'recentStale': 0}
+    for t in STATE['trains'].values():
+        age = now - t['when']
+        if age > DROP_AFTER or t.get('terminated'):
+            continue
+        if age > FRESH_FOR:
+            out['recentStale'] += train_quality(t, now) == 'stale'
+            continue
+        out['recentTrains'] += 1
+        if t.get('uid') or train_uid(t):
+            out['recentLinked'] += 1
+            out['recentLinkedByPlace'] += t.get('uidBy') == 'place'
+    return out
+
+
+def train_quality(t: dict, now: float) -> str:
+    """1.5.0: a train carrying on along its booked route between reports is an estimate (owner 30 Oct: estimates look
+    normal on the map); only one with nothing to go on fades as "stale"."""
+    if t.get('cancelled'):
+        return 'stale'
+    if now - t['when'] <= FRESH_FOR:
+        return 'observed'
+    return 'estimated' if t.get('vleg') else 'stale'
 
 
 def train_uid(t: dict) -> str:
@@ -1872,7 +1964,7 @@ def snapshot(view) -> dict:
         entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
                   'variant': kind_of(t)[0] or None,      # 0.5.0: which of TPA's train drawings to show
                   'position': dict(zip(('lon', 'lat'), drawn[0]), headingDeg=None),
-                  'quality': 'observed' if age <= FRESH_FOR and not t.get('cancelled') else 'stale', 'observedAt': iso(t['when'])}
+                  'quality': train_quality(t, now), 'observedAt': iso(t['when'])}
         if leg and now >= leg['start']:
             key = (round(leg['from'][0], 5), round(leg['from'][1], 5), round(leg['to'][0], 5), round(leg['to'][1], 5))
             with LOCK:
@@ -2004,7 +2096,10 @@ class Handler(BaseHTTPRequestHandler):
                                         'timetable': {'days': STATE['bookedDays'], 'trainsToday': STATE['bookedTrains'], 'error': STATE['scheduleError'],
                                                       'builtAt': iso(STATE['scheduleBuiltAt']) if STATE['scheduleBuiltAt'] else None,
                                                       'activationsSeen': STATE['activations'], 'routesToday': STATE['routesToday'],
-                                                      'followingTimetableNow': STATE['onTimetable'], 'placeCodesKnown': len(STATE['tiplocs'])},
+                                                      'followingTimetableNow': STATE['onTimetable'], 'placeCodesKnown': len(STATE['tiplocs']),
+                                                      # 1.5.0: linked by where + when (since start), dropped again, and right now
+                                                      'foundByPlace': STATE['placeMatched'], 'foundByPlaceDropped': STATE['placeDropped'],
+                                                      **link_counts()},
                                         'platformMap': {'known': STATE['platformsKnown'], 'error': STATE['platformsError'],
                                                         'builtAt': iso(STATE['platformsBuiltAt']) if STATE['platformsBuiltAt'] else None,
                                                         'drawnOnPlatformLastView': STATE['drawnOnPlatform']}})

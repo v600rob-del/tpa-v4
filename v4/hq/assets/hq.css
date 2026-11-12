@@ -60,7 +60,7 @@ body.vector-ready .vector-map{z-index:4}
 .review-pin .review-art svg{transition:transform .2s ease}
 .review-pin .review-route{position:absolute;top:30px;left:50%;transform:translateX(-50%);border:2px solid currentColor;background:#e5f9ff;color:#07182b;font-size:11px;line-height:16px;font-weight:900;padding:0 5px;border-radius:10px;white-space:nowrap;box-shadow:0 2px 5px #06132499}
 .review-pin.bus .review-route{background:#1f805b;color:#fff;border-color:#d9fff0}
-.review-pin.estimated{border-style:dashed}.review-pin.stale{opacity:.52}
+.review-pin.stale{opacity:.52}
 .review-pin.selected-pin,.review-pin:focus-visible{transform:translate(-50%,-50%) scale(1.17);outline:3px solid #ffdf35;outline-offset:4px;box-shadow:0 0 13px 5px #ffdf35,0 4px 10px #0008;z-index:20;opacity:1;color:#ffe76a}
 .review-pin.selected-pin::after{content:'';position:absolute;inset:-10px;border:2px solid #ffdf35;border-radius:15px;pointer-events:none}
 .review-no-live{color:#ffe397!important;font-weight:800}
@@ -103,6 +103,9 @@ body.vector-ready .vector-map{z-index:4}
 .sidebar-close{display:none}.sidebar-backdrop{display:none}
 @media(max-width:760px){.sidebar{width:min(337px,86vw)}.sidebar-close{display:block;position:sticky;top:0;flex:0 0 auto;margin:0;width:100%;z-index:3;min-height:46px;border-radius:0;border-width:0 0 1px;text-align:right;padding:12px 16px;background:#0b1726;box-shadow:0 4px 14px #0006}.sidebar.open+.sidebar-backdrop{display:block;position:fixed;inset:0;z-index:990;background:#02060c66}}
 
+/* 4.49.0 (owner 12 Nov, "greyed out" trains): rail 1.5.0 sends trains following their timetable between reports as
+   'estimated'; by the 4.1.4 rule they look normal (the older .vehicle-pin.estimated dashed outline is for MOCK fixtures). */
+.review-pin.estimated{border-style:solid;opacity:1}
 /* 4.1.4 (owner, 30 Oct): estimated positions LOOK normal on the map. Honesty stays in the
    words: the details box says "Estimated position · last reported hh:mm:ss" and the hover
    text / screen-reader label say "estimated position". Live in-between positions carry the
