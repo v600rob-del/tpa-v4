@@ -2,7 +2,7 @@
 # tpa-update - switch the server to another version of the public TPA code.
 #
 #   sudo tpa-update <commit>            everything (HQ, every layer and the server kit) - frozen layers are kept
-#   sudo tpa-update <layer> <commit>    ONE layer only: hq, bus, rail, air or road. Only that part restarts.
+#   sudo tpa-update <layer> <commit>    ONE layer only: hq, bus, rail, air, road or stations. Only that part restarts.
 #   sudo tpa-update freeze <layer>      a signed-off layer: no update changes it until it is unfrozen
 #   sudo tpa-update unfreeze <layer>
 #   sudo tpa-update show                which version each layer is running
@@ -13,17 +13,18 @@
 set -euo pipefail
 [[ $EUID -eq 0 ]] || exec sudo -n "$0" "$@"
 SRC=/opt/tpa/src
-LAYERS=(hq bus rail air road)
+LAYERS=(hq bus rail air road stations)
 FROZEN=/etc/tpa/frozen
 declare -A SCRIPT=([hq]=v4/hq/serve_hq.py [bus]=v4/engines/bus/bus_engine.py [rail]=v4/engines/rail/rail_engine.py
-                   [air]=v4/engines/air/air_engine.py [road]=v4/engines/road/road_engine.py)
-declare -A NAME=([hq]="HQ (the map page)" [bus]="Buses" [rail]="Trains" [air]="Aircraft" [road]="Road traffic")
+                   [air]=v4/engines/air/air_engine.py [road]=v4/engines/road/road_engine.py
+                   [stations]=v4/engines/stations/stations_engine.py)
+declare -A NAME=([hq]="HQ (the map page)" [bus]="Buses" [rail]="Trains" [air]="Aircraft" [road]="Road traffic" [stations]="Stations")
 
 usage() {
     cat >&2 <<'EOF'
 usage:
   sudo tpa-update <40-character commit>            update everything (frozen layers are kept)
-  sudo tpa-update <layer> <40-character commit>    update one layer: hq, bus, rail, air or road
+  sudo tpa-update <layer> <40-character commit>    update one layer: hq, bus, rail, air, road or stations
   sudo tpa-update freeze <layer>                   protect a signed-off layer from updates
   sudo tpa-update unfreeze <layer>
   sudo tpa-update show                             which version each layer is running
@@ -42,7 +43,7 @@ show() {
     local l c
     for l in "${LAYERS[@]}"; do
         c="$(layer_commit "$l")"
-        printf '  %-5s %s%s\n' "$l" "$c" "$(is_frozen "$l" && echo '   FROZEN (signed off)' || true)"
+        printf '  %-8s %s%s\n' "$l" "$c" "$(is_frozen "$l" && echo '   FROZEN (signed off)' || true)"
     done
 }
 fetch_release() {  # commit -> /opt/tpa/releases/<commit>, without touching anything that is running
@@ -70,7 +71,7 @@ case "${1:-show}" in
             grep -vx "$layer" "$FROZEN" > "$FROZEN.new" || true; mv "$FROZEN.new" "$FROZEN"
             echo "${NAME[$layer]}: unfrozen, updates can change it again."
         fi ;;
-    hq|bus|rail|air|road)
+    hq|bus|rail|air|road|stations)
         layer=$1; commit="${2:-}"
         [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || usage
         if [[ $layer == bus && -s /etc/tpa/remote.env ]]; then      # kit 4.14

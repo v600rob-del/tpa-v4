@@ -23,7 +23,7 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 CADDY_VERSION=2.11.7
 CADDY_SHA512=a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7
-ENGINES=(road bus air rail hq)
+ENGINES=(road bus air rail stations hq)   # kit 4.20 (owner 12 Nov): stations and their live boards
 say() { echo "[tpa-install] $*"; }
 caddy_expected_sha() {  # arch checksums-file -> that arch's sha512, only if the file holds our pinned amd64 one
     grep -qx "$CADDY_SHA512  caddy_${CADDY_VERSION}_linux_amd64.tar.gz" "$2" || return 1
@@ -199,9 +199,12 @@ unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
     "Environment=TPA_AIR_ALWAYS_ON=1" 150M air.env v4/engines/air/air_engine.py   # air.env: FlyItalyADSB key (11 Nov)
 unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_PORT 8784 \
     "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 450M rail.env v4/engines/rail/rail_engine.py   # 450M: owner 12 Nov 2026 (was 300M; the feed was held back at the ceiling)
+# kit 4.20 (owner 12 Nov 17:03, live departure boards): stations.env holds the Rail Data Marketplace board address and key
+unit stations "railway stations and live departure boards (National Rail)" TPA_STATIONS_ENGINE_PORT 8785 \
+    "Environment=TPA_STATIONS_DATA_DIR=/var/lib/tpa/stations" 100M stations.env v4/engines/stations/stations_engine.py
 unit hq "HQ map page" TPA_HQ_PORT 8778 \
     "Environment=TPA_HQ_PARKED=sea TPA_HQ_LAN_TEST=0 TPA_HQ_OPEN_BROWSER=0 TPA_HQ_BASEMAP=direct TPA_HQ_DEFAULT_VIEW=user TMPDIR=/var/lib/tpa/hq
-Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://${REMOTE_BUS:-${BUS_BIND:-127.0.0.1}}:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784" \
+Environment=TPA_HQ_ENGINES=road=http://127.0.0.1:8782,bus=http://${REMOTE_BUS:-${BUS_BIND:-127.0.0.1}}:8781,air=http://127.0.0.1:8783,rail=http://127.0.0.1:8784,stations=http://127.0.0.1:8785" \
     200M hq.env v4/hq/serve_hq.py
 
 cat > /etc/systemd/system/tpa-web.service <<'EOF'
@@ -239,12 +242,12 @@ RUN=("${ENGINES[@]}")
 if [[ $ROLE == bus ]]; then
     systemctl enable --quiet tpa-bus
 elif [[ -n "$REMOTE_BUS" ]]; then          # buses come from their own server: this one's bus engine is switched off
-    RUN=(road air rail hq)
+    RUN=(road air rail stations hq)
     systemctl disable --now --quiet tpa-bus 2>/dev/null || true
-    systemctl enable --quiet tpa-road tpa-air tpa-rail tpa-hq tpa-web
+    systemctl enable --quiet tpa-road tpa-air tpa-rail tpa-stations tpa-hq tpa-web
     say "buses come from their own server at $REMOTE_BUS (this server's bus engine is off)"
 else
-    systemctl enable --quiet tpa-road tpa-bus tpa-air tpa-rail tpa-hq tpa-web
+    systemctl enable --quiet tpa-road tpa-bus tpa-air tpa-rail tpa-stations tpa-hq tpa-web
 fi
 # restart every layer that moved; a frozen layer only if its service settings changed (it still runs its own code)
 restart=()

@@ -3,7 +3,7 @@
  * No supplier/feed logic, motion algorithms, Admin controls or external URLs.
  */
 (()=>{'use strict';
-const IDS=Object.freeze(['air','sea','rail','bus','road']);
+const IDS=Object.freeze(['air','sea','rail','bus','road','stations']);   // 4.52.0: stations and their live boards
 const SOCKETS=Object.freeze(Object.fromEntries(IDS.map(id=>[id,Object.freeze({id,contractVersion:'1.0',type:'data-only',path:'/api/v4/components/'+id})])));
 Object.defineProperty(window,'TPA_HQ_SOCKETS',{value:SOCKETS,writable:false,configurable:false});
 const $=id=>document.getElementById(id),root=$('map'),canvas=$('geo-canvas'),ctx=canvas.getContext('2d');
@@ -126,6 +126,8 @@ const ICON_PATHS=Object.freeze({
   air:['M16 1.8c1.25 0 2.05 1.7 2.05 3.7V12l10.95 6.6v3.1L18.05 18.6V25l3.6 2.7v2.5L16 28.7l-5.65 1.5v-2.5l3.6-2.7v-6.4L3 21.7v-3.1L13.95 12V5.5c0-2 .8-3.7 2.05-3.7Z',''],
   sea:['M3 19h26l-3.4 7.3a1.8 1.8 0 0 1-1.6 1.1H8a1.8 1.8 0 0 1-1.6-1.1ZM7 12.5h17V18H7ZM9 14.2h2.6v2H9ZM13 14.2h2.6v2H13ZM17 14.2h2.6v2H17ZM10 8.5h8V12h-8ZM20.2 5.5h3.6V12h-3.6Z','M20.2 7.2h3.6v1.6h-3.6Z'],
   rail:['M3 11h18.5c3.6 0 6.2 1.6 7.7 4.6l.9 1.8c.6 1.3-.3 2.6-1.7 2.6H3ZM5 13.2h3v3H5ZM10 13.2h3v3h-3ZM15 13.2h3v3h-3ZM21 13.2h2.6c1.5 0 2.8.8 3.5 2.2l.4.8H21ZM5.4 21.2a1.7 1.7 0 1 0 3.4 0ZM9.8 21.2a1.7 1.7 0 1 0 3.4 0ZM19.4 21.2a1.7 1.7 0 1 0 3.4 0ZM23.8 21.2a1.7 1.7 0 1 0 3.4 0ZM2 23.4h28v1.3H2Z','M3.6 17.4h24.6v1.1H3.6Z'],   // 4.15.1 (owner 21:56): side-on, so trains and buses differ at a glance
+  // 4.52.0: TPA's own station: a small station building (clock in the gable) beside the track. No National Rail sign.
+  stations:['M3 13 16 4l13 9v2H3ZM6 15.6h20V26H6ZM13.6 26v-5a2.4 2.4 0 0 1 4.8 0v5ZM8.6 18h3v3h-3ZM20.4 18h3v3h-3ZM2 27.6h28v2H2Z','M16 8.6a1.9 1.9 0 1 1 0 3.8 1.9 1.9 0 0 1 0-3.8Z'],
   bus:['M9 3h14a3 3 0 0 1 3 3v20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3ZM9 5h14v3H9ZM8 10h7.5v5H8ZM16.5 10H24v5h-7.5ZM8 17.5h16V23H8ZM9 24.4h3V26H9ZM20 24.4h3V26h-3ZM7 28h4v2.5H7ZM21 28h4v2.5h-4ZM3.6 10.5h2.4v4.5H3.6ZM26 10.5h2.4v4.5H26Z','M9.7 5.7h12.6v1.6H9.7Z']
 });
 // 4.16.0 (owner 5 Nov 00:16-00:18, "graphics work for the train types", "i like that!"): TPA's own drawing for each kind
@@ -191,7 +193,7 @@ function airArt(v){const a=Object.hasOwn(AIR_KINDS_ALIAS,v)?AIR_KINDS_ALIAS[v]:v
 function artPair(e){return (e.component==='rail'&&typeof e.variant==='string'&&Object.hasOwn(RAIL_KINDS,e.variant)&&RAIL_KINDS[e.variant])||
   (e.component==='air'&&typeof e.variant==='string'&&airArt(e.variant))||ICON_PATHS[e.component];}
 const DEMO_ICONS=Object.freeze({air:'AIR',sea:'SEA',rail:'TRAIN',bus:'BUS',road:'ROAD'});
-function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋'}[id]||'•';}
+function iconFor(id){return {air:'✈',sea:'⛴',rail:'🚂',bus:'🚌',road:'≋',stations:'🚉'}[id]||'•';}
 // 4.15.1 (owner 3 Nov 22:01: "get the whole site glittered", all in house): the side menu, the vehicle box, the welcome
 // tiles and the logo use TPA's own drawings too. The map picture is ours as well; traffic keeps its plain wave sign.
 const UI_PATHS=Object.freeze({map:['M3.5 7.2 11 4l10 3.2L28.5 4v21L21 28.2 11 25l-7.5 3.2ZM10.4 5.6v18.9h1.2V5.6ZM20.4 8.3v18.9h1.2V8.3Z','']});
@@ -269,7 +271,7 @@ function buildArtwork(e){
       img.decoding='async';img.draggable=false;img.addEventListener('error',()=>img.replaceWith(svg),{once:true});icon.append(img);}
     else icon.append(svg);
   }else{icon.textContent='≋';}
-  if(e.component==='rail'||e.component==='bus'){
+  if(e.component==='rail'||e.component==='bus'||e.component==='stations'){
     const badge=document.createElement('span');badge.className='review-route';
     // Only an alphanumeric suffix is used. Sample route/headcode is not a transport algorithm.
     badge.textContent=e.badge||String(e.id.split('-').pop()||'MOCK').replace(/[^a-zA-Z0-9]/g,'').slice(0,8)||'MOCK';
@@ -338,6 +340,8 @@ async function loadDetails(e,box){
         if(cur)list.scrollTop=Math.max(0,cur.offsetTop-24);});
     }
     rows.unshift(...trip);
+    // 4.52.0 (owner 12 Nov 17:03-17:25: live departure boards, departures and arrivals, calling points, station alerts)
+    if(d.board&&Array.isArray(d.board.tabs)&&d.board.tabs.length)rows.unshift(buildBoard(e,d.board));
     // 4.16.0 (owner 5 Nov 00:19: "a picture of the type in an information window when you click on each"): only TPA's own drawings
     const drawn=typeof d.picture==='string'&&Object.hasOwn(TRAIN_ALIAS,d.picture)?TRAIN_ALIAS[d.picture]:d.picture;
     const wide=e.component==='rail'&&typeof d.picture==='string'&&Object.hasOwn(TRAIN_CLASSES,drawn);
@@ -377,10 +381,70 @@ async function loadDetails(e,box){
         if(kind||unknown){const tag=document.createElement('span');tag.className='pic-tag';tag.textContent=kind?kind[1]:'Type not known';box4.append(tag);}
         if(unknown)box4.classList.add('unknown');
         img.addEventListener('error',()=>box4.remove(),{once:true});box4.append(img);rows.unshift(box4);}}
+    const keepScroll=[selected.scrollTop,box.querySelector('.board-list')?.scrollTop||0];
     box.replaceChildren(...rows);
+    selected.scrollTop=keepScroll[0];const bl=box.querySelector('.board-list');if(bl)bl.scrollTop=keepScroll[1];
   }catch(err){}
-  // the next stop changes as the vehicle moves: ask again while it stays selected
-  detailsTimer=setTimeout(()=>{if(state.selected&&state.selected.id===e.id&&box.isConnected)loadDetails(e,box);},20000);
+  // the next stop changes as the vehicle moves: ask again while it stays selected (a station's board: every 30 s)
+  detailsTimer=setTimeout(()=>{if(state.selected&&state.selected.id===e.id&&box.isConnected)loadDetails(e,box);},e.component==='stations'?30000:20000);
+}
+// 4.52.0: a station's live board. Tabs (Departures | Arrivals), the station's alerts, then one line per train: time,
+// where to (or from), platform, on time / expected / cancelled. Tap a train for its calling points and any reason given.
+// What is open stays open when the board refreshes.
+const boardUI={id:null,tab:0,open:new Set(),alerts:false};
+function buildBoard(e,b){
+  if(boardUI.id!==e.id){boardUI.id=e.id;boardUI.tab=0;boardUI.open=new Set();boardUI.alerts=false;}
+  const tabsList=b.tabs.filter(t=>t&&typeof t.name==='string'&&Array.isArray(t.rows)).slice(0,3);
+  if(boardUI.tab>=tabsList.length)boardUI.tab=0;
+  const wrap=el('div','board');const redraw=()=>{const list=wrap.querySelector('.board-list'),top=list?list.scrollTop:0;
+    const fresh=buildBoard(e,b);wrap.replaceWith(fresh);const l2=fresh.querySelector('.board-list');if(l2)l2.scrollTop=top;};
+  const head=el('div','board-head'),tabs=el('div','board-tabs');tabs.setAttribute('role','tablist');tabs.setAttribute('aria-label','Station board');
+  tabsList.forEach((t,i)=>{const n=t.rows.length,btn=el('button','board-tab',t.name.slice(0,20)+(n?' ('+n+')':''));btn.type='button';btn.setAttribute('role','tab');
+    btn.setAttribute('aria-selected',String(i===boardUI.tab));btn.onclick=ev=>{ev.stopPropagation();if(boardUI.tab!==i){boardUI.tab=i;redraw();}};tabs.append(btn);});
+  head.append(tabs);
+  if(typeof b.updated==='string'&&/^\d\d:\d\d$/.test(b.updated))head.append(el('span','board-updated','Updated '+b.updated));
+  wrap.append(head);
+  const alerts=(Array.isArray(b.alerts)?b.alerts:[]).filter(a=>typeof a==='string'&&a).slice(0,5);
+  if(alerts.length){const box=el('div','board-alerts'+(boardUI.alerts?' open':''));
+    for(const a of alerts){const p=el('p','board-alert');const i=el('span','board-alert-mark','!');i.setAttribute('aria-hidden','true');p.append(i,a.slice(0,400));box.append(p);}
+    const long=alerts.length>1||alerts[0].length>110;
+    if(long){const t=el('button','board-alert-more',boardUI.alerts?'Show less':'Read all '+(alerts.length>1?alerts.length+' messages':'of this message'));t.type='button';
+      t.onclick=ev=>{ev.stopPropagation();boardUI.alerts=!boardUI.alerts;redraw();};box.append(t);}
+    else box.classList.add('open');
+    wrap.append(box);}
+  const tab=tabsList[boardUI.tab]||tabsList[0],arr=/arriv/i.test(tab.name);
+  if(!tab.rows.length){wrap.append(el('p','board-empty',typeof tab.empty==='string'&&tab.empty?tab.empty.slice(0,80):'Nothing due.'));return wrap;}
+  const cols=el('div','board-cols');cols.setAttribute('aria-hidden','true');
+  cols.append(el('span','',arr?'Due':'Time'),el('span','',arr?'From':'To'),el('span','','Plat'),el('span','',arr?'Expected':'Expected'));wrap.append(cols);
+  const list=el('ul','board-list');
+  for(const r of tab.rows.slice(0,20)){
+    if(!r||typeof r.time!=='string'||typeof r.place!=='string')continue;
+    const key=tab.name+'|'+r.time+'|'+r.place,open=boardUI.open.has(key);
+    const li=el('li','board-item '+(['ontime','late','cancelled'].includes(r.state)?r.state:'unknown')+(open?' open':''));
+    const btn=el('button','board-row');btn.type='button';btn.setAttribute('aria-expanded',String(open));
+    const place=el('span','b-place');place.append(el('span','b-name',tidyName(r.place.slice(0,80))));
+    const sub=[typeof r.via==='string'?r.via:'',typeof r.operator==='string'?r.operator:''].filter(Boolean).join(' · ');
+    if(sub)place.append(el('small','b-sub',sub.slice(0,90)));
+    btn.append(el('span','b-time',r.time.slice(0,5)),place,el('span','b-plat',typeof r.platform==='string'?r.platform.slice(0,4):''),el('span','b-status',typeof r.status==='string'?r.status.slice(0,20):''));
+    btn.setAttribute('aria-label',`${r.time} ${arr?'from':'to'} ${r.place}${r.platform?', platform '+r.platform:''}${r.status?', '+r.status:''}. ${open?'Hide':'Show'} ${arr?'previous':'calling'} stops`);
+    btn.onclick=ev=>{ev.stopPropagation();if(boardUI.open.has(key))boardUI.open.delete(key);else boardUI.open.add(key);redraw();};
+    li.append(btn);
+    if(open){const more=el('div','board-more');
+      if(typeof r.reason==='string'&&r.reason)more.append(el('p','b-reason',r.reason.slice(0,160)));
+      const calls=(Array.isArray(r.calls)?r.calls:[]).filter(c=>c&&typeof c.name==='string').slice(0,60);
+      if(calls.length){more.append(el('div','b-calls-head',arr?'Calling before here at':'Calling at'));
+        const ol=el('ol','b-calls');
+        for(const c of calls){const s=el('li','b-call'+(c.expected==='Cancelled'?' cancelled':''));
+          s.append(el('span','b-call-time',typeof c.time==='string'?c.time:''),el('span','b-call-name',tidyName(c.name.slice(0,60))));
+          const x=typeof c.expected==='string'?c.expected:'';
+          if(x&&x!=='On time'&&x!==c.time)s.append(el('span','b-call-exp',/^\d\d:\d\d$/.test(x)?(arr?'at ':'exp ')+x:x));
+          ol.append(s);}
+        more.append(ol);}
+      else if(!more.childNodes.length)more.append(el('p','b-reason','No stops listed for this train.'));
+      li.append(more);}
+    list.append(li);}
+  wrap.append(list);
+  return wrap;
 }
 // 4.17.1 (owner 5 Nov 11:42, train 1R62: title "departed Manchester Piccadilly" while the box said "Arrived at Manchester
 // Oxford Road"): an open box's title follows the vehicle's latest description, like the rest of the box.
@@ -405,7 +469,7 @@ function selectEntity(e){
   // 4.4.0 (owner 1 Nov 13:42): more about this vehicle from its own engine (start, end, next stop for a bus)
   const more=document.createElement('div');more.className='vehicle-details';
   // 4.10.0 (owner 1 Nov 17:49): "Follow me!" - also here, for phones and tablets (no right-click)
-  const fb=e.component==='road'?null:document.createElement('button');   // 4.39.0: roadworks and incidents stay put
+  const fb=e.component==='road'||e.component==='stations'?null:document.createElement('button');   // 4.39.0: roadworks and incidents stay put (4.52.0: and stations)
   if(fb){fb.type='button';fb.className='follow-button';fb.onclick=()=>{if(isFollowing(e))stopFollow();else startFollow(e);};}
   const rb=REPORT_ON?el('button','report-button','Report this'):null;
   if(rb){rb.type='button';rb.onclick=()=>copyReport(e);}
@@ -413,6 +477,7 @@ function selectEntity(e){
   const grab=document.createElement('button');grab.type='button';grab.className='sheet-grab';
   const setOpen=open=>{selected.classList.toggle('open',open);grab.setAttribute('aria-expanded',String(open));grab.setAttribute('aria-label',open?'Show less':'Show more');};
   grab.onclick=ev=>{ev.stopPropagation();setOpen(!selected.classList.contains('open'));};setOpen(false);
+  selected.classList.toggle('station-box',e.component==='stations');   // 4.52.0: a wider box for a departure board
   selected.replaceChildren(...[grab,h,info,more,fb,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
   if(isPhone())requestAnimationFrame(()=>keepAboveSheet(e));
   $('map-place').textContent=e.label.toUpperCase();paint();
@@ -582,6 +647,7 @@ function infoText(e,est){
   if(!state.live[e.component])return e.component.toUpperCase()+' · '+e.quality.toUpperCase()+' · STATIC MOCK POSITION';
   // 4.40.0 (owner 11 Nov 13:43): roadworks and incidents do not move - "Reported position" read oddly
   if(e.component==='road')return 'Checked at '+seen.slice(0,5)+' · live from TomTom';
+  if(e.component==='stations')return 'Railway station'+(e.badge?' · code '+e.badge:'');   // 4.52.0
   if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
   if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
@@ -1409,7 +1475,7 @@ async function discover(){
   if(discovering)return;discovering=true;
   try{
     const data=await requestBounded('/api/v4/manifest',32768,5000);
-    if(data.contractVersion!=='1.0'||!Array.isArray(data.components)||data.components.length>5)throw Error('manifest-contract');
+    if(data.contractVersion!=='1.0'||!Array.isArray(data.components)||data.components.length>6)throw Error('manifest-contract');
     // 4.39.0: the version label shows the real HQ version (it said 4.32.0 since then: written by hand in the page)
     {const v=typeof data.hq==='string'&&/^\d+\.\d+\.\d+/.exec(data.hq),st=document.querySelector('.preview-stamp');if(v&&st&&st.textContent!=='HQ '+v[0]+' · TEST VERSION')st.textContent='HQ '+v[0]+' · TEST VERSION';}
     const seen=new Set();
@@ -1448,7 +1514,27 @@ async function discover(){
     }
   }finally{discovering=false;paint();}
 }
-function search(query){let q=query.trim().toLowerCase(),out=$('target-list');out.replaceChildren();if(!q){const p=document.createElement('p');p.className='empty';p.textContent='Search a UK place. Vehicle targets will appear when independently connected.';out.append(p);return;}const places=POI.filter(([name])=>name.toLowerCase().includes(q)).slice(0,10).map(([name,lon,lat])=>({name,kind:'Place',action:()=>gotoPlace(lon,lat,11,name)}));const targets=listEntities().filter(e=>e.position&&(e.label.toLowerCase().includes(q)||e.id.toLowerCase().includes(q))).slice(0,10).map(e=>({name:e.label,kind:e.component.toUpperCase(),action:()=>{gotoPlace(e.position.lon,e.position.lat,13,e.label);selectEntity(e);}}));if(q==='uk'||'united kingdom'.includes(q))places.unshift({name:'United Kingdom overview',kind:'Region',action:fitUK});const items=[...places,...targets];if(!items.length){const p=document.createElement('p');p.className='empty';p.textContent='No matching place or connected target.';out.append(p);return;}for(const item of items){const b=document.createElement('button');b.type='button';b.className='search-result';const name=document.createElement('strong');name.textContent=item.name;const type=document.createElement('small');type.textContent=item.kind;b.append(name,type);b.onclick=()=>{item.action();$('search').value=item.name;};out.append(b);}}
+function search(query){let q=query.trim().toLowerCase(),out=$('target-list');out.replaceChildren();stationSearch(q);if(!q){const p=document.createElement('p');p.className='empty';p.textContent='Search a UK place. Vehicle targets will appear when independently connected.';out.append(p);return;}const places=POI.filter(([name])=>name.toLowerCase().includes(q)).slice(0,10).map(([name,lon,lat])=>({name,kind:'Place',action:()=>gotoPlace(lon,lat,11,name)}));const targets=listEntities().filter(e=>e.position&&(e.label.toLowerCase().includes(q)||e.id.toLowerCase().includes(q))).slice(0,10).map(e=>({name:e.label,kind:e.component.toUpperCase(),action:()=>{gotoPlace(e.position.lon,e.position.lat,13,e.label);selectEntity(e);}}));if(q==='uk'||'united kingdom'.includes(q))places.unshift({name:'United Kingdom overview',kind:'Region',action:fitUK});const items=[...places,...targets];if(!items.length){const p=document.createElement('p');p.className='empty';p.textContent='No matching place or connected target.';out.append(p);return;}for(const item of items){const b=document.createElement('button');b.type='button';b.className='search-result';const name=document.createElement('strong');name.textContent=item.name;const type=document.createElement('small');type.textContent=item.kind;b.append(name,type);b.onclick=()=>{item.action();$('search').value=item.name;};out.append(b);}}
+// 4.52.0 (owner 12 Nov 17:25: open a board by "search by name"): stations from the stations engine, by name or
+// three-letter code, at the top of the results. Choosing one goes there and opens its board.
+let stationAsk=0,stationTimer=0;
+function stationSearch(q){clearTimeout(stationTimer);const ask=++stationAsk;
+  if(q.length<2||!state.live.stations||state.parked.stations||!state.visible.stations)return;
+  stationTimer=setTimeout(async()=>{
+    try{const r=await fetch('/api/v4/components/stations/search?q='+encodeURIComponent(q.slice(0,60)));if(!r.ok)return;
+      const d=await r.json();if(ask!==stationAsk||!Array.isArray(d.results)||!d.results.length)return;
+      const out=$('target-list');out.querySelector('p.empty')?.remove();out.querySelectorAll('.station-result').forEach(n=>n.remove());
+      const first=out.firstChild;
+      for(const x of d.results.slice(0,8)){
+        if(!x||typeof x.id!=='string'||typeof x.label!=='string'||!Number.isFinite(x.lat)||!Number.isFinite(x.lon))continue;
+        const b=document.createElement('button');b.type='button';b.className='search-result station-result';
+        const name=document.createElement('strong');name.textContent=x.label.slice(0,80);
+        const type=document.createElement('small');type.textContent='Station'+(typeof x.badge==='string'?' · '+x.badge:'');b.append(name,type);
+        b.onclick=()=>{const e={component:'stations',id:x.id,label:x.label.slice(0,80),badge:typeof x.badge==='string'?x.badge:null,variant:'station',
+            quality:'observed',observedAt:new Date(serverNow()).toISOString(),position:{lon:x.lon,lat:x.lat,headingDeg:null}};
+          gotoPlace(x.lon,x.lat,15,x.label);$('search').value=x.label;selectEntity(e);};
+        out.insertBefore(b,first);}
+    }catch(_){}},250);}
 for(const id of IDS){$(id+'-toggle').addEventListener('change',()=>{state.visible[id]=$(id+'-toggle').checked;paint();});}
 function clock(){$('localclock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false});}clock();setInterval(clock,1000);
 $('home-button').onclick=home;$('zoom-in').onclick=()=>zoom(1);$('zoom-out').onclick=()=>zoom(-1);$('menu-button').onclick=()=>setMenu(!$('sidebar').classList.contains('open'));$('sidebar-close').onclick=()=>setMenu(false);$('sidebar-backdrop').onclick=()=>setMenu(false);$('search').addEventListener('input',e=>search(e.target.value));

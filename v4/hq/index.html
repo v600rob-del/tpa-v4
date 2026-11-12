@@ -34,6 +34,7 @@
       <div class="air-filter" role="group" aria-label="Which aircraft to show"><button type="button" data-air="all" aria-pressed="true">All</button><button type="button" data-air="normal" aria-pressed="false">Non-military</button><button type="button" data-air="military" aria-pressed="false">Military</button><button type="button" data-air="services" aria-pressed="false">Emergency</button></div>
       <label class="layer-toggle" for="sea-toggle" data-component="sea"><span class="layer-icon shipping">⛴</span><span class="layer-copy"><strong>Vessels</strong><small id="sea-source-status">Not installed · connection ready</small></span><input type="checkbox" id="sea-toggle" checked/><span class="switch"></span></label>
       <label class="layer-toggle" for="rail-toggle" data-component="rail"><span class="layer-icon rail">🚂</span><span class="layer-copy"><strong>Trains</strong><small id="rail-source-status">Not installed · connection ready</small></span><input type="checkbox" id="rail-toggle" checked/><span class="switch"></span></label>
+      <label class="layer-toggle" for="stations-toggle" data-component="stations"><span class="layer-icon stations">🚉</span><span class="layer-copy"><strong>Stations</strong><small id="stations-source-status">Not installed · connection ready</small></span><input type="checkbox" id="stations-toggle" checked/><span class="switch"></span></label>
       <label class="layer-toggle" for="bus-toggle" data-component="bus"><span class="layer-icon buses">🚌</span><span class="layer-copy"><strong>Buses</strong><small id="bus-source-status">Not installed · connection ready</small></span><input type="checkbox" id="bus-toggle" checked/><span class="switch"></span></label>
       <label class="layer-toggle" for="road-toggle" data-component="road"><span class="layer-icon traffic">≋</span><span class="layer-copy"><strong>Road traffic</strong><small id="road-source-status">Not installed · connection ready</small></span><input type="checkbox" id="road-toggle" checked/><span class="switch"></span></label>
     </section>
@@ -48,7 +49,7 @@
     </section>
     <section class="panel search-panel">
       <div class="section-title"><h2>FIND A TARGET</h2><span class="micro">ON MAP</span></div>
-      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Place, flight, ship, train, bus…" aria-label="Find a place or target" autocomplete="off"/></div>
+      <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Place, station, flight, train, bus…" aria-label="Find a place or target" autocomplete="off"/></div>
       <div class="target-list" id="target-list"><p class="empty">Search a UK place. Search fictional MOCK vehicle examples or UK places.</p></div>
     </section>
     <footer class="sidebar-footer"><span class="little-dot"></span> BEVERLEY · EAST YORKSHIRE <span class="separator">/</span> ICON ARTWORK REVIEW <span class="separator">/</span> MOCK ONLY</footer>
@@ -73,9 +74,10 @@
       <div class="glass-chip" id="rail-chip"><span class="chip-dot purple"></span>RAIL: <strong>EMPTY</strong></div>
       <div class="glass-chip" id="bus-chip"><span class="chip-dot green"></span>BUS: <strong>EMPTY</strong></div>
       <div class="glass-chip" id="road-chip"><span class="chip-dot teal"></span>ROAD: <strong>EMPTY</strong></div>
+      <div class="glass-chip" id="stations-chip"><span class="chip-dot purple"></span>STATIONS: <strong>EMPTY</strong></div>
     </div>
     <div class="map-controls" aria-label="Map controls"><button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button></div>
-    <div class="map-bottom"><div class="preview-stamp">HQ 4.51.0 · TEST VERSION</div><button id="credit-toggle" class="credit-toggle" type="button" aria-expanded="false" aria-controls="map-credit" aria-label="Map and data credits">©</button><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
+    <div class="map-bottom"><div class="preview-stamp">HQ 4.52.0 · TEST VERSION</div><button id="credit-toggle" class="credit-toggle" type="button" aria-expanded="false" aria-controls="map-credit" aria-label="Map and data credits">©</button><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </main>
 </div>

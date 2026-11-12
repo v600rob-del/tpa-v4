@@ -71,6 +71,13 @@
       "short": "FlyItalyADSB · ADSB.lol"
     },
     {
+      "layer": "Stations",
+      "text": "Live departure and arrival boards: Powered by National Rail Enquiries, through the Rail Data Marketplace. Station list and positions © David Wheatley, Trainline EU and their sources (Open Database Licence).",
+      "url": "https://www.nationalrail.co.uk/",
+      "status": "Live in test",
+      "short": "National Rail Enquiries"
+    },
+    {
       "layer": "Road traffic",
       "text": "Traffic flow © TomTom.",
       "url": "https://www.tomtom.com/",

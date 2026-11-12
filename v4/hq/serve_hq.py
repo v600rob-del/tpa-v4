@@ -31,12 +31,12 @@ import threading
 import time
 
 ROOT = Path(__file__).resolve().parent
-COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road')
+COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road', 'stations')   # 4.52.0: stations and their live boards
 PLANE_BOX = ('a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair','airliner','widebody','turboprop','bizjet','light','helicopter','cargo','miltransport','a330','a350','embraer','robinson','trainer','glider','milheli','police','ambulance','coastguard','a380','b747','b767','apache','wildcat','twinotter','global','falcon','texan','l159','emer','gnd','twr')   # 4.43.0: plane box pictures
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.51.0'
+HQ_VERSION = '4.52.0'
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -45,13 +45,13 @@ HQ_VERSION = '4.51.0'
 ENGINES = {}
 for _pair in os.environ.get('TPA_HQ_ENGINES', '').split(','):
     _name, _, _url = _pair.strip().partition('=')
-    if _name in ('air', 'sea', 'rail', 'bus', 'road') and re.fullmatch(r'http://(127\.0\.0\.1|10(\.\d{1,3}){3}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|192\.168(\.\d{1,3}){2}):\d{2,5}', _url.strip()):
+    if _name in COMPONENTS and re.fullmatch(r'http://(127\.0\.0\.1|10(\.\d{1,3}){3}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2}|192\.168(\.\d{1,3}){2}):\d{2,5}', _url.strip()):
         ENGINES[_name] = _url.strip()
 # 4.0.9: owner decision 30 Oct 2026. A component can be "parked" by server
 # setting (e.g. TPA_HQ_PARKED=sea). HQ code is unchanged per component: the
 # socket simply reports unavailable/coming soon and serves no data, even if a
 # fixture exists. Unknown names are ignored, never errors.
-PARKED = frozenset(x.strip() for x in os.environ.get('TPA_HQ_PARKED', '').split(',') if x.strip() in ('air', 'sea', 'rail', 'bus', 'road'))
+PARKED = frozenset(x.strip() for x in os.environ.get('TPA_HQ_PARKED', '').split(',') if x.strip() in COMPONENTS)
 # 4.0.12: server mode. HQ still listens on 127.0.0.1 only; a local web server
 # (Caddy) in front of it handles HTTPS and the test password. TPA_HQ_PUBLIC_ORIGIN
 # (exactly "https://host.name") lets HQ accept that one forwarded Host from the
@@ -176,6 +176,54 @@ def engine_get(comp, path, limit, timeout):
         if len(raw) > limit:
             raise ValueError('engine-oversized')
         return raw, res.headers.get('Content-Type', '')
+
+
+BOARD_STATES = ('ontime', 'late', 'cancelled', 'unknown')
+
+
+def clean_board(b):
+    """4.52.0: a station board from an engine, kept to plain text in a fixed shape (or None).
+    {updated, alerts:[text], tabs:[{name, empty, rows:[{time, place, via, platform, operator, status, state, reason,
+    calls:[{name, time, expected}]}]}]}"""
+    if not isinstance(b, dict) or not isinstance(b.get('tabs'), list):
+        return None
+    def t(v, n):
+        return re.sub(r'\s+', ' ', v).strip()[:n] if isinstance(v, str) else ''
+    def hm(v):
+        v = t(v, 5)
+        return v if re.fullmatch(r'[0-2]\d:[0-5]\d', v) else ''
+    tabs = []
+    for tab in b['tabs'][:3]:
+        if not isinstance(tab, dict) or not t(tab.get('name'), 20):
+            continue
+        rows = []
+        for r in (tab.get('rows') if isinstance(tab.get('rows'), list) else [])[:20]:
+            if not isinstance(r, dict) or not hm(r.get('time')) or not t(r.get('place'), 80):
+                continue
+            row = {'time': hm(r['time']), 'place': t(r['place'], 80),
+                   'state': r.get('state') if r.get('state') in BOARD_STATES else 'unknown'}
+            for k, n in (('via', 60), ('platform', 4), ('operator', 40), ('status', 20), ('reason', 160)):
+                if t(r.get(k), n):
+                    row[k] = t(r[k], n)
+            calls = []
+            for c in (r.get('calls') if isinstance(r.get('calls'), list) else [])[:60]:
+                if isinstance(c, dict) and t(c.get('name'), 60):
+                    item = {'name': t(c['name'], 60)}
+                    if hm(c.get('time')):
+                        item['time'] = hm(c['time'])
+                    if t(c.get('expected'), 20):
+                        item['expected'] = t(c['expected'], 20)
+                    calls.append(item)
+            if calls:
+                row['calls'] = calls
+            rows.append(row)
+        tabs.append({'name': t(tab['name'], 20), 'empty': t(tab.get('empty'), 80), 'rows': rows})
+    if not tabs:
+        return None
+    out = {'tabs': tabs, 'alerts': [t(a, 400) for a in (b.get('alerts') if isinstance(b.get('alerts'), list) else [])[:5] if t(a, 400)]}
+    if hm(b.get('updated')):
+        out['updated'] = hm(b['updated'])
+    return out
 
 
 def engine_manifest_entry(comp):
@@ -551,12 +599,34 @@ class HQHandler(SimpleHTTPRequestHandler):
             # 4.4.0 (owner 1 Nov 13:42: a clicked bus should show "the start and end destination, then which stop
             # is next"): more details about one vehicle, asked from its own engine only when it is clicked.
             # Generic: plain rows of label/value text; HQ knows nothing about buses.
+            # 4.52.0 (owner 12 Nov 17:25, "search by name"): an engine may answer searches (stations by name or code).
+            # Generic: up to 8 results of id, label, short code and position; HQ knows nothing about stations.
+            if len(parts)==6 and parts[:4]==['','api','v4','components'] and parts[4] in ENGINES and parts[4] not in PARKED and parts[5]=='search':
+                q=(parse_qs(split.query).get('q') or [''])[0]
+                if len(q)>60 or any(ord(c)<32 or ord(c)==127 for c in q):
+                    return self.json_reply(400,{'error':'bad search'})
+                try:
+                    raw,_=engine_get(parts[4],'/search?'+urlencode({'q':q}),65536,3)
+                    d=json.loads(raw)
+                    out=[]
+                    for r in (d.get('results') or [])[:8] if isinstance(d,dict) else []:
+                        if not isinstance(r,dict) or not isinstance(r.get('id'),str) or not isinstance(r.get('label'),str):continue
+                        if not re.fullmatch(r'[A-Za-z0-9:_.-]{1,128}',r['id']):continue
+                        lat,lon=r.get('lat'),r.get('lon')
+                        if not all(isinstance(v,(int,float)) and not isinstance(v,bool) for v in (lat,lon)) or not (49<=lat<=61.5 and -9<=lon<=2.5):continue
+                        item={'id':r['id'],'label':r['label'][:80],'lat':float(lat),'lon':float(lon)}
+                        if isinstance(r.get('badge'),str) and re.fullmatch(r'[A-Za-z0-9]{1,8}',r['badge']):item['badge']=r['badge']
+                        out.append(item)
+                    return self.reply(200,json.dumps({'component':parts[4],'results':out},separators=(',',':')).encode(),
+                                      'application/json; charset=utf-8','public, max-age=0, s-maxage=300' if PUBLIC_CACHE and not self.headers.get('Authorization') else 'no-store')
+                except Exception:
+                    return self.json_reply(503,{'component':parts[4],'results':[]})
             if len(parts)==6 and parts[:4]==['','api','v4','components'] and parts[4] in ENGINES and parts[4] not in PARKED and parts[5]=='details':
                 want=(parse_qs(split.query).get('id') or [''])[0]
                 if not want or len(want)>140 or any(ord(c)<32 or ord(c)==127 for c in want):
                     return self.json_reply(400,{'error':'bad id'})
                 try:
-                    raw,_=engine_get(parts[4],'/details?'+urlencode({'id':want}),32768,4)
+                    raw,_=engine_get(parts[4],'/details?'+urlencode({'id':want}),262144,10)   # 4.52.0: a station board is bigger and may wait for the board service
                     d=json.loads(raw)
                     # 4.33.0 (owner 10 Nov 21:24): up to 24 rows; a row marked 'more' goes behind "More details"
                     rows=[{'label':str(r.get('label',''))[:30],'value':str(r.get('value',''))[:120],**({'more':True} if r.get('more') is True else {})}
@@ -581,6 +651,8 @@ class HQHandler(SimpleHTTPRequestHandler):
                                 if isinstance(s.get(k),str) and re.fullmatch(r'[0-2]\d:[0-5]\d',s[k]):item[k]=s[k]
                             stops.append(item)
                         if len(stops)>=2:body['stops']=stops
+                    board=clean_board(d.get('board'))   # 4.52.0: a live station board (departures, arrivals, alerts)
+                    if board:body['board']=board
                     return self.json_reply(200,body)
                 except Exception:
                     return self.json_reply(503,{'component':parts[4],'id':want,'rows':[],'note':'Details not available right now.'})

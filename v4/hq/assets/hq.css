@@ -381,3 +381,53 @@ body.vector-ready .vector-map{z-index:4}
   .crumb{white-space:normal;max-width:calc(100% - 150px)}
   .crumb #map-place{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;white-space:normal;max-width:none;text-overflow:clip}
 }
+/* 4.52.0 (owner 12 Nov 17:03-17:25): railway stations and their live boards. Stations are TPA's own small building
+   icon with the station's three-letter code; the box shows a station-screen style board (amber on near-black). */
+.review-pin.stations{color:#f3ecff;border-color:#c89cff;background:#2a1d48;border-radius:9px}
+.marker-layer .review-pin.stations{width:calc(32px*var(--pin-s,1));height:calc(32px*var(--pin-s,1))}
+.marker-layer .review-pin.stations svg{width:calc(24px*var(--pin-s,1));height:calc(24px*var(--pin-s,1))}
+.review-pin.stations svg .acc{fill:#ffc94a}
+.review-pin.stations .review-route{background:#2a1d48;color:#fff;border-color:#c89cff}
+.marker-layer .review-pin.stations .review-route{top:calc(25px*var(--pin-s,1));font-size:calc(10px*var(--pin-s,1));line-height:calc(14px*var(--pin-s,1))}
+.layer-icon.stations{background:#2a1d48;color:#e6d6ff;border:1px solid #6d55a0}
+@media(min-width:761px){.map-selection.station-box:not(.kids-bubble){width:min(460px,calc(100% - 36px));max-width:min(460px,calc(100% - 36px))}}
+.board{display:flex;flex-direction:column;gap:6px;margin:2px 0 4px;background:#05080d;border:1px solid #2d3b48;border-radius:10px;padding:8px;font-family:'TPA Sign','TPA Sans',Inter,system-ui,sans-serif}
+.map-selection .board button{position:static;right:auto;top:auto;width:auto;height:auto;line-height:inherit;border-radius:0;font-size:inherit;color:inherit;background:transparent;border:0;padding:0;font-family:inherit;cursor:pointer;text-align:left}
+.board-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.board-tabs{display:flex;gap:4px}
+.map-selection .board .board-tab{padding:6px 11px;border-radius:7px;line-height:1.2;background:#14202c;color:#9fb3c4;font-size:13px;font-weight:600;letter-spacing:.02em;min-height:32px}
+.map-selection .board .board-tab[aria-selected="true"]{background:#ffc94a;color:#14100a}
+.board-updated{font-size:11px;color:#7f93a4}
+.board-alerts{display:flex;flex-direction:column;gap:4px;background:#2a1a08;border:1px solid #8a5a17;border-radius:8px;padding:6px 8px}
+.board-alert{margin:0;font-size:12px;line-height:1.35;color:#ffe2b0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.board-alerts:not(.open) .board-alert:nth-child(n+2){display:none}
+.board-alerts.open .board-alert{display:block;-webkit-line-clamp:unset}
+.board-alert-mark{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;margin-right:6px;border-radius:50%;background:#ffb02e;color:#1a1000;font-size:11px;font-weight:900;vertical-align:1px}
+.map-selection .board .board-alert-more{align-self:flex-start;font-size:12px;color:#ffc94a;text-decoration:underline;min-height:24px}
+.board-cols,.board-row{display:grid;grid-template-columns:44px 1fr 34px 76px;gap:6px;align-items:start}
+.board-cols{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#6f8394;padding:0 4px}
+.board-cols span:nth-child(3),.b-plat{text-align:center}.board-cols span:nth-child(4),.b-status{text-align:right}
+.board-list{list-style:none;margin:0;padding:0;max-height:min(46vh,420px);overflow-y:auto;overscroll-behavior:contain}
+.board-item{border-top:1px solid #18232e}.board-item:first-child{border-top:0}
+.map-selection .board .board-row{width:100%;border-radius:4px;padding:7px 4px;color:#ffc94a;font-size:15px;line-height:1.2;min-height:40px}
+.map-selection .board .board-row:hover,.map-selection .board .board-row:focus-visible{background:#101820;outline:none}
+.b-time{font-variant-numeric:tabular-nums;font-weight:600}
+.b-place{display:flex;flex-direction:column;min-width:0}.b-name{overflow-wrap:anywhere}
+.b-sub{font-size:11px;color:#a48a4f;margin-top:2px;font-family:'TPA Sans',Inter,system-ui,sans-serif}
+.b-plat{font-weight:600}
+.b-status{font-size:13px;font-weight:600}
+.board-item.ontime .b-status{color:#9be7a8}.board-item.late .b-status{color:#ffd27a}
+.board-item.cancelled .b-status{color:#ff7b6b}.board-item.cancelled .b-name,.board-item.cancelled .b-time{text-decoration:line-through;text-decoration-color:#ff7b6b88}
+.board-more{padding:0 6px 9px 54px;font-family:'TPA Sans',Inter,system-ui,sans-serif}
+.b-reason{margin:0 0 6px;font-size:12px;color:#ffd9a0;line-height:1.35}
+.b-calls-head{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:#7f93a4;margin-bottom:3px}
+.b-calls{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+.b-call{display:grid;grid-template-columns:40px 1fr auto;gap:6px;font-size:12px;color:#d9e6f0}
+.b-call-time{color:#9fb3c4;font-variant-numeric:tabular-nums}.b-call-exp{color:#ffd27a}.b-call.cancelled .b-call-exp{color:#ff7b6b}
+.board-empty{margin:4px;font-size:13px;color:#9fb3c4}
+@media(max-width:760px){
+  .board-list{max-height:none;overflow:visible}
+  .board-cols,.board-row{grid-template-columns:42px 1fr 30px 70px}
+  .map-selection .board .board-row{font-size:14px}
+  .board-more{padding-left:48px}
+}
