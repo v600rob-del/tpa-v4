@@ -1399,6 +1399,75 @@ async function requestBounded(url,maxBytes,timeoutMs){
     return JSON.parse(body);
   }finally{clearTimeout(timer);}
 }
+// ---- 4.56.0 Plan B: published bus tiles ("publish, don't answer"; owner 13 Nov 2026 19:15 "Now please") ----------
+// The bus engine writes /tiles/bus/meta.json, tiles s/<row>_<col>.json (street views) and b/<row>_<col>.json (city
+// views) every 10 s, and route lines routes/<build>/<line>.json once per timetable; Caddy hands them out (later
+// Cloudflare). This builds the same frame the engine used to send, so everything else on the page is unchanged.
+const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')!=='0',used:false,lines:new Map(),asking:new Map()};
+async function tileJSON(url,timeoutMs,missingOk){
+  const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
+  try{const r=await fetch(url,{signal:ctl.signal});
+    if(r.status===404&&missingOk)return null;
+    if(!r.ok)throw Error('tile '+r.status);
+    const body=await r.text();if(body.length>3000000)throw Error('oversize');return JSON.parse(body);}
+  finally{clearTimeout(timer);}
+}
+function busLine(build,sid){
+  const key=build+'/'+sid;
+  if(BUS_TILES.lines.has(key))return Promise.resolve(BUS_TILES.lines.get(key));
+  if(BUS_TILES.asking.has(key))return BUS_TILES.asking.get(key);
+  const safe=sid.replace(/[^A-Za-z0-9_.-]/g,'_').slice(0,120);
+  const p=tileJSON(`/tiles/bus/routes/${encodeURIComponent(build)}/${encodeURIComponent(safe)}.json`,5000,true).then(d=>{
+    let sh=null;try{if(d&&Array.isArray(d.c))sh=new window.TPA_BUS_REPLAY.Shape(d.c);}catch(_){sh=null;}
+    BUS_TILES.lines.set(key,sh);BUS_TILES.asking.delete(key);
+    if(BUS_TILES.lines.size>3000)BUS_TILES.lines.delete(BUS_TILES.lines.keys().next().value);   // oldest first
+    return sh;},()=>{BUS_TILES.asking.delete(key);return null;});
+  BUS_TILES.asking.set(key,p);return p;
+}
+async function busTileFrame(){
+  const R=window.TPA_BUS_REPLAY;if(!R)throw Error('no replay');
+  const slot=Math.floor(serverNow()/10000);
+  const meta=await tileJSON('/tiles/bus/meta.json?r='+slot,4000,false);
+  if(!meta||meta.v!==1||!validNum(meta.updatedAt)||serverNow()/1000-meta.updatedAt>60)throw Error('tiles old');
+  const iso=s=>new Date(s*1000).toISOString(),got=meta.fetchedAt||meta.updatedAt;
+  const frame={component:'bus',contractVersion:'1.0',health:['ready','stale','unavailable'].includes(meta.health)?meta.health:'stale',
+    observedAt:iso(got),receivedAt:iso(got),expiresAt:iso(got+90),nextPollAfterMs:10000,attribution:String(meta.attribution||'').slice(0,256),
+    groupStacks:true,entities:[]};
+  if(meta.notice)frame.notice=String(meta.notice).slice(0,120);
+  let w=-12.5,s=49,e=4.5,n=61.8;
+  if(map&&typeof map.getBounds==='function'){const b=map.getBounds();w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();}
+  if(n-s>meta.maxSpan){frame.notice='Zoom in to see buses';return frame;}
+  const small=n-s<=meta.smallBelowSpan,size=small?meta.small:meta.big,dir=small?'s':'b';
+  const r0=Math.floor(s/size[0]),r1=Math.floor(n/size[0]),c0=Math.floor(w/size[1]),c1=Math.floor(e/size[1]);
+  if((r1-r0+1)*(c1-c0+1)>80)throw Error('too many tiles');
+  const asks=[];for(let r=r0;r<=r1;r++)for(let c=c0;c<=c1;c++)asks.push(tileJSON(`/tiles/bus/${dir}/${r}_${c}.json?r=${slot}`,6000,true));
+  const items=new Map();for(const t of await Promise.all(asks))if(Array.isArray(t))for(const it of t)if(it&&typeof it.i==='string'&&!items.has(it.i))items.set(it.i,it);
+  const now=serverNow()/1000,delay=validNum(meta.delay)?meta.delay:90,recent=now-delay-120;
+  const inView=q=>q[1]>=w&&q[1]<=e&&q[2]>=s&&q[2]<=n;
+  const cy=(s+n)/2,cx=(w+e)/2,chosen=[];
+  for(const it of items.values()){const p=Array.isArray(it.p)?it.p:[];if(!p.length)continue;const last=p[p.length-1];
+    if(!(inView(last)||p.some(q=>q[0]>=recent&&inView(q))))continue;
+    chosen.push([(last[2]-cy)**2+(last[1]-cx)**2,it]);}
+  chosen.sort((a,b)=>a[0]-b[0]);
+  const max=Number.isInteger(meta.maxPerView)?meta.maxPerView:400;
+  if(chosen.length>max&&!frame.notice)frame.notice=`Showing nearest ${max} · zoom in for all`;
+  const pick=chosen.slice(0,max).map(x=>x[1]);
+  // route lines for the street view (each fetched once, then kept): wait a little for new ones, never long
+  const lines=new Map();
+  if(small&&meta.build){const want=[...new Set(pick.filter(it=>typeof it.s==='string'&&Array.isArray(it.r)).map(it=>it.s))];
+    await Promise.race([Promise.all(want.map(sid=>busLine(meta.build,sid).then(sh=>lines.set(sid,sh)))),new Promise(ok=>setTimeout(ok,2500))]);}
+  for(const it of pick){
+    let tr=null;const sh=small&&it.s?lines.get(it.s):null;
+    if(sh&&Array.isArray(it.r))tr=R.track(sh,it.r,now,delay,validNum(meta.keepLeft)?meta.keepLeft:0);
+    if(!tr)tr=R.straight(it.p,now,delay,it.j===1);
+    if(!tr)continue;
+    const r6=v=>Math.round(v*1e6)/1e6,pos=tr.position;
+    frame.entities.push({id:it.i,label:String(it.l||'Bus').slice(0,160),badge:it.b||null,
+      position:{lon:r6(pos[0]),lat:r6(pos[1]),headingDeg:null},quality:now-it.o>300?'stale':'observed',observedAt:iso(it.o),
+      motion:{mode:'timed',points:tr.points.map(q=>[r6(q[0]),r6(q[1])]),times:tr.times,delaySeconds:delay}});}
+  return frame;
+}
+window.TPA_BUS_TILES=()=>({on:BUS_TILES.on,used:BUS_TILES.used,lines:BUS_TILES.lines.size});
 function deselectComponent(id){
   if(state.selected?.component===id){state.selected=null;selected.classList.add('hidden');}
 }
@@ -1513,7 +1582,11 @@ async function getComponent(id){
   const seq=seqSent[id]=(seqSent[id]||0)+1,box=currentBox(0.2);lastFetch[id]=Date.now();
   try{
     const asked=performance.now();
-    const f=checkFrame(id,await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}`,1200000,6000));
+    // 4.56.0 (Plan B, owner 13 Nov 2026): buses come from ready-made tile files when the server publishes them
+    // (the page moves them itself); the old per-visitor answer stays as the way back (?tiles=0, or tiles missing/old).
+    let raw=null;
+    if(id==='bus'&&BUS_TILES.on){try{raw=await busTileFrame();BUS_TILES.used=true;}catch(_){raw=null;BUS_TILES.used=false;}}
+    const f=checkFrame(id,raw||await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}`,1200000,6000));
     {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length){speedMark(id+' shown');hasItems[id]=true;}}
     if(seq<(seqDone[id]||0))return;
     seqDone[id]=seq;

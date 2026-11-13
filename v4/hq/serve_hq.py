@@ -33,10 +33,11 @@ import time
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road', 'stations', 'stops', 'busstations')   # 4.52.0: stations and their live boards; 4.53.0: bus stops; 4.54.0: bus stations
 PLANE_BOX = ('a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair','airliner','widebody','turboprop','bizjet','light','helicopter','cargo','miltransport','a330','a350','embraer','robinson','trainer','glider','milheli','police','ambulance','coastguard','a380','b747','b767','apache','wildcat','twinotter','global','falcon','texan','l159','emer','gnd','twr')   # 4.43.0: plane box pictures
-PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp', '/assets/icons/busstation.webp', '/assets/icons/trainstation.webp', '/assets/icons/busstop.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
+PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js', '/assets/bus-replay.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp', '/assets/icons/busstation.webp', '/assets/icons/trainstation.webp', '/assets/icons/busstop.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.55.0'
+HQ_VERSION = '4.56.0'
+TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -589,6 +590,17 @@ class HQHandler(SimpleHTTPRequestHandler):
         origin=local_request_origin(self.headers.get('Host',''),self.server.server_port,bound_address)
         if not allowed_preview_client(self.client_address[0],bound_address) or origin is None:
             return self.send_error(403,'Development preview limited to home LAN')
+        # 4.56.0: on the server Caddy hands out /tiles/ itself (published bus tiles); this is only for builders' tests
+        if path.startswith('/tiles/') and TILES_DIR:
+            rel=path[len('/tiles/'):]
+            if not re.fullmatch(r'[A-Za-z0-9_./-]{1,200}',rel) or '..' in rel:return self.send_error(404)
+            f=Path(TILES_DIR)/rel
+            if not f.is_file():return self.send_error(404)
+            raw=f.read_bytes();self.send_response(200);self.send_header('Content-Type','application/json')
+            self.send_header('Content-Length',str(len(raw)));self.send_header('Cache-Control','public, max-age=10');self.end_headers()
+            try:self.wfile.write(raw)
+            except (BrokenPipeError,ConnectionResetError):pass
+            return
         if path=='/hq-map-status':
             return self.json_reply(200,{'version':HQ_VERSION,'renderer':'Leaflet 1.9.4 + MapLibre GL 5.24.0 + bridge 0.1.4',
                 'source':'OpenFreeMap','mode':'MOCK-icon-review-only','networkDisabled':DISABLE_MAP_NETWORK,

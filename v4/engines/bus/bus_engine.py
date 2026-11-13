@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.16.1'
+ENGINE_VERSION = '0.17.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -163,8 +163,8 @@ FLEET_STATUS: dict = {}
 REPLAY_SECONDS = max(0, int(os.environ.get('TPA_BUS_REPLAY_SECONDS', '90') or 0))
 TRIPS: dict = {}             # bus key -> (journey details, trip_id or None)
 FOLLOW: dict = {}            # bus key -> (trip_id, [(report time, metres along route)]) or (trip_id, None) = off route
-SHAPES = OrderedDict()       # trip_id -> replay.Shape or None (no shape in the timetable); newest last
-SHAPES_KEEP = max(1500, int(os.environ.get('TPA_BUS_SHAPES_KEEP', '6000') or 6000))   # 0.16.0: 1500 -> 6000 (whole country)
+SHAPES = OrderedDict()       # ('s', line id) or ('t', trip_id) -> replay.Shape or None; newest last (0.17.0)
+SHAPES_KEEP = max(1500, int(os.environ.get('TPA_BUS_SHAPES_KEEP', '20000') or 20000))   # 0.16.0: 1500 -> 6000; 0.17.0: 20000 lines (whole country)
 JOURNEY_WAKE = threading.Event()
 JOURNEY_LOCK = threading.RLock()   # TRIPS, FOLLOW and SHAPES (worker thread and page requests)
 JOURNEY_MAX = 900            # buses worked on per round, nearest what people are looking at first
@@ -1193,7 +1193,7 @@ PREPARE_OFF_FILE = DATA_DIR / 'prepare-test-off'    # tpa-compare pauses the dry
 PREPARE_MEMORY_STOP = 0.85             # stops itself if the engine reaches this share of its memory limit
 TILE_SMALL = (0.05, 0.08)             # degrees lat x lon (~5.5 x 5.3 km): street views, buses on their roads
 TILE_BIG = (0.4, 0.64)                # (~44 x 42 km): city and region views
-PREPARE_ON = os.environ.get('TPA_BUS_PREPARE_TEST', '1').strip() != '0'
+PREPARE_ON = os.environ.get('TPA_BUS_PREPARE_TEST', '0').strip() == '1'   # 0.17.0: off unless asked (Stage 0 done)
 PREPARE = {'state': 'starting' if PREPARE_ON else 'off', 'rounds': 0, 'recent': [], 'last': None, 'stopped': ''}
 # 0.16.1 (first run 13 Nov 16:26: 230 s per round, every bus drawn again each round because the visitors' drawings
 # last only DRAWN_SECONDS 20 s and a round took 257 s): a published tile keeps a bus's drawing until its next report, so
@@ -1355,6 +1355,231 @@ def prepare_worker() -> None:
         time.sleep(rest)
 
 
+# ---------------------------------------------------------------- Plan B: published bus tiles (0.17.0)
+# Owner 13 Nov 2026 (publish plan approved 16:10; Stage 0 17:25 = drawing every bus on the server is too big -> Plan B;
+# 19:15 "Now please"): every PUBLISH_EVERY seconds the engine writes ready-made files of RAW bus reports into map tiles
+# (TILE_SMALL for street views, TILE_BIG for city views); Caddy hands them straight to visitors (and later Cloudflare
+# shares them), so the server's work no longer grows with the number of people watching. The page does the smooth
+# movement itself, with the same arithmetic as replay.track (hq/assets/bus-replay.js), along route lines published once
+# per timetable (routes/<build>/<line id>.json). A bus's item only changes when it reports again, so a tile whose buses
+# have not reported is not written again.
+# Owner 16:54: buses sending NO journey details (no origin stop or departure time - often depot runs) are left out;
+# buses not matched to a timetable stay, shown where they last reported (on the road), stepping to each new report -
+# no road-by-road paths (that was 70% of the engine's work).
+TILES_DIR = (os.environ.get('TPA_BUS_TILES_DIR') or '').strip()
+PUBLISH_EVERY = 10.0
+PUBLISH_KEEP = 6                      # reports per bus in a tile (the page replays REPLAY_SECONDS behind the newest)
+PUBLISH = {'state': 'off' if not TILES_DIR else 'starting', 'rounds': 0, 'last': None, 'recent': [], 'error': ''}
+ITEM_MEMO: dict = {}                  # bus key -> (signature, small json, big json)
+PLACE_MEMO: dict = {}                 # (bus key, report time) -> (lon, lat) on the road (unmatched buses)
+TILE_LAST: dict = {}                  # (size, row, col) -> hash of the text last written
+ROUTES_WRITTEN: set = set()           # (build, line id) already written
+PUB_TRIED: dict = {}                  # bus key -> (report time, journey) last worked out
+
+
+def _tile_write(path: Path, text: str) -> int:
+    """Write path and path.gz in full, then swap them in (a visitor never gets half a file). Bytes packed."""
+    raw = text.encode('utf-8')
+    packed = gzip.compress(raw, 6, mtime=0)
+    for target, data in ((path, raw), (path.with_name(path.name + '.gz'), packed)):
+        tmp = target.with_name('.' + target.name + '.tmp')
+        with open(tmp, 'wb') as fh:
+            fh.write(data)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, target)
+    return len(packed)
+
+
+def _tile_remove(path: Path) -> None:
+    for target in (path, path.with_name(path.name + '.gz')):
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _r1(x):
+    return round(x, 1)
+
+
+def bus_item(v, hist, now):
+    """(small json, big json) for one bus, or None (not shown). Kept until the bus reports again."""
+    key = v['key']
+    if not (v.get('origin') and v.get('dep')):
+        return None                                   # owner 16:54: no journey details -> not on the map
+    known = TRIPS.get(key)
+    f = FOLLOW.get(key)
+    fresh = (known is not None and known[0] == journey_sig(v) and f and f[1] and known[1] == f[0]
+             and f[1][-1][0] >= v['recorded'])
+    if not fresh and TIMETABLE['tt'] is not None and REPLAY_SECONDS and PUB_TRIED.get(key) != (v['recorded'], journey_sig(v)):
+        follow_bus(v)                                 # matching (once per journey) + placing the new report on the route
+        PUB_TRIED[key] = (v['recorded'], journey_sig(v))   # off its route (a diversion): not tried again until it reports
+        known, f = TRIPS.get(key), FOLLOW.get(key)
+    tid = known[1] if known and known[0] == journey_sig(v) else None
+    placed = f[1] if f and tid and f[0] == tid and f[1] else None
+    sid = shape_id_for(tid) if placed else ''
+    sh = shape_for(tid) if placed else None
+    sig = (v['recorded'], tid, placed[-1] if placed else None, v['route'], v['destination'])
+    got = ITEM_MEMO.get(key)
+    if got and got[0] == sig:
+        return got[1], got[2]
+    route = v['route'] or 'Bus'
+    label = ((f'Bus {route}' if v['route'] else 'Bus') + (f' to {v["destination"]}' if v['destination'] else ''))[:160]
+    base = {'i': ('bus:' + key)[:128], 'l': label, 'o': int(v['recorded'])}
+    badge = re.sub(r'[^A-Za-z0-9]', '', v['route'])[:8]
+    if badge:
+        base['b'] = badge
+    if placed and sh is not None and sid:
+        pts = placed[-PUBLISH_KEEP:]
+        ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (sh.point_at(m),)]
+        small = dict(base, s=sid, r=[[int(t), _r1(m)] for t, m in pts], p=ps)
+        big = dict(base, p=ps)
+    else:
+        # not matched: where it reported, put on the road (left-hand side), stepping from report to report
+        out = []
+        for t, la, lo in [h for h in hist if h[0] <= v['recorded']][-PUBLISH_KEEP:] or [(v['recorded'], v['lat'], v['lon'])]:
+            p = PLACE_MEMO.get((key, t))
+            if p is None:
+                p = place({'lon': lo, 'lat': la, 'bearing': None}) if ROADS['map'] is not None else None
+                p = PLACE_MEMO[(key, t)] = tuple(p) if p else (lo, la)
+            out.append([int(t), round(p[0], 6), round(p[1], 6)])
+        small = dict(base, p=out, j=1)
+        big = dict(base, p=out, j=1)
+    small_j = json.dumps(small, separators=(',', ':'))
+    big_j = json.dumps(big, separators=(',', ':'))
+    ITEM_MEMO[key] = (sig, small_j, big_j)
+    return small_j, big_j
+
+
+def publish_round() -> dict:
+    t_cpu, t_wall = time.thread_time(), time.monotonic()
+    now = time.time()
+    root = Path(TILES_DIR) / 'bus'
+    with LOCK:
+        vehicles = STATE['vehicles']
+        fetched = STATE['fetchedAt']
+        h, notice = health(now)
+        hist_of = {v['key']: list(HISTORY.get(v['key']) or ())[-12:] for v in vehicles}
+    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
+    small: dict = {}
+    big: dict = {}
+    shown = hidden = matched = 0
+    lines = {}
+    for i, v in enumerate(vehicles):
+        if i % 500 == 0:
+            while FETCHING.is_set():                  # the download comes first, as everywhere else
+                time.sleep(0.2)
+        age = now - v['recorded']
+        if age > SHOW_FOR:
+            continue
+        hist = hist_of.get(v['key']) or []
+        with JOURNEY_LOCK:                            # held per bus, so visitors' answers never wait long
+            got = bus_item(v, hist, now)
+            known = TRIPS.get(v['key'])
+        if got is None:
+            hidden += 1
+            continue
+        shown += 1
+        if known and known[1] and '"s":' in got[0]:
+            matched += 1
+            sid = shape_id_for(known[1])
+            if sid:
+                lines[sid] = known[1]
+        th = hist if REPLAY_SECONDS and age <= STALE_AFTER else ()
+        for k in _tiles_for(v, th, recent, TILE_SMALL):
+            small.setdefault(k, []).append(got[0])
+        for k in _tiles_for(v, th, recent, TILE_BIG):
+            big.setdefault(k, []).append(got[1])
+    live = {v['key'] for v in vehicles}
+    for memo in (ITEM_MEMO, PUB_TRIED):
+        for k in [k for k in memo if k not in live]:
+            del memo[k]
+    for k in [k for k in PLACE_MEMO if k[0] not in live or k[1] < now - DROP_AFTER]:
+        del PLACE_MEMO[k]
+    written = packed_bytes = 0
+    largest = 0
+    for name, tiles, size in (('s', small, TILE_SMALL), ('b', big, TILE_BIG)):
+        folder = root / name
+        folder.mkdir(parents=True, exist_ok=True)
+        for (r, c), parts in tiles.items():
+            text = '[' + ','.join(parts) + ']'
+            digest = hash(text)
+            if TILE_LAST.get((name, r, c)) == digest:
+                continue
+            n = _tile_write(folder / f'{r}_{c}.json', text)
+            TILE_LAST[(name, r, c)] = digest
+            written += 1
+            packed_bytes += n
+            largest = max(largest, n)
+        for gone in [k for k in TILE_LAST if k[0] == name and (k[1], k[2]) not in tiles]:
+            _tile_remove(folder / f'{gone[1]}_{gone[2]}.json')
+            del TILE_LAST[gone]
+    build = ''
+    tt = TIMETABLE['tt']
+    if tt is not None:
+        build = str(int((getattr(tt, 'meta', None) or {}).get('builtAt', 0) or 0))
+    new_lines = 0
+    if build:
+        rdir = root / 'routes' / build
+        for sid, tid in lines.items():
+            if (build, sid) in ROUTES_WRITTEN:
+                continue
+            with JOURNEY_LOCK:
+                sh = shape_for(tid)
+            if sh is None:
+                continue
+            rdir.mkdir(parents=True, exist_ok=True)
+            fname = re.sub(r'[^A-Za-z0-9_.-]', '_', sid)[:120] + '.json'
+            _tile_write(rdir / fname, json.dumps({'c': [[round(a, 6), round(b, 6)] for a, b in zip(sh.lon, sh.lat)]},
+                                                 separators=(',', ':')))
+            ROUTES_WRITTEN.add((build, sid))
+            new_lines += 1
+    meta = {'v': 1, 'updatedAt': round(now, 1), 'fetchedAt': round(fetched or 0, 1), 'health': h, 'notice': notice or '',
+            'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else '')
+            + (' · bus routes: BODS timetables, Department for Transport (OGL)' if REPLAY_SECONDS and tt is not None else ''),
+            'build': build, 'small': list(TILE_SMALL), 'big': list(TILE_BIG), 'delay': REPLAY_SECONDS, 'keepLeft': KEEP_LEFT_M,
+            'smallBelowSpan': PUBLISH_SMALL_SPAN, 'maxSpan': MAX_VIEW_SPAN, 'maxPerView': MAX_PER_VIEW, 'every': PUBLISH_EVERY}
+    _tile_write(root / 'meta.json', json.dumps(meta, separators=(',', ':')))
+    return {'at': iso(now), 'cpuSeconds': round(time.thread_time() - t_cpu, 2), 'wallSeconds': round(time.monotonic() - t_wall, 2),
+            'buses': shown, 'hiddenNoDetails': hidden, 'matched': matched, 'tilesSmall': len(small), 'tilesBig': len(big),
+            'tilesWritten': written, 'packedKbWritten': round(packed_bytes / 1024), 'largestKb': round(largest / 1024, 1),
+            'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN)}
+
+
+PUBLISH_SMALL_SPAN = 0.15             # views up to this tall (degrees of latitude) use the small tiles
+
+
+def publish_summary() -> dict:
+    out = {k: PUBLISH[k] for k in ('state', 'rounds', 'error')}
+    out['dir'] = TILES_DIR
+    out['last'] = PUBLISH['last']
+    rs = PUBLISH['recent']
+    if rs:
+        out['cpuPer10s'] = round(statistics.fmean(r['cpuSeconds'] / max(PUBLISH_EVERY, r['wallSeconds']) * PUBLISH_EVERY
+                                                  for r in rs), 2)
+    return out
+
+
+def publish_worker() -> None:
+    while True:
+        rest = PUBLISH_EVERY
+        if not STATE['fetchedAt'] or (TIMETABLE_MODE == 'download' and TIMETABLE['tt'] is None):
+            PUBLISH['state'] = 'waiting for buses and timetable'
+        else:
+            PUBLISH['state'] = 'running'
+            t0 = time.monotonic()
+            try:
+                r = publish_round()
+                PUBLISH['rounds'] += 1
+                PUBLISH['last'] = r
+                PUBLISH['recent'] = (PUBLISH['recent'] + [r])[-30:]
+                PUBLISH['error'] = ''
+            except Exception as exc:     # a bad round must never take the bus layer down; try again next round
+                PUBLISH['error'] = (type(exc).__name__ + ': ' + str(exc))[:160]
+            rest = max(0.5, PUBLISH_EVERY - (time.monotonic() - t0))
+        time.sleep(rest)
+
+
 def best_road_file():
     """OpenStreetMap roads when chosen and built; otherwise the Ordnance Survey map (backup)."""
     osm, os_ = DATA_DIR / 'roads-osm.sqlite', DATA_DIR / 'roads.sqlite'
@@ -1467,6 +1692,8 @@ def open_timetable() -> bool:
     with LOCK:
         TIMETABLE['tt'] = new
         GROUP_MEMO.clear()          # 0.10.0: company names may have changed with the new timetable
+        SHAPE_OF_TRIP.clear()       # 0.17.0: line ids belong to one timetable
+        SHAPES.clear()
         STATE['timetable'] = 'ready'
         STATE['timetableDetail'] = (f"{c.get('tripsWithStops', 0)} journeys, {c.get('stopsNaptan', 0) + c.get('stopsOnlyInTimetable', 0)} stops, "
                                     f"{c.get('shapes', 0)} route shapes, built {iso(new.meta.get('builtAt', 0))}")
@@ -1960,17 +2187,39 @@ def match_args(v: dict) -> tuple:
     return (v['origin'], v['dep'], v.get('route', ''), v.get('dest', ''), v['key'].split(':', 1)[0], v.get('jref', ''))
 
 
-def shape_for(trip_id):
-    if trip_id in SHAPES:
-        SHAPES.move_to_end(trip_id)
-        return SHAPES[trip_id]
+SHAPE_OF_TRIP: dict = {}      # 0.17.0: journey -> its route line's own id (many journeys share one line)
+
+
+def shape_id_for(trip_id) -> str:
+    """The route line's own id for a journey, '' if none (remembered; cleared with a new timetable)."""
+    if trip_id in SHAPE_OF_TRIP:
+        return SHAPE_OF_TRIP[trip_id]
     tt = TIMETABLE['tt']
     try:
-        pts = tt.shape_of(trip_id) if tt else []
+        sid = tt.shape_id_of(trip_id) if tt is not None and hasattr(tt, 'shape_id_of') else ''
+    except Exception:          # one odd journey must never break the layer
+        sid = ''
+    if len(SHAPE_OF_TRIP) > 300000:
+        SHAPE_OF_TRIP.clear()
+    SHAPE_OF_TRIP[trip_id] = sid
+    return sid
+
+
+def shape_for(trip_id):
+    """0.17.0: route lines are kept by their own id, not per journey - the whole country's buses use about 8,000
+    lines but 20,000 journeys, so the old per-journey cache kept loading the same lines again."""
+    sid = shape_id_for(trip_id)
+    key = ('s', sid) if sid else ('t', trip_id)
+    if key in SHAPES:
+        SHAPES.move_to_end(key)
+        return SHAPES[key]
+    tt = TIMETABLE['tt']
+    try:
+        pts = (tt.shape_by_id(sid) if sid else tt.shape_of(trip_id)) if tt else []
         sh = replay.Shape(pts) if len(pts) >= 2 else None
     except Exception:          # one odd journey must never break the layer
         sh = None
-    SHAPES[trip_id] = sh
+    SHAPES[key] = sh
     while len(SHAPES) > SHAPES_KEEP:
         SHAPES.popitem(last=False)
     return sh
@@ -2388,7 +2637,7 @@ def details(entity_id: str) -> dict:
     with JOURNEY_LOCK:
         trip = (TRIPS.get(key) or (None, None))[1]
         f = FOLLOW.get(key)
-        sh = SHAPES.get(trip) if trip else None
+        sh = shape_for(trip) if trip else None
     if not trip or TIMETABLE['tt'] is None:
         # 0.12.4 (owner 18:07: "i cant find many ... with ... operators information"): the company, even unmatched
         who = company_label(key.split(':', 1)[0])
@@ -2716,6 +2965,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'sharing': dict(SHARE_STATS, busesKept=len(ENTITY_MEMO)),   # 0.15.1
                                         'cpuSeconds': meter_summary(),
                                         'prepareTest': prepare_summary(),          # 0.16.0: Stage 0 dry run
+                                        'publish': publish_summary(),              # 0.17.0: Plan B tiles
                                         'routeLinesKept': len(SHAPES),
                                         'lastView': STATE.get('lastView')})
         if split.path == '/details':
@@ -2784,6 +3034,7 @@ build_entity = _metered('drawing', build_entity)              # 0.15.1: drawing 
 _replay_for = _metered('routes', _replay_for)
 road_replay_for = _metered('road routes', road_replay_for)
 _follow_bus = _metered('matching', _follow_bus)
+publish_round = _metered('publishing', publish_round)   # 0.17.0
 fetch_once = _metered('download', fetch_once)
 journey_candidates = _metered('choosing journeys', journey_candidates)   # 0.15.2
 road_legs = _metered('road legs', road_legs)                  # 0.15.2: was not in any meter
@@ -2836,6 +3087,8 @@ def main() -> None:
     threading.Thread(target=path_worker, daemon=True).start()
     if PREPARE_ON:
         threading.Thread(target=prepare_worker, daemon=True).start()     # 0.16.0: Stage 0 dry run
+    if TILES_DIR:
+        threading.Thread(target=publish_worker, daemon=True).start()     # 0.17.0: Plan B tiles
     # 0.8.7 (owner 3 Nov 14:41): on its own Ampere server the engine listens on that server's PRIVATE address, so the
     # main server can ask it (both servers' firewalls only allow the main server's private address in)
     bind = BIND

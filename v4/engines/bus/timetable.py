@@ -506,6 +506,21 @@ class Timetable:
                                   'LEFT JOIN agency a ON a.agency_id = r.agency_id WHERE t.trip_id=?', (trip_id,)).fetchone()
         return (row[0] or '', row[1] or '') if row else ('', '')
 
+    def shape_id_of(self, trip_id):
+        """0.17.0: the route line's own id for a journey ('' if none). Many journeys share one line."""
+        with self.lock:
+            row = self.db.execute('SELECT shape_id FROM trips WHERE trip_id=?', (trip_id,)).fetchone()
+        return (row[0] or '') if row else ''
+
+    def shape_by_id(self, shape_id):
+        """0.17.0: a route line [(lon, lat), ...] by its own id, [] if unknown."""
+        with self.lock:
+            pts = []
+            for (data,) in self.db.execute('SELECT data FROM shapes WHERE shape_id=? ORDER BY part', (shape_id,)):
+                pts += [tuple(int(v) for v in line.split(',')) for line in zlib.decompress(data).decode().split('\n')]
+        pts.sort()
+        return [(x / 1e6, y / 1e6) for _, x, y in pts]
+
     def shape_of(self, trip_id):
         """The route's line [(lon, lat), ...], or [] if the timetable has none for this journey."""
         with self.lock:

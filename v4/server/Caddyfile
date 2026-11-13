@@ -23,7 +23,21 @@
 		X-Robots-Tag "noindex, nofollow"
 		-Server
 	}
-	reverse_proxy 127.0.0.1:8778
+	# kit 4.57 (Plan B, owner 13 Nov 2026 19:15): ready-made bus tiles, written by the bus engine every 10 s into
+	# /run/tpa-bus-tiles (in memory), handed out by Caddy itself - packed once (.gz), never by Python per visitor.
+	handle_path /tiles/* {
+		root * /run/tpa-bus-tiles
+		@lines path /bus/routes/*
+		@live not path /bus/routes/*
+		header @live Cache-Control "public, max-age=10"
+		header @lines Cache-Control "public, max-age=604800, immutable"
+		file_server {
+			precompressed gzip
+		}
+	}
+	handle {
+		reverse_proxy 127.0.0.1:8778
+	}
 }
 
 # kit 4.16 (owner 5 Nov 15:50: "have the main site display a coming soon page"): the main address shows a
