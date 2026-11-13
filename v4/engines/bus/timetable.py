@@ -512,6 +512,32 @@ class Timetable:
             row = self.db.execute('SELECT shape_id FROM trips WHERE trip_id=?', (trip_id,)).fetchone()
         return (row[0] or '') if row else ''
 
+    def leaving_near(self, origin_ref, departure_iso, minutes=40, limit=8):
+        """0.18.1 (diagnostic): journeys leaving this stop within +-minutes of the time: [(route, HH:MM, company code)]."""
+        when = service_day_and_seconds(departure_iso) if departure_iso else None
+        if not origin_ref or when is None:
+            return []
+        date, secs = when
+        out = []
+        with self.lock:
+            for tid, sid, short, noc, dep in self.db.execute(
+                    'SELECT e.trip_id, t.service_id, r.short_name, a.noc, e.first_dep FROM trip_ends e JOIN trips t ON t.trip_id = e.trip_id '
+                    'LEFT JOIN routes r ON r.route_id = t.route_id LEFT JOIN agency a ON a.agency_id = r.agency_id '
+                    'WHERE e.first_stop = ? AND e.first_dep BETWEEN ? AND ? ORDER BY e.first_dep LIMIT ?',
+                    (origin_ref, secs - 60 * minutes, secs + 60 * minutes, limit * 4)):
+                if self.runs_on(sid, date):
+                    out.append((short or '', f'{dep // 3600 % 24:02d}:{dep % 3600 // 60:02d}', noc or ''))
+        return out[:limit]
+
+    def stop_known(self, stop_id):
+        with self.lock:
+            return self.db.execute('SELECT 1 FROM stops WHERE stop_id=? LIMIT 1', (stop_id,)).fetchone() is not None
+
+    def routes_of_company(self, noc, limit=5):
+        with self.lock:
+            return [r[0] for r in self.db.execute('SELECT DISTINCT r.short_name FROM routes r JOIN agency a ON a.agency_id = r.agency_id '
+                                                  'WHERE a.noc = ? LIMIT ?', ((noc or '').upper(), limit))]
+
     def has_shape(self, shape_id):
         """0.18.0: whether the timetable really holds this route line (some journeys name one that is missing)."""
         with self.lock:
