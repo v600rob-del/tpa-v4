@@ -282,7 +282,14 @@ def tidy_station(common):
             break
         common = cut
     common = re.sub(r'(?i)\bintc\b', 'Interchange', common)          # 0.14.5: "Doncaster Intc"
-    return re.sub(r'(?i)\b(bs|bus stn|bus sta)\b', 'Bus Station', common)
+    return re.sub(r'(?i)\b(bs|bstn|bus stn|bus sta)\b', 'Bus Station', common)   # 0.14.6: "Gainsborough BSTN"
+
+
+def board_place(name):
+    """0.14.6 (owner 13 Nov 12:07, "Bus Stn it is"): a destination on a board, tidied and kept short for the phone -
+    'Gainsborough BSTN' / 'Worksop Bus Station Bay F' -> 'Gainsborough Bus Stn' / 'Worksop Bus Stn'. Never plain 'Stn':
+    that could be the railway station. Station titles and the map keep 'Bus Station'."""
+    return re.sub(r'(?i)\bbus station\b', 'Bus Stn', tidy_station(name) or name)
 
 
 # 0.14.4: "Stand 11", "Stand1", "Stance 3", "Bay A4", "Setdown Stand Z", "Arrival Stand", "Night Std", "Alighting Only"
@@ -797,7 +804,7 @@ class BoardMaker:
     def _row(self, f, secs, arriving, base, s_now, now, midnight_ts, atco, live):
         sched_today = secs - base                      # on today's clock
         place = (f['from'] if arriving else (f['headsign'] or f['to'])) or ('Bus' if arriving else 'Not given')
-        place = tidy_station(place) or place   # 0.14.5 (owner 13 Nov 11:50): "Worksop Bus Station Bay F" -> "Worksop Bus Station"
+        place = board_place(place)   # 0.14.5/0.14.6 (owner 13 Nov 11:50-12:07): "Worksop Bus Station Bay F" -> "Worksop Bus Stn"
         row = {'time': clock(sched_today), 'place': place[:80], 'state': 'unknown', 'status': 'Timetable'}
         if f['route']:
             row['route'] = f['route'][:12]
