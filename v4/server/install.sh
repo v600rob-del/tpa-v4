@@ -198,7 +198,7 @@ fi
 unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
     "Environment=TPA_AIR_ALWAYS_ON=1" 150M air.env v4/engines/air/air_engine.py   # air.env: FlyItalyADSB key (11 Nov)
 unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_PORT 8784 \
-    "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 450M rail.env v4/engines/rail/rail_engine.py   # 450M: owner 12 Nov 2026 (was 300M; the feed was held back at the ceiling)
+    "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 700M rail.env v4/engines/rail/rail_engine.py   # 700M: owner 13 Nov 2026 12:45 (sat at 440-445 of 450M all morning); 450M on 12 Nov (was 300M)
 # kit 4.20 (owner 12 Nov 17:03, live departure boards): stations.env holds the Rail Data Marketplace board address and key
 # kit 4.21 (owner 12 Nov 18:38-18:40, bus stop boards): bus stops and their boards come from the bus engine (/stops), so
 # HQ is told "stops=" at the bus engine's address below. No new service, user or key.
