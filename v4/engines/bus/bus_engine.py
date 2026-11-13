@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.17.0'
+ENGINE_VERSION = '0.17.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1377,6 +1377,13 @@ ROUTES_WRITTEN: set = set()           # (build, line id) already written
 PUB_TRIED: dict = {}                  # bus key -> (report time, journey) last worked out
 
 
+def _folder(path: Path) -> Path:
+    """0.17.1 (server 13 Nov 20:11: folders came out 0700, so Caddy could not read them): made readable by all."""
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o755)
+    return path
+
+
 def _tile_write(path: Path, text: str) -> int:
     """Write path and path.gz in full, then swap them in (a visitor never gets half a file). Bytes packed."""
     raw = text.encode('utf-8')
@@ -1451,6 +1458,20 @@ def bus_item(v, hist, now):
     return small_j, big_j
 
 
+UNSURE: dict = {}                     # 0.17.1: bus key -> journey signature that matched several timetabled journeys
+
+
+def unplaced_reason(v, known) -> str:
+    if not known or known[0] != journey_sig(v):
+        return 'notWorkedOutYet'
+    if not known[1]:
+        return 'severalJourneys' if UNSURE.get(v['key']) == known[0] else 'noTimetableMatch'
+    f = FOLLOW.get(v['key'])
+    if not f or not f[1]:
+        return 'offItsRoute'
+    return 'noRouteLine'
+
+
 def publish_round() -> dict:
     t_cpu, t_wall = time.thread_time(), time.monotonic()
     now = time.time()
@@ -1464,6 +1485,7 @@ def publish_round() -> dict:
     small: dict = {}
     big: dict = {}
     shown = hidden = matched = 0
+    why = {'noTimetableMatch': 0, 'severalJourneys': 0, 'notWorkedOutYet': 0, 'offItsRoute': 0, 'noRouteLine': 0}
     lines = {}
     for i, v in enumerate(vehicles):
         if i % 500 == 0:
@@ -1485,6 +1507,8 @@ def publish_round() -> dict:
             sid = shape_id_for(known[1])
             if sid:
                 lines[sid] = known[1]
+        else:
+            why[unplaced_reason(v, known)] += 1
         th = hist if REPLAY_SECONDS and age <= STALE_AFTER else ()
         for k in _tiles_for(v, th, recent, TILE_SMALL):
             small.setdefault(k, []).append(got[0])
@@ -1499,8 +1523,8 @@ def publish_round() -> dict:
     written = packed_bytes = 0
     largest = 0
     for name, tiles, size in (('s', small, TILE_SMALL), ('b', big, TILE_BIG)):
-        folder = root / name
-        folder.mkdir(parents=True, exist_ok=True)
+        _folder(root)
+        folder = _folder(root / name)
         for (r, c), parts in tiles.items():
             text = '[' + ','.join(parts) + ']'
             digest = hash(text)
@@ -1528,7 +1552,8 @@ def publish_round() -> dict:
                 sh = shape_for(tid)
             if sh is None:
                 continue
-            rdir.mkdir(parents=True, exist_ok=True)
+            _folder(root / 'routes')
+            _folder(rdir)
             fname = re.sub(r'[^A-Za-z0-9_.-]', '_', sid)[:120] + '.json'
             _tile_write(rdir / fname, json.dumps({'c': [[round(a, 6), round(b, 6)] for a, b in zip(sh.lon, sh.lat)]},
                                                  separators=(',', ':')))
@@ -1539,9 +1564,9 @@ def publish_round() -> dict:
             + (' · bus routes: BODS timetables, Department for Transport (OGL)' if REPLAY_SECONDS and tt is not None else ''),
             'build': build, 'small': list(TILE_SMALL), 'big': list(TILE_BIG), 'delay': REPLAY_SECONDS, 'keepLeft': KEEP_LEFT_M,
             'smallBelowSpan': PUBLISH_SMALL_SPAN, 'maxSpan': MAX_VIEW_SPAN, 'maxPerView': MAX_PER_VIEW, 'every': PUBLISH_EVERY}
-    _tile_write(root / 'meta.json', json.dumps(meta, separators=(',', ':')))
+    _tile_write(_folder(root) / 'meta.json', json.dumps(meta, separators=(',', ':')))
     return {'at': iso(now), 'cpuSeconds': round(time.thread_time() - t_cpu, 2), 'wallSeconds': round(time.monotonic() - t_wall, 2),
-            'buses': shown, 'hiddenNoDetails': hidden, 'matched': matched, 'tilesSmall': len(small), 'tilesBig': len(big),
+            'buses': shown, 'hiddenNoDetails': hidden, 'matched': matched, 'notPlaced': why, 'tilesSmall': len(small), 'tilesBig': len(big),
             'tilesWritten': written, 'packedKbWritten': round(packed_bytes / 1024), 'largestKb': round(largest / 1024, 1),
             'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN)}
 
@@ -2243,6 +2268,10 @@ def _follow_bus(v: dict) -> None:
             try:
                 got = tt.match(*match_args(v))
                 tid = got[0] if len(got) == 1 else None
+                if len(got) > 1:
+                    UNSURE[v['key']] = sig             # 0.17.1: counted in the publish figures
+                else:
+                    UNSURE.pop(v['key'], None)
             except Exception as exc:   # one odd bus must never break the layer
                 with LOCK:
                     STATE['timetableError'] = ('match: ' + type(exc).__name__)[:100]

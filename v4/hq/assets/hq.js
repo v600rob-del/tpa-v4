@@ -1403,7 +1403,9 @@ async function requestBounded(url,maxBytes,timeoutMs){
 // The bus engine writes /tiles/bus/meta.json, tiles s/<row>_<col>.json (street views) and b/<row>_<col>.json (city
 // views) every 10 s, and route lines routes/<build>/<line>.json once per timetable; Caddy hands them out (later
 // Cloudflare). This builds the same frame the engine used to send, so everything else on the page is unchanged.
-const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')!=='0',used:false,lines:new Map(),asking:new Map()};
+// 4.56.1 (owner 13 Nov 20:11: only 24% of buses placed on a route in the published tiles - his call first): tiles only
+// with ?tiles=1 for now; the default stays the old per-visitor answer.
+const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')==='1',used:false,lines:new Map(),asking:new Map()};
 async function tileJSON(url,timeoutMs,missingOk){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{const r=await fetch(url,{signal:ctl.signal});
