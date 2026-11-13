@@ -20,7 +20,9 @@ from array import array
 from bisect import bisect_left, bisect_right
 
 M_PER_DEG = 111195.0
-MAX_OFF_ROUTE_M = 40.0      # a report further than this from the route is not on it (diversion, depot, wrong match)
+MAX_OFF_ROUTE_M = 100.0     # a report further than this from the route is not on it (diversion, depot, wrong match)
+# bus 0.17.4 (13 Nov 2026 21:45: a quarter of 'off route' buses were 40-100 m from their line - bus station approaches,
+# slip roads, GPS wobble; owner's question left open, assumed yes): 40 -> 100 m
 MAX_SPEED = 35.0            # m/s: a report needing more than this along the route is not believed
 MAX_POINTS = 200            # HQ accepts up to 200 points
 

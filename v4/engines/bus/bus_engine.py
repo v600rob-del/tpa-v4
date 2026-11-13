@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.17.3'
+ENGINE_VERSION = '0.17.4'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1523,6 +1523,19 @@ def unplaced_reason(v, known) -> str:
     return 'noRouteLine'
 
 
+def company_table(by_company: dict, top: int = 20) -> list:
+    """The bus companies with the most buses not placed: [name (code), buses, placed %, off route %, not matched %]."""
+    rows = sorted(((off + nomatch, noc, placed, off, nomatch) for noc, (placed, off, nomatch) in by_company.items()),
+                  reverse=True)[:top]
+    out = []
+    for _, noc, placed, off, nomatch in rows:
+        n = placed + off + nomatch
+        if n:
+            name = company_label(noc)
+            out.append([f'{name} ({noc})' if name else noc, n, round(100 * placed / n), round(100 * off / n), round(100 * nomatch / n)])
+    return out
+
+
 def publish_round() -> dict:
     t_cpu, t_wall = time.thread_time(), time.monotonic()
     now = time.time()
@@ -1537,6 +1550,7 @@ def publish_round() -> dict:
     big: dict = {}
     shown = hidden = matched = 0
     why = {'noTimetableMatch': 0, 'severalJourneys': 0, 'notWorkedOutYet': 0, 'offItsRoute': 0, 'noRouteLine': 0}
+    by_company: dict = {}                             # 0.17.4 (owner 21:45 "are these buses spread across the uk?")
     lines = {}
     for i, v in enumerate(vehicles):
         if i % 500 == 0:
@@ -1553,17 +1567,24 @@ def publish_round() -> dict:
             hidden += 1
             continue
         shown += 1
+        noc = v['key'].split(':', 1)[0]
+        row = by_company.setdefault(noc, [0, 0, 0])   # placed, off its route, not matched (none or several)
         if known and known[1] and '"s":' in got[0]:
             matched += 1
             sid = shape_id_for(known[1])
             if sid:
                 lines[sid] = known[1]
+            row[0] += 1
             if random.random() < 0.02:                # a random few each round, so every bus has the same chance
                 with JOURNEY_LOCK:
                     measure_off_route(v, known, True)
         else:
             reason = unplaced_reason(v, known)
             why[reason] += 1
+            if reason == 'offItsRoute':
+                row[1] += 1
+            elif reason in ('noTimetableMatch', 'severalJourneys'):
+                row[2] += 1
             if reason == 'offItsRoute' and random.random() < 0.05:
                 with JOURNEY_LOCK:
                     measure_off_route(v, known, False)
@@ -1624,7 +1645,8 @@ def publish_round() -> dict:
             'smallBelowSpan': PUBLISH_SMALL_SPAN, 'maxSpan': MAX_VIEW_SPAN, 'maxPerView': MAX_PER_VIEW, 'every': PUBLISH_EVERY}
     _tile_write(_folder(root) / 'meta.json', json.dumps(meta, separators=(',', ':')))
     return {'at': iso(now), 'cpuSeconds': round(time.thread_time() - t_cpu, 2), 'wallSeconds': round(time.monotonic() - t_wall, 2),
-            'buses': shown, 'hiddenNoDetails': hidden, 'matched': matched, 'notPlaced': why, 'tilesSmall': len(small), 'tilesBig': len(big),
+            'buses': shown, 'hiddenNoDetails': hidden, 'matched': matched, 'notPlaced': why,
+            'companies': len(by_company), 'byCompany': company_table(by_company), 'tilesSmall': len(small), 'tilesBig': len(big),
             'tilesWritten': written, 'packedKbWritten': round(packed_bytes / 1024), 'largestKb': round(largest / 1024, 1),
             'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN)}
 
