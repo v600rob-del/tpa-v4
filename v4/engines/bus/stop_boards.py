@@ -46,7 +46,7 @@ try:
 except Exception:            # no time zone data: UTC (an hour out in summer, never a crash)
     LONDON = timezone.utc
 
-FORMAT = 4                   # 2: bus stations (0.14.0); 3: bays marked as street stops count too (0.14.1); 4: stand codes in names, close stations merged (0.14.3)
+FORMAT = 5                   # 2: bus stations (0.14.0); 3: bays marked as street stops count too (0.14.1); 4: stand codes in names, close stations merged (0.14.3); 5: stand labels off names (0.14.4)
 CELL = 50                    # cells of 1/50 degree (~2 km north-south) for "stops in view"
 BATCH = 50_000
 VIEW_SPAN = 0.06             # stops are shown only when the view is under ~6.5 km tall (street level)
@@ -270,12 +270,33 @@ def tidy_station(common):
     'Doncaster Frenchgate Interchange/A1' -> 'Doncaster Frenchgate Interchange'."""
     common = re.sub(r'\s+', ' ', (common or '').replace('_', ' ')).strip()
     common = re.sub(r'\s*/\s*[A-Za-z]{0,2}\d{0,3}[A-Za-z]?$', '', common).strip() or common
+    # 0.14.4 (owner 13 Nov 10:36, the stations check: "Bridgend Bus Station Stand 11", "Merthyr Bus Station 1",
+    # "Newport Friars Walk 1" ... "15" - a stand's own label on the end of the name goes, so a station's stands share one name)
+    for _ in range(2):
+        cut = STAND_TAIL.sub('', common).strip()
+        m = BARE_NUMBER.search(cut)
+        if m and not re.search(r'(?i)\b(terminal|terminals|junction|gate|j)$', cut[:m.start()]):
+            cut = cut[:m.start()].strip()
+        cut = re.sub(r'(?i)\b(bus station|coach station|interchange|bus stn|bs)\s+[A-Z]\d?$', r'\1', cut).strip()
+        if not cut or cut == common:
+            break
+        common = cut
     return re.sub(r'(?i)\b(bs|bus stn|bus sta)\b', 'Bus Station', common)
 
 
+# 0.14.4: "Stand 11", "Stand1", "Stance 3", "Bay A4", "Setdown Stand Z", "Arrival Stand", "Night Std", "Alighting Only"
+STAND_TAIL = re.compile(r'(?i)\s+(?:(?:setdown|set down|arrivals?|departures?|night)\s+)?(?:stand|stance|bay|std)'
+                        r'(?:\s+(?:no\.?\s*)?[a-z]{1,2}\d{0,3}[a-z]?|\s*\d{1,3}[a-z]?)?$|\s+alighting only$')
+BARE_NUMBER = re.compile(r'\s+\d{1,3}[a-z]?$', re.I)
+
+
 def station_name(common, place):
-    """'Bus Station' in Beverley -> 'Beverley Bus Station'; 'Hull Paragon Interchange' stays as it is."""
+    """'Bus Station' in Beverley -> 'Beverley Bus Station'; 'Hull Paragon Interchange' stays as it is.
+    0.14.4: stands named only by their town ("Annan Stance 1") -> 'Annan Bus Stances'."""
+    raw = common or ''
     common = tidy_station(common) or 'Bus Station'
+    if place and common.lower() == place.lower():
+        common = f'{place} Bus ' + ('Stances' if re.search(r'(?i)\bstance', raw) else 'Stands')
     first = (place or '').split(' ')[0].lower()
     if place and place.lower() not in common.lower() and not (first and re.search(r'\b' + re.escape(first) + r'\b', common.lower())):
         return f'{place} {common}'[:80]
@@ -332,11 +353,36 @@ def group_stations(stands, hubs):
             groups['X' + c[0][0]] = {'code': ('X' + c[0][0])[:20], 'name': name, 'lat': sum(o[3] for o in c) / len(c),
                                      'lon': sum(o[4] for o in c) / len(c), 'locality': c[0][2], 'stands': [o[0] for o in c],
                                      # one lonely stand is just a stop - unless it is right beside a station (0.14.3)
-                                     'lonely': len(c) < 2 and not re.search(r'(?i)bus station|coach station|interchange|bus park', name)}
+                                     'lonely': len(c) < 2 and not KEEP_ALONE.search(name)}
     return merge_close([g for g in groups.values() if g['stands']], stands)
 
 
 MERGE_M = 120                # 0.14.3: stations whose stands are this close to each other's are one station
+# 0.14.4 (owner 13 Nov 10:45, every box ticked): one stand on its own is still a station when its name says so - coach
+# stations and parks, park and rides, travel centres and termini as well as bus stations and interchanges
+KEEP_ALONE = re.compile(r'(?i)bus station|coach station|interchange|bus park|coach park|coach facility|park[ -]?(and|&)[ -]?ride'
+                        r'|travel centre|terminus')
+STATION_SAYS = re.compile(r'(?i)\b(bus station|coach station|interchange)\b')
+PLAIN_WORDS = re.compile(r'(?i)\b(bus|coach|station|interchange|metro|city|town|centre|center|upon|on|the|and|of)\b|[^a-z ]')
+
+
+def own_words(g):
+    """0.14.4: what is left of a station's name without its town and the usual words - 'Haymarket', 'Eldon Square'."""
+    low = g['name'].lower()
+    for w in (g.get('locality') or '').lower().split(' '):
+        if w:
+            low = re.sub(r'\b' + re.escape(w) + r'\b', ' ', low)
+    return ' '.join(PLAIN_WORDS.sub(' ', low).split())
+
+
+def two_stations(gi, gj):
+    """0.14.4 (owner 13 Nov 10:45: Newcastle's Haymarket and Eldon Square bus stations, ~150 m apart, are two stations):
+    both names say bus station or interchange, and each has its own different name. 'Dundee City Centre Bus Station' and
+    'Dundee City Centre Seagate Bus Station', or 'Wallsend Interchange' and 'Wallsend Metro Interchange', still join."""
+    if gi.get('lonely') or gj.get('lonely') or not (STATION_SAYS.search(gi['name']) and STATION_SAYS.search(gj['name'])):
+        return False
+    a, b = own_words(gi), own_words(gj)
+    return bool(a and b and a not in b and b not in a)
 
 
 def merge_close(groups, stands):
@@ -354,6 +400,8 @@ def merge_close(groups, stands):
         for j in range(i + 1, len(groups)):
             gi, gj = groups[i], groups[j]
             if abs(gi['lat'] - gj['lat']) > 0.02 or abs(gi['lon'] - gj['lon']) > 0.03:
+                continue
+            if two_stations(gi, gj):
                 continue
             if any(_metres(*pos[a], *pos[b]) <= MERGE_M for a in gi['stands'] if a in pos for b in gj['stands'] if b in pos):
                 parent[root(j)] = root(i)
@@ -526,6 +574,8 @@ def place_word(indicator):
 def stop_title(name, indicator):
     name = (name or 'Bus stop').replace('_', ' ').strip()
     ind = place_word(indicator)
+    if ind.lower() in ('at', 'in', 'on'):         # 0.14.4 (owner 13 Nov 10:39: "Doncaster Interchange (at)")
+        return name
     return f'{name} ({ind})' if ind and ind.lower() not in name.lower() else name
 
 
@@ -538,6 +588,24 @@ def badge_of(indicator):
     if not m or m.group(1).upper() in ('OPP', 'ADJ', 'NR', 'OS', 'BY', 'IN', 'AT', 'ON'):
         return None
     return m.group(1).upper()
+
+
+BOARD_BYTES = 200_000          # 0.14.4: HQ takes at most 256 KB of details; a board must fit with room to spare
+
+
+def fit_board(board):
+    """0.14.4 (owner 13 Nov 10:39: Doncaster Frenchgate Interchange's board was empty in the daytime): ~100 buses, each
+    with up to 60 stops, came to ~400 KB and HQ turned it away. While a board is too big, each bus keeps fewer of its
+    stops: the next ones for a departure, the last ones before here for an arrival."""
+    for keep in (CALLS_SHOWN, 30, 15, 8, 4, 0):
+        for tab in board['tabs']:
+            arriving = tab['name'] == 'Arrivals'
+            for r in tab['rows']:
+                if 'calls' in r and len(r['calls']) > keep:
+                    r['calls'] = (r['calls'][len(r['calls']) - keep:] if arriving else r['calls'][:keep]) if keep else []
+        if len(json.dumps(board, separators=(',', ':'))) <= BOARD_BYTES:
+            break
+    return board
 
 
 def company_word(name):
@@ -680,12 +748,12 @@ class BoardMaker:
                 towards.append(r['place'])
         if towards:
             about.append('towards ' + ', '.join(towards[:2]))
-        return {'title': stop_title(name, indicator)[:80], 'badge': badge_of(indicator),
-                'about': ' · '.join(about)[:120],
-                'routes': [r for r in (routes or '').split(' ') if r][:40],
-                'updated': clock(s_now),
-                'tabs': [{'name': 'Departures', 'empty': 'No buses due in the next 2 hours.', 'rows': deps},
-                         {'name': 'Arrivals', 'empty': 'No journeys finish here in the next 2 hours.', 'rows': arrs}]}
+        return fit_board({'title': stop_title(name, indicator)[:80], 'badge': badge_of(indicator),
+                          'about': ' · '.join(about)[:120],
+                          'routes': [r for r in (routes or '').split(' ') if r][:40],
+                          'updated': clock(s_now),
+                          'tabs': [{'name': 'Departures', 'empty': 'No buses due in the next 2 hours.', 'rows': deps},
+                                   {'name': 'Arrivals', 'empty': 'No journeys finish here in the next 2 hours.', 'rows': arrs}]})
 
     def station_board(self, code, now, live):
         """0.14.0 (owner 12 Nov 20:22: bus stations "need to be like the train ones"): one board for all of a station's
@@ -719,10 +787,11 @@ class BoardMaker:
             tabs.append(rows[:STATION_ROWS])
         word = {'coach': 'Coach station', 'interchange': 'Interchange'}.get(kind, 'Bus station')
         about = f'{word} · {n_stands} stand{"s" if n_stands != 1 else ""}'
-        return {'title': name[:80], 'about': about[:120], 'routes': [r for r in (routes or '').split(' ') if r][:60],
-                'updated': clock(s_now),
-                'tabs': [{'name': 'Departures', 'empty': 'No buses due in the next 2 hours.', 'rows': tabs[0]},
-                         {'name': 'Arrivals', 'empty': 'No buses arriving in the next 2 hours.', 'rows': tabs[1]}]}
+        board = {'title': name[:80], 'about': about[:120], 'routes': [r for r in (routes or '').split(' ') if r][:60],
+                 'updated': clock(s_now),
+                 'tabs': [{'name': 'Departures', 'empty': 'No buses due in the next 2 hours.', 'rows': tabs[0]},
+                          {'name': 'Arrivals', 'empty': 'No buses arriving in the next 2 hours.', 'rows': tabs[1]}]}
+        return fit_board(board)
 
     def _row(self, f, secs, arriving, base, s_now, now, midnight_ts, atco, live):
         sched_today = secs - base                      # on today's clock
