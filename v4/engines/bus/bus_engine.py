@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.19.0'
+ENGINE_VERSION = '0.19.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1754,6 +1754,7 @@ def open_road_map() -> bool:
         STATE['roadMapDetail'] = f"{source}: {new.meta.get('links', 0)} road pieces"
         PATHS.clear()
         PLACED.clear()
+        STOP_KERB.clear()
     if old:
         old.close()
     print('Road map ready:', source, STATE['roadMapDetail'], flush=True)
@@ -2116,6 +2117,51 @@ def stops_health() -> tuple[str, str]:
     return 'unavailable', 'Bus stops not available right now'
 
 
+# 0.19.1 (owner 13 Nov 23:11, London: "the bus stops being in peoples houses"): the national stop list puts some stops
+# 15-30 m back from the road. Each stop is drawn on the pavement of its nearest road instead: same side of the road as the
+# stop list says, STOP_KERB_M from the middle of the road. Stops already that close, stops with no road within
+# STOP_KERB_REACH_M, and bus station stands are left where they are. Worked out once per stop (kept until the road map
+# changes), so it costs nothing per visitor. Only the map position changes; the boards still use the stop list's.
+STOP_KERB_M = 6.0
+STOP_KERB_REACH_M = 40.0
+STOP_KERB = {}
+STOP_KERB_KEEP = 300000
+STOP_KERB_STATS = {'moved': 0, 'left': 0, 'furthestM': 0.0}
+
+
+def stop_on_kerb(atco: str, lat: float, lon: float):
+    """(lat, lon) to draw a stop at."""
+    got = STOP_KERB.get(atco)
+    if got is not None and got[0] == (lat, lon):
+        return got[1]
+    rm = ROADS.get('map')
+    if rm is None:
+        return lat, lon
+    out = (lat, lon)
+    try:
+        s = rm.snap(lon, lat, None, STOP_KERB_REACH_M)
+    except Exception:
+        s = None
+    if s is not None:
+        xu, yu = s[4], s[5]
+        kx = math.cos(math.radians(lat)) * road_map.M_PER_DEG
+        ky = road_map.M_PER_DEG
+        dx, dy = (lon - xu / 1e6) * kx, (lat - yu / 1e6) * ky
+        d = math.hypot(dx, dy)
+        if d > STOP_KERB_M + 3:
+            out = (round(yu / 1e6 + dy / d * STOP_KERB_M / ky, 6), round(xu / 1e6 + dx / d * STOP_KERB_M / kx, 6))
+            STOP_KERB_STATS['moved'] += 1
+            STOP_KERB_STATS['furthestM'] = max(STOP_KERB_STATS['furthestM'], round(d - STOP_KERB_M, 1))
+        else:
+            STOP_KERB_STATS['left'] += 1
+    else:
+        STOP_KERB_STATS['left'] += 1
+    if len(STOP_KERB) >= STOP_KERB_KEEP:
+        STOP_KERB.clear()
+    STOP_KERB[atco] = ((lat, lon), out)
+    return out
+
+
 def stops_snapshot(view) -> dict:
     now = time.time()
     h, notice = stops_health()
@@ -2137,6 +2183,8 @@ def stops_snapshot(view) -> dict:
             continue
         if not idx.stand_shown(atco, n - s):   # 0.14.2: a bus station's stands wait behind its icon until they sit apart
             continue
+        if atco not in getattr(idx, 'stand_gap', {}):
+            lat, lon = stop_on_kerb(atco, lat, lon)
         ent = {'id': 'stops:' + atco, 'label': stop_boards.stop_title(name, ind)[:80], 'variant': 'stop',
                'quality': 'observed', 'observedAt': iso(now), 'position': {'lon': lon, 'lat': lat, 'headingDeg': None}}
         b = stop_boards.badge_of(ind)
@@ -2178,7 +2226,8 @@ def stops_status() -> dict:
         return {'component': STOPS_COMPONENT, 'engine': 'tpa-bus-engine', 'engineVersion': ENGINE_VERSION,
                 'contractVersion': CONTRACT, 'live': True, 'health': h, 'notice': notice, 'stopIndex': STOPS['state'],
                 'stopIndexDetail': STOPS['detail'], 'stopIndexError': STOPS['error'], 'stationsError': STOPS['stationsError'],
-                'boardsMade': STOPS['boards'], 'boardsShared': STOPS['shared'], 'boardSeconds': BOARD_SECONDS}
+                'boardsMade': STOPS['boards'], 'boardsShared': STOPS['shared'], 'boardSeconds': BOARD_SECONDS,
+                'stopsOnKerb': dict(STOP_KERB_STATS, kept=len(STOP_KERB))}
 
 
 # 0.14.0 (owner 12 Nov 20:22: "Bus STATIONS next, they need to be like the train ones"; every box ticked): bus, coach
@@ -2351,7 +2400,7 @@ GEN_PATTERN: dict = {}        # trip_id -> ('g-...', ((stop id, lon, lat), ...))
 GEN_QUEUE: deque = deque()
 GEN_QUEUED: set = set()
 GEN_WAKE = threading.Event()
-GEN = {'state': 'waiting', 'linesBuilt': 0, 'legsWorkedOut': 0, 'legsNoDrive': 0, 'legsFromDisk': 0, 'cpuSeconds': 0.0,
+GEN = {'state': 'waiting', 'linesBuilt': 0, 'legsWorkedOut': 0, 'legsNoDrive': 0, 'legsSharp': 0, 'legsFromDisk': 0, 'cpuSeconds': 0.0,
        'error': ''}
 GEN_LEG_MAX_M = 8000.0        # stops further apart than this: joined straight (express legs; rare)
 GEN_DUTY = 0.5                # share of a core the builder may use
@@ -2429,6 +2478,10 @@ def shape_for(trip_id):
     return sh
 
 
+GEN_SHARP_TURN = 165.0           # 0.19.1: the second try at a stop-to-stop drive allows any turn short of a U-turn
+GEN_LEGS_VERSION = '2'           # 0.19.1: drives kept on disk are worked out again (the second try is new)
+
+
 class LegStore:
     """The road drive between two stops, kept on disk (shared by every line that uses the pair). Cleared when the road
     map changes. Value: [(lon, lat), ...], or [] when the road map has no drive (joined straight)."""
@@ -2437,6 +2490,7 @@ class LegStore:
         self.db.execute('CREATE TABLE IF NOT EXISTS legs (k TEXT PRIMARY KEY, data BLOB)')
         self.db.execute('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)')
         row = self.db.execute("SELECT v FROM meta WHERE k='roads'").fetchone()
+        roads_sig = roads_sig + ':legs' + GEN_LEGS_VERSION
         if not row or row[0] != roads_sig:
             self.db.execute('DELETE FROM legs')
             self.db.execute("INSERT OR REPLACE INTO meta VALUES ('roads', ?)", (roads_sig,))
@@ -2472,6 +2526,15 @@ def stop_leg(a, b):
     try:
         got = rm.between(a[1], a[2], _bearing(a[2], a[1], b[2], b[1]), b[1], b[2],
                          max_m=max(400.0, 2.5 * straight + 200), snap_m=40.0)
+        if not got:
+            # 0.19.1 (owner 13 Nov 23:16, a 380 in Charlton cutting "right across some houses"): no ordinary drive, so
+            # the line was joined straight. Try again the way a bus really can: the sharp turn at a narrow-angled
+            # junction (anything short of a U-turn), facing whichever way the road goes from the stop, and a longer
+            # way round. Only when that fails too is the stop pair joined straight.
+            got = rm.between(a[1], a[2], None, b[1], b[2], max_m=max(800.0, 4 * straight + 400), snap_m=40.0,
+                             max_turn=GEN_SHARP_TURN)
+            if got:
+                GEN['legsSharp'] = GEN.get('legsSharp', 0) + 1
     except Exception:          # one odd stop must never break the layer
         got = None
     return [(round(p[0], 6), round(p[1], 6)) for p in got] if got else []
@@ -2812,7 +2875,8 @@ def nomatch_sample(companies=('FECS', 'FSYO', 'FABD', 'MNGN', 'NATX'), per: int 
         try:
             row['startStopKnown'] = tt.stop_known(v.get('origin') or '')
             row['leavingThere'] = tt.leaving_near(v.get('origin') or '', v.get('dep') or '')
-            row['companyRoutes'] = tt.routes_of_company(noc)
+            routes = tt.routes_of_company(noc)
+            row['companyRoutes'] = routes[:40] if isinstance(routes, list) else routes
             row['severalJourneys'] = UNSURE.get(v['key']) == known[0]
         except Exception as exc:
             row['error'] = type(exc).__name__ + ': ' + str(exc)[:80]
@@ -3395,7 +3459,10 @@ class Handler(BaseHTTPRequestHandler):
             co = [c for c in (parse_qs(split.query).get('co') or [''])[0].upper().split(',') if re.fullmatch(r'[A-Z0-9]{2,8}', c)]
             return self.reply(200, offroute_sample(per=int((parse_qs(split.query).get('n') or ['3'])[0][:2] or 3), companies=tuple(co) or None))
         if split.path == '/nomatch-sample':                  # 0.18.1: server-only diagnostic
-            return self.reply(200, nomatch_sample())
+            q = parse_qs(split.query)   # 0.19.1: ?co=TFLO&n=6 (London's no-match buses)
+            co = [c for c in (q.get('co') or [''])[0].upper().split(',') if re.fullmatch(r'[A-Z0-9]{2,8}', c)]
+            n = int((q.get('n') or ['3'])[0][:2] or 3) if (q.get('n') or ['3'])[0][:2].isdigit() else 3
+            return self.reply(200, nomatch_sample(companies=tuple(co) or ('FECS', 'FSYO', 'FABD', 'MNGN', 'NATX'), per=n))
         if split.path == '/trace':
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
             return self.reply(200, trace(want))

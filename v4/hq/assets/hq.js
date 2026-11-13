@@ -86,7 +86,8 @@ const d=dims(),p=merc(lon,lat,state.z),c=merc(state.lon,state.lat,state.z);retur
 // on ... the middle/bottom of the numberboard under the bus/train"): for buses and trains the exact map
 // position is the bottom-middle of the number board, with the icon standing above it like a pin.
 // Other icons stay centred. (Board top 30 px + board 16 px, scaled, + 8 px of fixed borders; measured.)
-function anchorOf(component){return component==='bus'||component==='rail'?'translate(-50%,calc(var(--pin-s,1) * -46px - 8px))':'translate(-50%,-50%)';}
+// 4.59.0 (owner 13 Nov 23:11, stops "in peoples houses"): a bus stop stands on the foot of its pole, like a real stop.
+function anchorOf(component){return component==='bus'||component==='rail'?'translate(-50%,calc(var(--pin-s,1) * -46px - 8px))':component==='stops'?'translate(-50%,-98%)':'translate(-50%,-50%)';}
 // 4.14.0 (owner 3 Nov 20:35: smaller icons, "smaller when zoomed out"): small at town level, today's size close in
 function pinScale(z){return (KIDS?1.6:1)*(z<11.5?0.5:z<12.5?0.56:z<13.5?0.64:z<14.5?0.74:z<15.5?0.86:z<16.5?1:1.1);}
 function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}
@@ -1405,7 +1406,8 @@ async function requestBounded(url,maxBytes,timeoutMs){
 // Cloudflare). This builds the same frame the engine used to send, so everything else on the page is unchanged.
 // 4.56.1 (owner 13 Nov 20:11: only 24% of buses placed on a route in the published tiles - his call first): tiles only
 // with ?tiles=1 for now; the default stays the old per-visitor answer.
-const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')==='1',used:false,lines:new Map(),asking:new Map()};
+// 4.59.0 (owner 13 Nov 23:11: "movement is great"): the tile way is the normal way for everyone; ?tiles=0 is the way back.
+const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')!=='0',used:false,lines:new Map(),asking:new Map()};
 async function tileJSON(url,timeoutMs,missingOk){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{const r=await fetch(url,{signal:ctl.signal});

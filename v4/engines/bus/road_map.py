@@ -973,7 +973,7 @@ class RoadMap:
             [(xu, yu)] = _keep_left([(xu, yu), (xu + b[0] - a[0], yu + b[1] - a[1])], [True], keep_left, lat)[:1]
         return [round(xu) / 1e6, round(yu) / 1e6]
 
-    def between(self, lon1, lat1, bearing1, lon2, lat2, max_m=1500.0, snap_m=25.0):
+    def between(self, lon1, lat1, bearing1, lon2, lat2, max_m=1500.0, snap_m=25.0, max_turn=MAX_TURN):
         """0.7.1: the way along the roads from one report to the next - the shortest drive (obeying
         one-way streets, no U-turns or turns sharper than MAX_TURN, service roads only when needed) of at
         most max_m. [[lon, lat], ...] from the first report's place on its road to the second's, or None
@@ -1043,7 +1043,7 @@ class RoadMap:
             for lid2, link2, nv, st2, fromv in moves:
                 p2 = link2[2]
                 nx, ny = p2[2 * nv], p2[2 * nv + 1]
-                if came is not None and _diff(came, _bearing(0, 0, (nx - px) * kx, (ny - py) * ky)) > MAX_TURN:
+                if came is not None and _diff(came, _bearing(0, 0, (nx - px) * kx, (ny - py) * ky)) > max_turn:
                     continue                              # no U-turns or impossible turns
                 if lid2 == elid and min(fromv, nv) == eseg:   # reaches the next report on this stretch
                     total = c + dist(px, py, ex, ey)
