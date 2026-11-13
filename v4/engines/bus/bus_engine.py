@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.17.4'
+ENGINE_VERSION = '0.17.5'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -2566,6 +2566,62 @@ def stops_along(trip_id: str, sh):
     return out
 
 
+SAMPLE_COMPANIES = ('TFLO', 'AMSY', 'GNEL', 'BNSM', 'OXBC', 'WRAY', 'ANEA', 'METR')
+
+
+def _metres(a, b):
+    return metres(a[1], a[0], b[1], b[0])
+
+
+def offroute_sample(per: int = 3) -> dict:
+    """0.17.5 (owner 13 Nov 22:02: whole companies - London, every Arriva, Go North East - 0% placed): for a few 'off its
+    route' buses of each such company, is it the wrong journey, or the right journey with the wrong route line?
+    Server-only (like /trace)."""
+    tt = TIMETABLE['tt']
+    if tt is None:
+        return {'error': 'no timetable'}
+    with LOCK:
+        vehicles = list(STATE['vehicles'])
+    random.shuffle(vehicles)
+    want = {c: [] for c in SAMPLE_COMPANIES}
+    for v in vehicles:
+        noc = v['key'].split(':', 1)[0]
+        if noc not in want or len(want[noc]) >= per or time.time() - v['recorded'] > STALE_AFTER:
+            continue
+        with JOURNEY_LOCK:
+            known, f = TRIPS.get(v['key']), FOLLOW.get(v['key'])
+            if not known or not known[1] or known[0] != journey_sig(v) or (f and f[1]):
+                continue
+            tid = known[1]
+            sh = shape_for(tid)
+        bus = (v['lon'], v['lat'])
+        row = {'bus': v['key'], 'says': {k: v.get(k) for k in ('route', 'destination', 'origin', 'dep', 'dest', 'jref')}, 'trip': tid}
+        try:
+            short, company = tt.trip_info(tid)
+            row['tripRoute'], row['tripCompany'] = short, company
+            stops = [(s_[2], s_[1], s_[0], s_[6]) for s_ in tt.stops_of(tid) if s_[1] is not None]   # lon, lat, id, dep
+            if stops:
+                near = min(stops, key=lambda q: _metres(bus, q))
+                row['tripStops'] = len(stops)
+                row['tripFirst'] = {'stop': stops[0][2], 'dep': _clock(stops[0][3])}
+                row['tripLast'] = {'stop': stops[-1][2]}
+                row['busToNearestTripStopM'] = round(_metres(bus, near))
+            if sh is not None:
+                row['busToLineM'] = round(distance_to_line(sh, *bus))
+                row['lineKm'] = round(sh.length / 1000, 1)
+                if stops:
+                    row['lineStartToFirstStopM'] = round(_metres((sh.lon[0], sh.lat[0]), stops[0]))
+                    row['lineEndToLastStopM'] = round(_metres((sh.lon[-1], sh.lat[-1]), stops[-1]))
+                    row['furthestTripStopFromLineM'] = round(max(distance_to_line(sh, q[0], q[1]) for q in stops))
+            row['shapeId'] = shape_id_for(tid)
+        except Exception as exc:     # a diagnostic must never break the layer
+            row['error'] = type(exc).__name__ + ': ' + str(exc)[:80]
+        want[noc].append(row)
+        if all(len(x) >= per for x in want.values()):
+            break
+    return want
+
+
 def trace(entity_id: str) -> dict:
     """0.8.2 (owner 1 Nov 20:02: sign-off testing): everything this engine knows about one bus, so a reported
     problem ("this bus vanished / went the wrong way") can be traced. Only reachable on the server itself."""
@@ -3086,6 +3142,8 @@ class Handler(BaseHTTPRequestHandler):
         if split.path == '/details':
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
             return self.reply(200, details(want))
+        if split.path == '/offroute-sample':                 # 0.17.5: server-only diagnostic
+            return self.reply(200, offroute_sample())
         if split.path == '/trace':
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
             return self.reply(200, trace(want))
