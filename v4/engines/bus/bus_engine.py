@@ -30,6 +30,7 @@ when a bus isn't clearly on a road, the straight-line "heading" movement of 0.3 
 from __future__ import annotations
 
 import importlib.util
+import gzip
 import io
 import json
 import math
@@ -39,6 +40,7 @@ import html
 import re
 import signal
 import ssl
+import statistics
 import subprocess
 import sys
 import threading
@@ -54,7 +56,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.15.2'
+ENGINE_VERSION = '0.16.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -162,7 +164,7 @@ REPLAY_SECONDS = max(0, int(os.environ.get('TPA_BUS_REPLAY_SECONDS', '90') or 0)
 TRIPS: dict = {}             # bus key -> (journey details, trip_id or None)
 FOLLOW: dict = {}            # bus key -> (trip_id, [(report time, metres along route)]) or (trip_id, None) = off route
 SHAPES = OrderedDict()       # trip_id -> replay.Shape or None (no shape in the timetable); newest last
-SHAPES_KEEP = 1500
+SHAPES_KEEP = max(1500, int(os.environ.get('TPA_BUS_SHAPES_KEEP', '6000') or 6000))   # 0.16.0: 1500 -> 6000 (whole country)
 JOURNEY_WAKE = threading.Event()
 JOURNEY_LOCK = threading.RLock()   # TRIPS, FOLLOW and SHAPES (worker thread and page requests)
 JOURNEY_MAX = 900            # buses worked on per round, nearest what people are looking at first
@@ -1174,6 +1176,147 @@ def snapshot_fast(view) -> bytes:
             frame['notice'] = f'Showing nearest {MAX_PER_VIEW} · zoom in for all'
     head = json.dumps(frame, separators=(',', ':'))
     return (head[:-1] + ',"entities":[' + ','.join(chosen) + ']}').encode('utf-8')
+
+
+# ---------------------------------------------------------------- Stage 0: whole-country dry run (0.16.0)
+# Owner 13 Nov 2026 16:10: "publish, don't answer" plan approved (claude/TPA-PUBLISH-PLAN.md), buses every 10 s.
+# Stage 0 asks one question before anything is built for visitors: can this server draw EVERY bus in the country once
+# per round? Each round draws every bus shown on the map (as the published tiles would hold it, at both tile sizes),
+# cuts the drawings into tiles and packs them (gzip), then throws the result away. Visitors' answers are unchanged.
+# Decision point: fits if a round takes under PREPARE_FITS_CPU seconds of processor time (per 10 seconds).
+# Measured with time.thread_time (this thread's own processor time, not time spent waiting for others).
+PREPARE_EVERY = 10.0
+PREPARE_FITS_CPU = 5.0
+PREPARE_WARMUP = 3                     # first rounds match every journey in the country once: shown, not counted
+PREPARE_KEEP = 30                      # rounds kept for the figures (~5 minutes)
+PREPARE_OFF_FILE = DATA_DIR / 'prepare-test-off'    # tpa-compare pauses the dry run during its load test
+PREPARE_MEMORY_STOP = 0.85             # stops itself if the engine reaches this share of its memory limit
+TILE_SMALL = (0.05, 0.08)             # degrees lat x lon (~5.5 x 5.3 km): street views, buses on their roads
+TILE_BIG = (0.4, 0.64)                # (~44 x 42 km): city and region views
+PREPARE_ON = os.environ.get('TPA_BUS_PREPARE_TEST', '1').strip() != '0'
+PREPARE = {'state': 'starting' if PREPARE_ON else 'off', 'rounds': 0, 'recent': [], 'last': None, 'stopped': ''}
+
+
+def _memory_share():
+    """This engine's memory as a share of its systemd limit (None if not known)."""
+    try:
+        rss = next(int(line.split()[1]) * 1024 for line in Path('/proc/self/status').read_text().splitlines()
+                   if line.startswith('VmRSS:'))
+        cg = Path('/proc/self/cgroup').read_text().strip().split('::', 1)[-1]
+        limit = Path(f'/sys/fs/cgroup{cg}/memory.max').read_text().strip()
+        return rss / int(limit) if limit.isdigit() else None
+    except (OSError, StopIteration, ValueError):
+        return None
+
+
+def _tiles_for(v, hist, recent, size):
+    """The tiles (row, col) at this size that a bus may be drawn in: where it is and where its replay may still be."""
+    lo_lat = hi_lat = v['lat']
+    lo_lon = hi_lon = v['lon']
+    for t, la, ln in hist:
+        if t >= recent and abs(la - v['lat']) <= REPLAY_MARGIN_DEG * 3 and abs(ln - v['lon']) <= REPLAY_MARGIN_DEG * 6:
+            lo_lat, hi_lat = min(lo_lat, la), max(hi_lat, la)
+            lo_lon, hi_lon = min(lo_lon, ln), max(hi_lon, ln)
+    dl, dn = size
+    return [(r, c) for r in range(math.floor(lo_lat / dl), math.floor(hi_lat / dl) + 1)
+            for c in range(math.floor(lo_lon / dn), math.floor(hi_lon / dn) + 1)]
+
+
+def prepare_round() -> dict:
+    """Draw every bus in the country into tiles at both sizes, pack them, and measure it. Nothing is kept or sent."""
+    t_cpu, t_wall = time.thread_time(), time.monotonic()
+    now = time.time()
+    with LOCK:
+        vehicles = STATE['vehicles']
+        hist_of = {v['key']: list(HISTORY.get(v['key']) or ())[-12:] for v in vehicles}
+    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
+    deadline = time.monotonic() + 3600          # everything worked out now, nothing left for helpers
+    drawn0, reused0 = SHARE_STATS['busesDrawn'], SHARE_STATS['busesReused']
+    small: dict = {}
+    big: dict = {}
+    shown = waited = 0
+    draw_cpu = 0.0
+    for i, v in enumerate(vehicles):
+        if i % 200 == 0:
+            while FETCHING.is_set():                # the download comes first, as everywhere else
+                time.sleep(0.2)
+                waited += 1
+        age = now - v['recorded']
+        if age > SHOW_FOR:
+            continue
+        shown += 1
+        d0 = time.thread_time()
+        raw_s, _ = drawn_bus(v, age, now, deadline, True)
+        raw_b, _ = drawn_bus(v, age, now, deadline, False)
+        draw_cpu += time.thread_time() - d0
+        hist = (hist_of.get(v['key']) or ()) if REPLAY_SECONDS and age <= STALE_AFTER else ()
+        for k in _tiles_for(v, hist, recent, TILE_SMALL):
+            small.setdefault(k, []).append(raw_s)
+        for k in _tiles_for(v, hist, recent, TILE_BIG):
+            big.setdefault(k, []).append(raw_b)
+    t_pack = time.thread_time()
+    sizes, packed = [], []
+    for tiles in (small, big):
+        for parts in tiles.values():
+            body = ('{"entities":[' + ','.join(parts) + ']}').encode('utf-8')
+            sizes.append(len(body))
+            packed.append(len(gzip.compress(body, 6)))
+    pack_cpu = time.thread_time() - t_pack
+    packed.sort()
+    big_counts = sorted(len(p) for p in big.values())
+    return {'at': iso(now), 'cpuSeconds': round(time.thread_time() - t_cpu, 2), 'wallSeconds': round(time.monotonic() - t_wall, 2),
+            'drawCpu': round(draw_cpu, 2), 'packCpu': round(pack_cpu, 2), 'buses': shown,
+            'drawnNew': SHARE_STATS['busesDrawn'] - drawn0, 'reused': SHARE_STATS['busesReused'] - reused0,
+            'tilesSmall': len(small), 'tilesBig': len(big), 'mb': round(sum(sizes) / 1e6, 1),
+            'packedMb': round(sum(packed) / 1e6, 1),
+            'packedKbTypical': round(packed[len(packed) // 2] / 1024, 1) if packed else 0,
+            'packedKbLargest': round(packed[-1] / 1024, 1) if packed else 0,
+            'busiestBigTile': big_counts[-1] if big_counts else 0, 'downloadWaits': waited,
+            'memoryShare': None if (m := _memory_share()) is None else round(m, 2)}
+
+
+def prepare_summary() -> dict:
+    out = {k: PREPARE[k] for k in ('state', 'rounds', 'stopped')}
+    out['last'] = PREPARE['last']
+    rs = PREPARE['recent']
+    if rs:
+        cpus = sorted(r['cpuSeconds'] for r in rs)
+        out['counted'] = len(rs)
+        out['cpuTypical'] = cpus[len(cpus) // 2]
+        out['cpuWorst'] = cpus[-1]
+        out['cpuPer10s'] = round(statistics.fmean(r['cpuSeconds'] / max(PREPARE_EVERY, r['wallSeconds']) * PREPARE_EVERY for r in rs), 2)
+        out['fitsLimit'] = PREPARE_FITS_CPU
+        out['verdict'] = 'FITS' if out['cpuPer10s'] < PREPARE_FITS_CPU else 'TOO BIG - Plan B'
+    return out
+
+
+def prepare_worker() -> None:
+    """Stage 0 dry run: a round every PREPARE_EVERY seconds once buses and the timetable are in."""
+    while True:
+        rest = PREPARE_EVERY
+        if PREPARE_OFF_FILE.exists():
+            PREPARE['state'] = 'paused'
+        elif not STATE['fetchedAt'] or (TIMETABLE_MODE == 'download' and TIMETABLE['tt'] is None):
+            PREPARE['state'] = 'waiting for buses and timetable'
+        else:
+            share = _memory_share()
+            if share is not None and share > PREPARE_MEMORY_STOP:
+                PREPARE['state'], PREPARE['stopped'] = 'stopped', f'memory at {share:.0%} of the limit'
+                return
+            PREPARE['state'] = 'running'
+            t0 = time.monotonic()
+            try:
+                r = prepare_round()
+            except Exception as exc:     # the dry run must never take the bus layer down
+                PREPARE['state'], PREPARE['stopped'] = 'stopped', ('error: ' + type(exc).__name__ + ': ' + str(exc))[:160]
+                return
+            PREPARE['rounds'] += 1
+            r['round'] = PREPARE['rounds']
+            PREPARE['last'] = r
+            if PREPARE['rounds'] > PREPARE_WARMUP:
+                PREPARE['recent'] = (PREPARE['recent'] + [r])[-PREPARE_KEEP:]
+            rest = max(0.5, PREPARE_EVERY - (time.monotonic() - t0))
+        time.sleep(rest)
 
 
 def best_road_file():
@@ -2365,7 +2508,7 @@ def _replay_for(v: dict, now: float, deadline: float):
         # 0.8.9: a new report not placed yet (the engine is busy reading a download): carry on along the part of
         # the route already placed - the moment shown is 90 s ago, so that part nearly always still covers it
         with JOURNEY_LOCK:
-            sh = SHAPES.get(f[0])
+            sh = shape_for(f[0])         # 0.16.0: was SHAPES.get - a line pushed out of the cache sent the bus onto roads
     if sh is not None:
         r = replay.track(sh, f[1], now, REPLAY_SECONDS, KEEP_LEFT_M)
         if r is not None and not fresh:
@@ -2536,6 +2679,8 @@ class Handler(BaseHTTPRequestHandler):
                                         'replayMemo': {'made': STATE.get('replayMemoMade', 0), 'reused': STATE.get('replayMemoHits', 0)},
                                         'sharing': dict(SHARE_STATS, busesKept=len(ENTITY_MEMO)),   # 0.15.1
                                         'cpuSeconds': meter_summary(),
+                                        'prepareTest': prepare_summary(),          # 0.16.0: Stage 0 dry run
+                                        'routeLinesKept': len(SHAPES),
                                         'lastView': STATE.get('lastView')})
         if split.path == '/details':
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
@@ -2646,6 +2791,8 @@ def main() -> None:
     threading.Thread(target=journey_worker, daemon=True).start()
     threading.Thread(target=stops_keeper, daemon=True).start()
     threading.Thread(target=path_worker, daemon=True).start()
+    if PREPARE_ON:
+        threading.Thread(target=prepare_worker, daemon=True).start()     # 0.16.0: Stage 0 dry run
     # 0.8.7 (owner 3 Nov 14:41): on its own Ampere server the engine listens on that server's PRIVATE address, so the
     # main server can ask it (both servers' firewalls only allow the main server's private address in)
     bind = BIND

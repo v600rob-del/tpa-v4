@@ -1,0 +1,290 @@
+#!/usr/bin/env python3
+"""tpa-compare - one paste, about 15 minutes unattended, one results table (server kit 4.56).
+
+Owner, 13 Nov 2026: the back-and-forth of load tests is "very time-consuming". Stage 0 of the "publish, don't answer"
+plan (claude/TPA-PUBLISH-PLAN.md, approved 16:10) builds this: run it from Oracle Cloud Shell, type the test-site
+password once, walk away. It:
+  1. optionally installs a bus engine version first (--update-bus <commit>) and waits for it to start;
+  2. watches the bus engine's whole-country dry run ("can the server prepare every bus in the country every 10 s?")
+     until its warm-up is over, then for 3 more minutes;
+  3. pauses the dry run and runs the short load test (tpa-loadtest, 50/100/150/250 viewers x 60 s), so the figures
+     compare with earlier days; the dry run is switched back on afterwards, whatever happens;
+  4. prints ONE table between the COPY BACK lines, with every earlier run from this Cloud Shell underneath.
+
+    curl -fsSL -O <address of tpa-loadtest> -O <address of tpa-compare> && python3 tpa-compare
+
+Read-only apart from --update-bus and the dry run's pause switch (/var/lib/tpa/bus/prepare-test-off).
+"""
+import argparse
+import base64
+import datetime
+import getpass
+import importlib.machinery
+import importlib.util
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+VERSION = '1.0'
+HERE = Path(__file__).resolve().parent
+HISTORY = Path(os.environ.get('TPA_COMPARE_HISTORY', '~/tpa-compare-history.jsonl')).expanduser()
+OFF_FILE = '/var/lib/tpa/bus/prepare-test-off'
+BUS_ADDR = ('B=$(sudo -n sed -n "s/^TPA_REMOTE_BUS=//p" /etc/tpa/remote.env 2>/dev/null); '
+            'R=${B:+remote}; [ -n "$B" ] || B=$(sudo -n cat /etc/tpa/bus-bind 2>/dev/null); B=${B:-127.0.0.1}; ')
+ROW = re.compile(r'^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(\S+)\s+([\d.]+)%\s+(\S+)')
+
+
+def load_loadtest(path):
+    loader = importlib.machinery.SourceFileLoader('tpa_loadtest', str(path))
+    spec = importlib.util.spec_from_loader('tpa_loadtest', loader)
+    m = importlib.util.module_from_spec(spec)
+    loader.exec_module(m)
+    return m
+
+
+class Server:
+    """Commands on the server over SSH (Cloud Shell's TPA key), as tpa-loadtest does."""
+    def __init__(self, target, key, runner=subprocess.run):
+        self.target, self.key, self.run_ = target, key, runner
+
+    def run(self, cmd, timeout=40):
+        try:
+            p = self.run_(['ssh', '-i', self.key, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', self.target, cmd],
+                          capture_output=True, text=True, timeout=timeout)
+            return p.returncode, p.stdout
+        except Exception as exc:
+            return 255, str(exc)
+
+    def bus_status(self):
+        code, out = self.run(BUS_ADDR + 'curl -s --max-time 20 "http://$B:8781/status"')
+        try:
+            return json.loads(out) if code == 0 else None
+        except ValueError:
+            return None
+
+    def bus_is_here(self):
+        code, out = self.run(BUS_ADDR + 'echo "where=${R:-here}"')
+        return code == 0 and 'where=here' in out
+
+    def pause_dry_run(self, on):
+        return self.run(f'sudo -n touch {OFF_FILE}' if on else f'sudo -n rm -f {OFF_FILE}')[0] == 0
+
+
+def password_ok(host, auth, opener=urllib.request.urlopen):
+    req = urllib.request.Request(f'https://{host}/', headers={'Authorization': 'Basic ' + auth})
+    try:
+        opener(req, timeout=20).read(64)
+        return True
+    except urllib.error.HTTPError as e:
+        return e.code != 401
+    except Exception:
+        return True            # cannot tell from here; the load test checks again
+
+
+def wait_for(cond, seconds, every=15, sleep=time.sleep, say=print, what=''):
+    t0 = time.monotonic()
+    while True:
+        got = cond()
+        if got:
+            return got
+        if time.monotonic() - t0 >= seconds:
+            return None
+        if what:
+            say(f'  ...{what}')
+        sleep(every)
+
+
+def meter_change(a, b):
+    """Processor seconds per bus-engine part between two /status answers, biggest first."""
+    ca, cb = (a or {}).get('cpuSeconds') or {}, (b or {}).get('cpuSeconds') or {}
+    out = [(k, round(v - ca.get(k, 0.0), 1)) for k, v in cb.items()]
+    return sorted([kv for kv in out if kv[1] > 0], key=lambda kv: -kv[1])
+
+
+def parse_loadtest(lines):
+    rows, stopped, healthy_all = [], None, False
+    for line in lines:
+        m = ROW.match(line)
+        if m:
+            rows.append({'viewers': int(m.group(1)), 'rate': float(m.group(2)), 'typical': m.group(3),
+                         'p95': m.group(4), 'failed': float(m.group(5)), 'bus': m.group(6)})
+        if line.startswith('STOPPED at'):
+            stopped = line.strip()
+        if line.startswith('All steps healthy'):
+            healthy_all = True
+    ok = [r['viewers'] for r in rows if not stopped or r is not rows[-1]]
+    return {'rows': rows, 'stopped': stopped, 'bestOk': max(ok) if ok else 0,
+            'firstFail': rows[-1]['viewers'] if stopped and rows else None, 'allHealthy': healthy_all}
+
+
+def fmt_dry(p):
+    if not p:
+        return ['  The bus engine did not report a dry run (is bus 0.16.0 or later installed?).']
+    last = p.get('last') or {}
+    out = []
+    if p.get('stopped'):
+        out.append(f"  DRY RUN STOPPED ITSELF: {p['stopped']}")
+    if p.get('verdict'):
+        out.append(f"  Verdict: {p['verdict']}  (processor {p['cpuPer10s']} s per 10 s; limit {p['fitsLimit']} s)")
+        out.append(f"  Rounds counted {p['counted']} · processor per round typical {p['cpuTypical']} s, worst {p['cpuWorst']} s")
+    else:
+        out.append(f"  No verdict yet: state '{p.get('state')}', {p.get('rounds', 0)} rounds (the first 3 are warm-up)")
+    if last:
+        out.append(f"  Last round: {last.get('buses', 0):,} buses · {last.get('cpuSeconds')} s processor "
+                   f"(drawing {last.get('drawCpu')} s, packing {last.get('packCpu')} s) · took {last.get('wallSeconds')} s")
+        out.append(f"  Drawn new {last.get('drawnNew', 0):,} · reused {last.get('reused', 0):,}")
+        out.append(f"  Tiles: {last.get('tilesSmall', 0):,} small + {last.get('tilesBig', 0):,} big · packed "
+                   f"{last.get('packedMb')} MB a round · typical tile {last.get('packedKbTypical')} KB, largest "
+                   f"{last.get('packedKbLargest')} KB · busiest big tile {last.get('busiestBigTile', 0):,} buses")
+        if last.get('memoryShare') is not None:
+            out.append(f"  Bus engine memory: {last['memoryShare']:.0%} of its limit")
+    return out
+
+
+def table(run, history):
+    L = [f"TPA compare {VERSION} · {run['when']} · bus {run.get('bus') or '?'} · {run['host']}"]
+    L.append('')
+    L.append('STAGE 0: CAN THE SERVER PREPARE THE WHOLE COUNTRY EVERY 10 SECONDS?')
+    L += fmt_dry(run.get('dry'))
+    if run.get('busCoresDry') is not None:
+        L.append(f"  Bus engine while watching (dry run on, no test crowd): {run['busCoresDry']:.2f} cores")
+    L.append('')
+    lt = run.get('load') or {}
+    L.append('LOAD TEST' + (' (dry run paused)' if run.get('paused') else ' (dry run NOT paused)'))
+    if lt.get('rows'):
+        L.append(f"  {'viewers':>7} {'req/s':>6} {'typical':>8} {'1 in 20':>8} {'failed':>7} {'bus':>7}")
+        for r in lt['rows']:
+            L.append(f"  {r['viewers']:>7} {r['rate']:>6.1f} {r['typical']:>8} {r['p95']:>8} {r['failed']:>6.1f}% {r['bus']:>7}")
+        L.append('  ' + (lt['stopped'] or 'All steps healthy.'))
+    else:
+        L.append('  No load test results' + (f": {lt['error']}" if lt.get('error') else '.'))
+    if run.get('meters'):
+        L.append('  Bus engine processor seconds during the load test: ' +
+                 ', '.join(f'{k} {v}' for k, v in run['meters'][:7]))
+    L.append('')
+    L.append('ALL RUNS FROM THIS CLOUD SHELL (newest last)')
+    L.append(f"  {'when':<17} {'bus':<8} {'dry run':<17} {'cpu/10 s':>8} {'ok up to':>8} {'failed at':>9}")
+    for h in history[-12:]:
+        d = h.get('dry') or {}
+        lt = h.get('load') or {}
+        L.append(f"  {h['when']:<17} {str(h.get('bus') or '?'):<8} {str(d.get('verdict') or d.get('state') or '-'):<17} "
+                 f"{str(d.get('cpuPer10s', '-')):>8} {lt.get('bestOk', '-')!s:>8} {str(lt.get('firstFail') or '-'):>9}")
+    return L
+
+
+def main(argv=None, lt_module=None, server=None, sleep=time.sleep, now=None):
+    p = argparse.ArgumentParser(description='One paste, unattended: the dry run figures + a short load test, one table.')
+    p.add_argument('--host', default='test.tpalive.co.uk')
+    p.add_argument('--update-bus', default=None, metavar='COMMIT', help='install this bus engine version first')
+    p.add_argument('--watch', type=float, default=180, help='seconds to watch the dry run after its warm-up')
+    p.add_argument('--warmup-wait', type=float, default=600, help=argparse.SUPPRESS)
+    p.add_argument('--steps', default='50,100,150,250')
+    p.add_argument('--seconds', type=float, default=60)
+    p.add_argument('--no-loadtest', action='store_true', help='only the dry run figures')
+    p.add_argument('--loadtest', default=str(HERE / 'tpa-loadtest'), help=argparse.SUPPRESS)
+    args = p.parse_args(argv)
+    lt = lt_module or load_loadtest(args.loadtest)
+    target = lt.server_for(args.host)
+    if not target:
+        print(f'Could not look up {args.host} - is the internet reachable from here?'); return 2
+    srv = server or Server(target, lt.KEY)
+    pw = os.environ.get('TPA_LOADTEST_PASSWORD')
+    if pw is None and not args.no_loadtest:
+        pw = getpass.getpass('Test-site password (user "tpa"; hidden as you type): ')
+    if pw is not None and not password_ok(args.host, base64.b64encode(f'tpa:{pw}'.encode()).decode()):
+        print('The test site did not accept that password - nothing was done.'); return 3
+    print(f'Thanks - this now runs by itself (about 15 minutes). Server: {target.split("@")[1]}', flush=True)
+    run = {'when': (now or datetime.datetime.now)().strftime('%d %b %H:%M'), 'host': args.host}
+
+    if args.update_bus:
+        print(f'Installing bus engine {args.update_bus[:8]}...', flush=True)
+        code, out = srv.run(f'sudo tpa-update bus {args.update_bus}', timeout=900)
+        print('\n'.join('  ' + l for l in out.strip().splitlines()[-6:]))
+        if code != 0:
+            print('The bus update did not finish - stopped here, nothing else was done.'); return 4
+        sleep(20)
+
+    st = wait_for(srv.bus_status, 240, sleep=sleep, what='waiting for the bus engine to answer')
+    if not st:
+        print('The bus engine did not answer - stopped here.'); return 5
+    run['bus'] = st.get('engineVersion')
+    print(f"Bus engine {run['bus']}: waiting for the dry run's warm-up (first 3 rounds), up to {args.warmup_wait / 60:.0f} min...", flush=True)
+
+    def warmed():
+        s = srv.bus_status()
+        pt = (s or {}).get('prepareTest') or {}
+        return s if pt.get('counted') or pt.get('stopped') or pt.get('state') in ('off', 'paused') else None
+    st = wait_for(warmed, args.warmup_wait, sleep=sleep, what='still warming up') or srv.bus_status()
+    pt = (st or {}).get('prepareTest') or {}
+    if pt.get('state') == 'paused':                 # left paused by an interrupted run: switch it back on
+        srv.pause_dry_run(False)
+        st = wait_for(warmed, args.warmup_wait, sleep=sleep, what='still warming up') or st
+    if pt.get('counted') and not pt.get('stopped'):
+        print(f'Watching the dry run for {args.watch / 60:.0f} min...', flush=True)
+        b0 = lt.server_stats(True)
+        sleep(args.watch)
+        use = lt.server_use(b0, lt.server_stats(True))
+        if use and 'tpa-bus' in use['units']:
+            run['busCoresDry'] = use['units']['tpa-bus']['cpu']
+        st = srv.bus_status() or st
+    run['dry'] = (st or {}).get('prepareTest')
+
+    if not args.no_loadtest:
+        here = srv.bus_is_here()
+        run['paused'] = bool(here and srv.pause_dry_run(True))
+        try:
+            if run['paused']:
+                wait_for(lambda: ((srv.bus_status() or {}).get('prepareTest') or {}).get('state') == 'paused', 60,
+                         every=5, sleep=sleep)
+            before = srv.bus_status()
+            print(f"Load test: {args.steps} viewers x {args.seconds:.0f} s (dry run {'paused' if run['paused'] else 'NOT paused'})...", flush=True)
+            env = dict(os.environ, TPA_LOADTEST_PASSWORD=pw)
+            lines = []
+            try:
+                proc = subprocess.Popen([sys.executable, args.loadtest, '--host', args.host, '--steps', args.steps,
+                                         '--seconds', str(args.seconds), '--yes'], stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True, env=env)
+                for line in proc.stdout:
+                    if 'COPY BACK' not in line:
+                        print('  | ' + line.rstrip(), flush=True)
+                    lines.append(line)
+                proc.wait()
+                proc.stdout.close()
+                run['load'] = parse_loadtest(lines)
+            except Exception as exc:
+                run['load'] = {'error': str(exc)[:120]}
+            run['meters'] = meter_change(before, srv.bus_status())
+        finally:
+            if run['paused']:
+                srv.pause_dry_run(False)            # put back: the dry run carries on
+
+    history = []
+    try:
+        history = [json.loads(l) for l in HISTORY.read_text().splitlines() if l.strip()]
+    except (OSError, ValueError):
+        pass
+    history.append(run)
+    try:
+        with HISTORY.open('a') as f:
+            f.write(json.dumps(run) + '\n')
+    except OSError:
+        pass
+    print()
+    print(lt.BANNER_FROM)
+    print('\n'.join(table(run, history)))
+    print(lt.BANNER_TO)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print('\nStopped by you. If the dry run was paused, it switches back on with the next tpa-compare run.')
+        sys.exit(130)
