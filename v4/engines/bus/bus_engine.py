@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.18.1'
+ENGINE_VERSION = '0.19.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1378,6 +1378,10 @@ PLACE_MEMO: dict = {}                 # (bus key, report time) -> (lon, lat) on 
 TILE_LAST: dict = {}                  # (size, row, col) -> hash of the text last written
 ROUTES_WRITTEN: set = set()           # (build, line id) already written
 PUB_TRIED: dict = {}                  # bus key -> (report time, journey) last worked out
+# 0.19.0 (owner 13 Nov 22:45 - the buses we can't put on a timetabled route are the real "gremlins": diversions, buses on
+# their way to their first stop, companies with no timetable): they glide along the roads between their reports, as on
+# the signed-off map, the drive worked out ONCE per report here (not per visitor). Off = stepping (TPA_BUS_ROAD_GLIDE=0).
+ROAD_GLIDE = os.environ.get('TPA_BUS_ROAD_GLIDE', '1').strip() != '0'
 
 
 def _folder(path: Path) -> Path:
@@ -1444,6 +1448,17 @@ def bus_item(v, hist, now):
         ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (sh.point_at(m),)]
         small = dict(base, s=sid, r=[[int(t), _r1(m)] for t, m in pts], p=ps)
         big = dict(base, p=ps)
+    elif ROAD_GLIDE and ROADS['map'] is not None and (made := road_way(v, now)) is not None:
+        rsh, rplaced, jumps = made
+        pts = rplaced[-PUBLISH_KEEP:]
+        cut = len(rplaced) - len(pts)
+        ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (rsh.point_at(m),)]
+        small = dict(base, w=[[round(a, 6), round(b, 6)] for a, b in zip(rsh.lon, rsh.lat)][:400],
+                     r=[[int(t), _r1(m)] for t, m in pts], p=ps)
+        js = sorted(j - cut for j in jumps if j >= cut)
+        if js:
+            small['jm'] = js
+        big = dict(base, p=ps)
     else:
         # not matched: where it reported, put on the road (left-hand side), stepping from report to report
         out = []
@@ -1459,6 +1474,20 @@ def bus_item(v, hist, now):
     big_j = json.dumps(big, separators=(',', ':'))
     ITEM_MEMO[key] = (sig, small_j, big_j)
     return small_j, big_j
+
+
+def road_way(v, now):
+    """0.19.0: (line along the roads through the bus's recent reports, [(t, metres)], jump indices) or None."""
+    legs = road_legs(v, now, None)               # each drive between two reports worked out once, then kept (LEGS)
+    if not legs:
+        return None
+    try:
+        made = replay.road_route(legs)
+    except ValueError:
+        made = None
+    if made is None or len(made[0].lon) > 400:
+        return None
+    return made
 
 
 UNSURE: dict = {}                     # 0.17.1: bus key -> journey signature that matched several timetabled journeys
@@ -1606,6 +1635,9 @@ def publish_round() -> dict:
     for memo in (ITEM_MEMO, PUB_TRIED):
         for k in [k for k in memo if k not in live]:
             del memo[k]
+    with JOURNEY_LOCK:
+        for k in [k for k in LEGS if k not in live]:
+            del LEGS[k]
     for k in [k for k in PLACE_MEMO if k[0] not in live or k[1] < now - DROP_AFTER]:
         del PLACE_MEMO[k]
     written = packed_bytes = 0

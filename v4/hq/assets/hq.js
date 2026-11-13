@@ -1459,8 +1459,10 @@ async function busTileFrame(){
   if(small&&meta.build){const want=[...new Set(pick.filter(it=>typeof it.s==='string'&&Array.isArray(it.r)).map(it=>it.s))];
     await Promise.race([Promise.all(want.map(sid=>busLine(meta.build,sid).then(sh=>lines.set(sid,sh)))),new Promise(ok=>setTimeout(ok,2500))]);}
   for(const it of pick){
-    let tr=null;const sh=small&&it.s?lines.get(it.s):null;
-    if(sh&&Array.isArray(it.r))tr=R.track(sh,it.r,now,delay,validNum(meta.keepLeft)?meta.keepLeft:0);
+    let tr=null;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0;
+    if(sh&&Array.isArray(it.r))tr=R.track(sh,it.r,now,delay,kl);
+    // 4.58.0 (bus 0.19.0): a bus not on a timetabled route brings its own way along the roads
+    if(!tr&&small&&Array.isArray(it.w)&&it.w.length>=2&&Array.isArray(it.r)){try{tr=R.track(new R.Shape(it.w),it.r,now,delay,kl,it.jm);}catch(_){tr=null;}}
     if(!tr)tr=R.straight(it.p,now,delay,it.j===1);
     if(!tr)continue;
     const r6=v=>Math.round(v*1e6)/1e6,pos=tr.position;

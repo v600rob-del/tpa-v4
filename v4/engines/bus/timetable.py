@@ -456,13 +456,14 @@ class Timetable:
             out = []
             with self.lock:
                 for day, base in ((date, secs), (prev, secs + 86400)):
-                    for tid, sid, short, last, noc, code in self.db.execute(
-                            'SELECT e.trip_id, t.service_id, r.short_name, e.last_stop, a.noc, t.journey_code FROM trip_ends e '
+                    for tid, sid, short, last, noc, code, dep, arr, n in self.db.execute(
+                            'SELECT e.trip_id, t.service_id, r.short_name, e.last_stop, a.noc, t.journey_code, e.first_dep, e.last_arr, e.stops '
+                            'FROM trip_ends e '
                             'JOIN trips t ON t.trip_id = e.trip_id LEFT JOIN routes r ON r.route_id = t.route_id '
                             'LEFT JOIN agency a ON a.agency_id = r.agency_id '
                             'WHERE e.first_stop = ? AND e.first_dep BETWEEN ? AND ?', (origin_ref, base + offsets[0], base + offsets[1])):
                         if self.runs_on(sid, day):
-                            out.append((tid, (short or '').lower(), last or '', (noc or '').upper(), code or ''))
+                            out.append((tid, (short or '').lower(), last or '', (noc or '').upper(), code or '', (dep, arr, n)))
             return out
 
         def narrow(cands):
@@ -475,7 +476,11 @@ class Timetable:
         if not cands and line:
             near = [c for c in look((-120, 120)) if c[1] == line.lower()]
             near = narrow(near)
-            cands = near if len({c[0] for c in near}) == 1 else []
+            cands = near if len({c[0] for c in near}) == 1 or (near and len({c[1:4] + (c[5],) for c in near}) == 1) else []
+        # 0.18.2 (owner 13 Nov 22:45: First Norfolk & Suffolk and First South Yorkshire publish each journey TWICE): copies
+        # of the same journey - same route, company, end stop, times and number of stops - count as one (the first).
+        if len({c[0] for c in cands}) > 1 and len({c[1:4] + (c[5],) for c in cands}) == 1:
+            return [min(c[0] for c in cands)]
         return sorted({c[0] for c in cands})
 
     def stops_of(self, trip_id):

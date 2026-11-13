@@ -24,7 +24,8 @@
     const seg=c[i]-c[i-1],f=seg<=0?0:(m-c[i-1])/seg;
     return [this.lon[i-1]+(this.lon[i]-this.lon[i-1])*f,this.lat[i-1]+(this.lat[i]-this.lat[i-1])*f];
   };
-  Shape.prototype.verticesBetween=function(a,b){const i=bisectRight(this.cum,a),j=bisectLeft(this.cum,b),out=[];for(let k=i;k<j;k++)out.push(this.cum[k]);return out;};
+  // corners strictly between a and b (a hair of tolerance: a report exactly on a corner is not counted twice)
+  Shape.prototype.verticesBetween=function(a,b){const i=bisectRight(this.cum,a+1e-6),j=bisectLeft(this.cum,b-1e-6),out=[];for(let k=i;k<j;k++)out.push(this.cum[k]);return out;};
   function keepLeft(points,metres,lat){
     if(metres<=0||points.length<2)return points;
     const k=Math.cos(lat*Math.PI/180)*M_PER_DEG,out=[];
@@ -35,20 +36,23 @@
     return out;
   }
   const r1=v=>Math.round(v*10)/10;
-  // placed = [[report time (s), metres along], ...] oldest first. Same result as replay.track (no jumps).
-  function track(shape,placed,now,delay,keepLeftM){
+  // placed = [[report time (s), metres along], ...] oldest first; jumps = indices of reports a jump starts from (bus 0.19.0:
+  // no drive found between two reports - stands, then is seen at the next). Same result as replay.track.
+  function track(shape,placed,now,delay,keepLeftM,jumps){
+    const J=new Set(Array.isArray(jumps)?jumps:[]);
     if(!placed||!placed.length)return null;
     const shown=now-delay,seq=placed;
     if(shown>=seq[seq.length-1][0]){const p=shape.pointAt(seq[seq.length-1][1]);return {position:p,points:[p],times:[r1(now)],waiting:true};}
     let startT,startM,first;
     if(shown<=seq[0][0]){startT=shown;startM=seq[0][1];first=0;}
     else{let i=1;while(!(seq[i][0]>shown))i++;
-      const [t0,m0]=seq[i-1],[t1,m1]=seq[i];startM=m0+(m1-m0)*(shown-t0)/(t1-t0);startT=shown;first=i;}
-    const rest=seq.slice(first),tm=[[startT,startM]].concat(rest.map(q=>[q[0],q[1]]));
+      const [t0,m0]=seq[i-1],[t1,m1]=seq[i];startM=J.has(i-1)?m0:m0+(m1-m0)*(shown-t0)/(t1-t0);startT=shown;first=i;}
+    const rest=seq.slice(first),tm=[[startT,startM,first-1]].concat(rest.map((q,k)=>[q[0],q[1],first+k]));
     let marks=[];
-    for(let z=0;z+1<tm.length;z++){const [ta,ma]=tm[z],[tb,mb]=tm[z+1];
+    for(let z=0;z+1<tm.length;z++){const [ta,ma]=tm[z],[tb,mb,ib]=tm[z+1];
       if(!marks.length)marks.push([ta,ma]);
-      if(mb>ma)for(const m of shape.verticesBetween(ma,mb))marks.push([ta+(tb-ta)*(m-ma)/(mb-ma),m]);
+      if(J.has(ib-1)){if(tb-0.1>ta)marks.push([tb-0.1,ma]);}
+      else if(mb>ma)for(const m of shape.verticesBetween(ma,mb))marks.push([ta+(tb-ta)*(m-ma)/(mb-ma),m]);
       marks.push([tb,mb]);}
     if(marks.length>MAX_POINTS){
       const keep=new Set([0,marks.length-1]);
