@@ -46,7 +46,7 @@ try:
 except Exception:            # no time zone data: UTC (an hour out in summer, never a crash)
     LONDON = timezone.utc
 
-FORMAT = 3                   # 2: bus stations (0.14.0); 3: bays marked as street stops count too (0.14.1)
+FORMAT = 4                   # 2: bus stations (0.14.0); 3: bays marked as street stops count too (0.14.1); 4: stand codes in names, close stations merged (0.14.3)
 CELL = 50                    # cells of 1/50 degree (~2 km north-south) for "stops in view"
 BATCH = 50_000
 VIEW_SPAN = 0.06             # stops are shown only when the view is under ~6.5 km tall (street level)
@@ -265,15 +265,19 @@ def street_bay(common, indicator):
 
 
 def tidy_station(common):
-    """'Beverley BS' / 'Beverley Bs' / 'Beverley Bus Stn' -> 'Beverley Bus Station'."""
+    """'Beverley BS' / 'Beverley Bs' / 'Beverley Bus Stn' -> 'Beverley Bus Station'.
+    0.14.3 (owner 13 Nov 00:04, Doncaster stacked 30 times): a stand's own code on the end of the name goes -
+    'Doncaster Frenchgate Interchange/A1' -> 'Doncaster Frenchgate Interchange'."""
     common = re.sub(r'\s+', ' ', (common or '').replace('_', ' ')).strip()
+    common = re.sub(r'\s*/\s*[A-Za-z]{0,2}\d{0,3}[A-Za-z]?$', '', common).strip() or common
     return re.sub(r'(?i)\b(bs|bus stn|bus sta)\b', 'Bus Station', common)
 
 
 def station_name(common, place):
     """'Bus Station' in Beverley -> 'Beverley Bus Station'; 'Hull Paragon Interchange' stays as it is."""
     common = tidy_station(common) or 'Bus Station'
-    if place and place.lower() not in common.lower():
+    first = (place or '').split(' ')[0].lower()
+    if place and place.lower() not in common.lower() and not (first and re.search(r'\b' + re.escape(first) + r'\b', common.lower())):
         return f'{place} {common}'[:80]
     return common[:80]
 
@@ -324,12 +328,48 @@ def group_stations(stands, hubs):
         for c in clusters:
             names = [station_name(o[1], o[2]) for o in c]
             name = max(set(names), key=names.count)
-            if len(c) < 2 and not re.search(r'(?i)bus station|coach station|interchange|bus park', name):
-                continue                       # one lonely stand is just a stop
             c.sort()
             groups['X' + c[0][0]] = {'code': ('X' + c[0][0])[:20], 'name': name, 'lat': sum(o[3] for o in c) / len(c),
-                                     'lon': sum(o[4] for o in c) / len(c), 'locality': c[0][2], 'stands': [o[0] for o in c]}
-    return [g for g in groups.values() if g['stands']]
+                                     'lon': sum(o[4] for o in c) / len(c), 'locality': c[0][2], 'stands': [o[0] for o in c],
+                                     # one lonely stand is just a stop - unless it is right beside a station (0.14.3)
+                                     'lonely': len(c) < 2 and not re.search(r'(?i)bus station|coach station|interchange|bus park', name)}
+    return merge_close([g for g in groups.values() if g['stands']], stands)
+
+
+MERGE_M = 120                # 0.14.3: stations whose stands are this close to each other's are one station
+
+
+def merge_close(groups, stands):
+    """0.14.3 (owner 13 Nov 00:04: Doncaster Frenchgate Interchange showed as a stack of stations): the safety net -
+    groups with stands within MERGE_M of each other's become one station, named and placed after the biggest."""
+    pos = {a: (v[2], v[3]) for a, v in stands.items()}
+    parent = list(range(len(groups)))
+
+    def root(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+    for i in range(len(groups)):
+        for j in range(i + 1, len(groups)):
+            gi, gj = groups[i], groups[j]
+            if abs(gi['lat'] - gj['lat']) > 0.02 or abs(gi['lon'] - gj['lon']) > 0.03:
+                continue
+            if any(_metres(*pos[a], *pos[b]) <= MERGE_M for a in gi['stands'] if a in pos for b in gj['stands'] if b in pos):
+                parent[root(j)] = root(i)
+    merged = {}
+    for i, g in enumerate(groups):
+        merged.setdefault(root(i), []).append(g)
+    out = []
+    for parts in merged.values():
+        if all(g.get('lonely') for g in parts):
+            continue
+        parts.sort(key=lambda g: (bool(g.get('lonely')), -len(g['stands']), g['code']))
+        main = dict(parts[0])
+        main.pop('lonely', None)
+        main['stands'] = [a for g in parts for a in g['stands']]
+        out.append(main)
+    return out
 
 
 def add_stations(db, naptan):
