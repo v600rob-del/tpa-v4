@@ -281,6 +281,7 @@ def tidy_station(common):
         if not cut or cut == common:
             break
         common = cut
+    common = re.sub(r'(?i)\bintc\b', 'Interchange', common)          # 0.14.5: "Doncaster Intc"
     return re.sub(r'(?i)\b(bs|bus stn|bus sta)\b', 'Bus Station', common)
 
 
@@ -796,6 +797,7 @@ class BoardMaker:
     def _row(self, f, secs, arriving, base, s_now, now, midnight_ts, atco, live):
         sched_today = secs - base                      # on today's clock
         place = (f['from'] if arriving else (f['headsign'] or f['to'])) or ('Bus' if arriving else 'Not given')
+        place = tidy_station(place) or place   # 0.14.5 (owner 13 Nov 11:50): "Worksop Bus Station Bay F" -> "Worksop Bus Station"
         row = {'time': clock(sched_today), 'place': place[:80], 'state': 'unknown', 'status': 'Timetable'}
         if f['route']:
             row['route'] = f['route'][:12]
