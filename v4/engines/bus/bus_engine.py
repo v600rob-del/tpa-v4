@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.15.0'
+ENGINE_VERSION = '0.15.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1015,116 +1015,94 @@ def build_entity(v, age, now, deadline, roads):
     return entity, keys
 
 
-# ---------------------------------------------------------------- prepared squares (0.15.0)
-# Owner 13 Nov 2026 13:23 (go-live rule 1: "the server never does per-person work for the live map"). The load test at
-# 12:56 failed at 100 viewers: every answer scanned all ~28,000 buses and drew each one in view again for each viewer.
-# Now the map is cut into fixed squares (HQ sends the square size as cell=, the same squares the page rounds its view
-# to). Each square's buses are worked out once and kept for CELL_SECONDS; each bus is drawn once and kept for the same
-# time whatever square or zoom asks; a viewer's answer is the ready squares stitched together. A background job keeps
-# squares that someone looked at in the last CELL_KEEP seconds ready, so most answers are only stitching.
-CELL_SECONDS = 6.0            # a square (and a drawn bus) is used for this long; HQ shares answers up to 8 s anyway
-CELL_KEEP = 60.0              # squares nobody asked for in this long stop being prepared
-CELL_MAX = 20000              # most squares kept at once (memory guard)
-CELL_SIZES = {2.0 ** -k for k in range(0, 11)}       # 1 .. 1/1024 degree of latitude, as HQ's area_query
-CELLS: dict = {}              # (g, iy, ix) -> {'made', 'asked', 'items': [(id, lat, lon, json, keys)]}
+# ---------------------------------------------------------------- shared bus drawings (0.15.0-0.15.1)
+# Owner 13 Nov 2026 13:23 (go-live rule 1: "the server never does per-person work for the live map"). Load test 12:56:
+# healthy at 50 viewers, failing at 100 - every answer scanned all ~28,000 buses and drew each bus in view again.
+# 0.15.0 tried prepared squares; the 14:40 load test showed a panning crowd rarely asks for the same squares twice
+# (~58 squares made per answer). What a crowd does keep asking for is the same BUSES. So: buses are filed by small map
+# patches (bus_index) and a view only looks at its own patches; each bus is drawn once per report (at most
+# DRAWN_SECONDS) for everyone, whatever their view or zoom, and kept as ready-made text (drawn_bus). Squares, for
+# Cloudflare to share, come later in the page.
 ENTITY_MEMO: dict = {}        # (bus key, roads) -> (made, recorded, json, keys)
-SQUARES_LOCK = threading.Lock()
-SQUARE_STATS = {'answers': 0, 'squaresMade': 0, 'squaresReused': 0, 'busesDrawn': 0, 'busesReused': 0}
-BUCKET_LAT, BUCKET_LON = 0.05, 0.1
-INDEX = {'src': None, 'buckets': {}}
-
-
-def cell_of_query(query: str, view):
-    """The square size HQ sent (cell=), if the view is made of whole squares of that size; otherwise None."""
-    if view is None:
-        return None
-    try:
-        g = float((parse_qs(query).get('cell') or [''])[0])
-    except ValueError:
-        return None
-    if g not in CELL_SIZES:
-        return None
-    s, w, n, e = view
-    for x, size in ((s, g), (n, g), (w, 2 * g), (e, 2 * g)):
-        if abs(x / size - round(x / size)) > 0.1:      # HQ writes 4 decimal places
-            return None
-    rows, cols = round((n - s) / g), round((e - w) / (2 * g))
-    return g if 0 < rows and 0 < cols and rows * cols <= 400 else None
+SHARE_STATS = {'answers': 0, 'busesDrawn': 0, 'busesReused': 0}
+BUCKET_LAT, BUCKET_LON = 0.01, 0.02   # ~1.1 x 1.3 km patches
+COARSE = 8                            # 0.15.1: wide views use patches 8 x 8 times bigger (~9 x 11 km)
+INDEX = {'src': None, 'buckets': {}, 'coarse': {}}
+# 0.15.1: a drawn bus is kept until its next report, up to DRAWN_SECONDS - pages ask every 10 s, so 6 s was always
+# just too short to reuse; the page places a replayed bus by the clock times in its track, so an older drawing of the
+# same report is still exactly right
+DRAWN_SECONDS = 20.0
 
 
 def bus_index(vehicles):
-    """Buses by small map squares, made again only when a new download has replaced the list."""
+    """Buses by small map patches, made again only when a new download has replaced the list. 0.15.1: a bus is filed
+    under every patch its recent reports touch (where its 90-second replay may draw it), so a square only needs to
+    look at its own patches - not every bus within 2 km of it, which made small squares very costly."""
     if INDEX['src'] is vehicles:
         return INDEX['buckets']
     buckets: dict = {}
+    now = time.time()
+    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK - 60          # a minute of slack: the list lives ~30 s
     for v in vehicles:
-        buckets.setdefault((math.floor(v['lat'] / BUCKET_LAT), math.floor(v['lon'] / BUCKET_LON)), []).append(v)
-    INDEX['src'], INDEX['buckets'] = vehicles, buckets
+        lo_lat = hi_lat = v['lat']
+        lo_lon = hi_lon = v['lon']
+        if REPLAY_SECONDS and now - v['recorded'] <= STALE_AFTER:
+            for t, la, ln in (HISTORY.get(v['key']) or ())[-12:]:
+                if t >= recent and abs(la - v['lat']) <= REPLAY_MARGIN_DEG * 3 and abs(ln - v['lon']) <= REPLAY_MARGIN_DEG * 6:
+                    lo_lat, hi_lat = min(lo_lat, la), max(hi_lat, la)
+                    lo_lon, hi_lon = min(lo_lon, ln), max(hi_lon, ln)
+        for by in range(math.floor(lo_lat / BUCKET_LAT), math.floor(hi_lat / BUCKET_LAT) + 1):
+            for bx in range(math.floor(lo_lon / BUCKET_LON), math.floor(hi_lon / BUCKET_LON) + 1):
+                buckets.setdefault((by, bx), []).append(v)
+    coarse: dict = {}
+    for (by, bx), vs in buckets.items():
+        coarse.setdefault((by // COARSE, bx // COARSE), []).extend(vs)
+    INDEX['src'], INDEX['buckets'], INDEX['coarse'] = vehicles, buckets, coarse
+    for k in [k for k, got in list(ENTITY_MEMO.items()) if not 0 <= now - got[0] < DRAWN_SECONDS]:
+        ENTITY_MEMO.pop(k, None)                          # drawings past their time (each new download)
     return buckets
 
 
+def buses_near(vehicles, south, west, north, east):
+    """Every bus filed under a patch the area touches (each once), from the small or the big patches, whichever means
+    fewer patches to look at."""
+    buckets = bus_index(vehicles)
+    rows = math.floor(north / BUCKET_LAT) - math.floor(south / BUCKET_LAT) + 1
+    cols = math.floor(east / BUCKET_LON) - math.floor(west / BUCKET_LON) + 1
+    if rows * cols > 64:
+        table, lat, lon = INDEX['coarse'], BUCKET_LAT * COARSE, BUCKET_LON * COARSE
+    else:
+        table, lat, lon = buckets, BUCKET_LAT, BUCKET_LON
+    done = set()
+    for by in range(math.floor(south / lat), math.floor(north / lat) + 1):
+        for bx in range(math.floor(west / lon), math.floor(east / lon) + 1):
+            for v in table.get((by, bx), ()):
+                if v['key'] not in done:
+                    done.add(v['key'])
+                    yield v
+
+
 def drawn_bus(v, age, now, deadline, roads):
-    """build_entity, kept for CELL_SECONDS per bus (and per roads/no roads) while its newest report is the same."""
+    """build_entity, kept per bus (and per roads/no roads) until its next report, at most DRAWN_SECONDS."""
     k = (v['key'], roads)
     got = ENTITY_MEMO.get(k)
-    if got and now - got[0] < CELL_SECONDS and got[1] == v['recorded']:
-        SQUARE_STATS['busesReused'] += 1
+    if got and 0 <= now - got[0] < DRAWN_SECONDS and got[1] == v['recorded']:
+        SHARE_STATS['busesReused'] += 1
         return got[2], got[3]
     entity, keys = build_entity(v, age, now, deadline, roads)
     raw = json.dumps(entity, separators=(',', ':'))
     ENTITY_MEMO[k] = (now, v['recorded'], raw, keys)
-    SQUARE_STATS['busesDrawn'] += 1
+    SHARE_STATS['busesDrawn'] += 1
     return raw, keys
 
 
-def make_square(g, iy, ix, vehicles, now, deadline):
-    """Every bus that belongs in one square, as snapshot() decides for a view of exactly this square."""
-    south, north, west, east = iy * g, (iy + 1) * g, ix * 2 * g, (ix + 1) * 2 * g
-    clat = (south + north) / 2
-    near_lat, near_lon = REPLAY_MARGIN_DEG, REPLAY_MARGIN_DEG / max(0.2, math.cos(math.radians(clat)))
-    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
-    roads = g <= 1 / 64                  # a view of 4-8 such squares is under ROAD_VIEW_SPAN (0.12) tall
-    buckets = bus_index(vehicles)
-    items = []
-    for by in range(math.floor((south - near_lat) / BUCKET_LAT), math.floor((north + near_lat) / BUCKET_LAT) + 1):
-        for bx in range(math.floor((west - near_lon) / BUCKET_LON), math.floor((east + near_lon) / BUCKET_LON) + 1):
-            for v in buckets.get((by, bx), ()):
-                age = now - v['recorded']
-                if age > SHOW_FOR:
-                    continue
-                if not (south <= v['lat'] < north and west <= v['lon'] < east):
-                    if not (REPLAY_SECONDS and age <= STALE_AFTER and south - near_lat <= v['lat'] <= north + near_lat
-                            and west - near_lon <= v['lon'] <= east + near_lon):
-                        continue
-                    hist = HISTORY.get(v['key']) or ()
-                    if not any(t >= recent and south <= la < north and west <= lo < east for t, la, lo in hist[-12:]):
-                        continue
-                raw, keys = drawn_bus(v, age, now, deadline, roads)
-                items.append((v['key'], v['lat'], v['lon'], raw, keys))
-    return items
-
-
-def get_square(key, vehicles, now, deadline, fresh_only=False):
-    with SQUARES_LOCK:
-        sq = CELLS.get(key)
-        if sq is not None:
-            sq['asked'] = now
-            if now - sq['made'] < CELL_SECONDS:
-                SQUARE_STATS['squaresReused'] += 1
-                return sq['items']
-    if fresh_only and sq is not None:
-        return sq['items']
-    items = make_square(*key, vehicles, now, deadline)
-    with SQUARES_LOCK:
-        CELLS[key] = {'made': now, 'asked': now, 'items': items}
-        SQUARE_STATS['squaresMade'] += 1
-    return items
-
-
-def snapshot_squares(view, g) -> bytes:
-    """snapshot() for a view made of whole squares: the ready squares stitched together, nearest the middle first."""
+def snapshot_fast(view) -> bytes:
+    """0.15.1: snapshot() for any view, the same buses chosen the same way, but (1) only buses filed under the small
+    patches the view (and the 2 km replay margin) covers are looked at, not all ~28,000, and (2) each bus is drawn once
+    per report (at most DRAWN_SECONDS) for everyone (drawn_bus) and sent as ready-made text. Owner 13 Nov: a panning crowd rarely
+    asks for the same squares twice, but it constantly asks for the same BUSES."""
     now = time.time()
-    if view[2] - view[0] <= MAX_VIEW_SPAN:
+    if view is not None and view[2] - view[0] <= MAX_VIEW_SPAN:
         note_demand(view)
     else:
         note_demand()
@@ -1137,77 +1115,59 @@ def snapshot_squares(view, g) -> bytes:
              'nextPollAfterMs': 10000, 'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else '')
              + (' · bus routes: BODS timetables, Department for Transport (OGL)' if REPLAY_SECONDS and TIMETABLE['tt'] is not None else ''),
              'groupStacks': True}
-    SQUARE_STATS['answers'] += 1
-    south, west, north, east = view
+    SHARE_STATS['answers'] += 1
     chosen = []
-    if north - south > MAX_VIEW_SPAN:
+    if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame['notice'] = 'Zoom in to see buses'
-    elif notice:
-        frame['notice'] = notice
-    if north - south <= MAX_VIEW_SPAN and fetched:
+    else:
+        if notice:
+            frame['notice'] = notice
+    if view is not None and view[2] - view[0] <= MAX_VIEW_SPAN and fetched:
+        south, west, north, east = view
+        clat, clon = (south + north) / 2, (west + east) / 2
+        near_lat, near_lon = REPLAY_MARGIN_DEG, REPLAY_MARGIN_DEG / max(0.2, math.cos(math.radians(clat)))
+        recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
+        inside = []
+        for v in buses_near(vehicles, south, west, north, east):
+            age = now - v['recorded']
+            if age > SHOW_FOR:
+                continue
+            if not (south <= v['lat'] <= north and west <= v['lon'] <= east):
+                if not (REPLAY_SECONDS and age <= STALE_AFTER and south - near_lat <= v['lat'] <= north + near_lat
+                        and west - near_lon <= v['lon'] <= east + near_lon):
+                    continue
+                hist = HISTORY.get(v['key']) or ()
+                if not any(t >= recent and south <= la <= north and west <= lo <= east for t, la, lo in hist[-12:]):
+                    continue
+            inside.append(((v['lat'] - clat) ** 2 + (v['lon'] - clon) ** 2, v, age))
+        inside.sort(key=lambda t: t[0])
         with LOCK:
             known_area = any(s0 <= south and w0 <= west and n0 >= north and e0 >= east
                              for _, (s0, w0, n0, e0) in ((t, (s - (n - s) / 2, w - (e - w) / 2, n + (n - s) / 2, e + (e - w) / 2))
                                                          for t, (s, w, n, e) in VIEWS if now - t < VIEW_MEMORY))
         deadline = time.monotonic() + (INLINE_BUDGET if known_area else NEW_AREA_BUDGET)
+        roads = north - south <= ROAD_VIEW_SPAN
         if north - south <= PREP_VIEW_SPAN:
             with LOCK:
                 VIEWS.append((now, view))
                 del VIEWS[:-50]
         if REPLAY_SECONDS and not known_area:
             JOURNEY_WAKE.set()
-        seen = {}
-        for iy in range(round(south / g), round(north / g)):
-            for ix in range(round(west / (2 * g)), round(east / (2 * g))):
-                for item in get_square((g, iy, ix), vehicles, now, deadline):
-                    seen.setdefault(item[0], item)
-        clat, clon = (south + north) / 2, (west + east) / 2
-        found = sorted(seen.values(), key=lambda t: (t[1] - clat) ** 2 + (t[2] - clon) ** 2)
-        chosen = found[:MAX_PER_VIEW]
         why = {'road': 0, 'straight-pending': 0, 'straight-no-road-match': 0, 'straight-zoomed-out': 0, 'still-no-speed': 0,
                'placed-on-road': 0, 'replay': 0, 'replay-waiting': 0, 'replay-pending': 0, 'replay-roads': 0}
-        for item in chosen:
-            for k in item[4]:
+        for _, v, age in inside[:MAX_PER_VIEW]:
+            raw, keys = drawn_bus(v, age, now, deadline, roads)
+            chosen.append(raw)
+            for k in keys:
                 why[k] += 1
         with LOCK:
             STATE['lastView'] = why
         if not chosen and MODE == 'area' and not covers(coverage, view):
             frame['notice'] = 'Loading buses for this area…'
-        elif len(found) > MAX_PER_VIEW and not notice:
+        elif len(inside) > MAX_PER_VIEW and not notice:
             frame['notice'] = f'Showing nearest {MAX_PER_VIEW} · zoom in for all'
     head = json.dumps(frame, separators=(',', ':'))
-    return (head[:-1] + ',"entities":[' + ','.join(item[3] for item in chosen) + ']}').encode('utf-8')
-
-
-def squares_keeper():
-    """Keep the squares someone looked at in the last CELL_KEEP seconds ready, so viewers only stitch them together.
-    Squares nobody looked at for that long are forgotten; drawn buses are forgotten after CELL_KEEP too."""
-    while True:
-        time.sleep(1.0)
-        try:
-            now = time.time()
-            with LOCK:
-                vehicles = STATE['vehicles']
-            with SQUARES_LOCK:
-                for key in [k for k, sq in CELLS.items() if now - sq['asked'] > CELL_KEEP]:
-                    del CELLS[key]
-                if len(CELLS) > CELL_MAX:
-                    for key, _ in sorted(CELLS.items(), key=lambda kv: kv[1]['asked'])[:len(CELLS) - CELL_MAX]:
-                        del CELLS[key]
-                due = sorted((sq['made'], key) for key, sq in CELLS.items() if now - sq['made'] >= CELL_SECONDS - 2)
-            for key in [k for k, got in list(ENTITY_MEMO.items()) if now - got[0] > CELL_KEEP]:
-                ENTITY_MEMO.pop(key, None)
-            stop = time.monotonic() + 2.0             # never more than ~2 s of work a round
-            for _, key in due:
-                if time.monotonic() > stop or not vehicles:
-                    break
-                items = make_square(*key, vehicles, time.time(), time.monotonic() + INLINE_BUDGET)
-                with SQUARES_LOCK:
-                    if key in CELLS:
-                        CELLS[key]['made'], CELLS[key]['items'] = time.time(), items
-                        SQUARE_STATS['squaresMade'] += 1
-        except Exception as exc:   # one bad round must never stop the job
-            print('squares_keeper:', type(exc).__name__, exc, flush=True)
+    return (head[:-1] + ',"entities":[' + ','.join(chosen) + ']}').encode('utf-8')
 
 
 def best_road_file():
@@ -2556,7 +2516,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'journeyRound': STATE.get('journeyRound'),
                                         'stopBoards': {'index': STOPS['state'], 'detail': STOPS['detail'], 'error': STOPS['error'], 'made': STOPS['boards'], 'shared': STOPS['shared']},
                                         'replayMemo': {'made': STATE.get('replayMemoMade', 0), 'reused': STATE.get('replayMemoHits', 0)},
-                                        'squares': dict(SQUARE_STATS, kept=len(CELLS), busesKept=len(ENTITY_MEMO)),   # 0.15.0
+                                        'sharing': dict(SHARE_STATS, busesKept=len(ENTITY_MEMO)),   # 0.15.1
                                         'cpuSeconds': meter_summary(),
                                         'lastView': STATE.get('lastView')})
         if split.path == '/details':
@@ -2566,11 +2526,7 @@ class Handler(BaseHTTPRequestHandler):
             want = (parse_qs(split.query).get('id') or [''])[0][:140]
             return self.reply(200, trace(want))
         if split.path == '/snapshot':
-            view = parse_bbox(split.query)
-            g = cell_of_query(split.query, view)           # 0.15.0: whole squares -> prepared squares
-            if g is not None:
-                return self.reply_raw(200, snapshot_squares(view, g))
-            return self.reply(200, snapshot(view))
+            return self.reply_raw(200, snapshot_fast(parse_bbox(split.query)))   # 0.15.1: shared bus drawings
         # 0.13.0: bus stops and their boards are their own layer in HQ (stops=http://<this engine>/stops)
         if split.path == '/stops/status':
             return self.reply(200, stops_status())
@@ -2617,8 +2573,8 @@ def _metered(name, fn):
 
 
 snapshot = _metered('answers', snapshot)
-snapshot_squares = _metered('answers', snapshot_squares)      # 0.15.0: stitching ready squares
-make_square = _metered('squares', make_square)                # 0.15.0: preparing squares (inside answers when asked)
+snapshot_fast = _metered('answers', snapshot_fast)            # 0.15.1
+build_entity = _metered('drawing', build_entity)              # 0.15.1: drawing buses (only when not already drawn)
 _replay_for = _metered('routes', _replay_for)
 road_replay_for = _metered('road routes', road_replay_for)
 _follow_bus = _metered('matching', _follow_bus)
@@ -2666,7 +2622,6 @@ def main() -> None:
     threading.Thread(target=journey_worker, daemon=True).start()
     threading.Thread(target=stops_keeper, daemon=True).start()
     threading.Thread(target=path_worker, daemon=True).start()
-    threading.Thread(target=squares_keeper, daemon=True).start()   # 0.15.0
     # 0.8.7 (owner 3 Nov 14:41): on its own Ampere server the engine listens on that server's PRIVATE address, so the
     # main server can ask it (both servers' firewalls only allow the main server's private address in)
     bind = BIND
