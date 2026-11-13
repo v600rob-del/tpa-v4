@@ -38,7 +38,8 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.14.0'
+VERSION = '4.14.1'
+BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
 TRAFFIC = False
@@ -386,6 +387,7 @@ async def main_async(args, base, layers):
     if args.server_stats:            # 4.13.1: the server's own work with nobody watching, first
         print('Measuring the server with nobody watching (30 s)...', flush=True)
         b0 = server_stats(True); await asyncio.sleep(30); idle_use = server_use(b0, server_stats(True))
+    print(BANNER_FROM)                   # 4.14.1 (owner 13 Nov 13:09: "could do with the cut from and to part back")
     print(f"TPA load test {VERSION} · {args.host or args.url} · steps {', '.join(map(str, args.steps))} · {args.seconds:.0f} s each")
     print(f"{'viewers':>8} {'req/s':>7} {'typical':>8} {'1 in 20':>8} {'failed':>7}  {'bus':>6} {'rail':>6} {'air':>6} {'traffic':>7}  server")
     for n in args.steps:
@@ -417,6 +419,7 @@ async def main_async(args, base, layers):
     print()
     for line in estimate(healthy, uses, idle_use):
         print(line)
+    print(BANNER_TO)
     return 0 if healthy else 1
 
 
