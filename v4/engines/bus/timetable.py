@@ -512,6 +512,11 @@ class Timetable:
             row = self.db.execute('SELECT shape_id FROM trips WHERE trip_id=?', (trip_id,)).fetchone()
         return (row[0] or '') if row else ''
 
+    def has_shape(self, shape_id):
+        """0.18.0: whether the timetable really holds this route line (some journeys name one that is missing)."""
+        with self.lock:
+            return self.db.execute('SELECT 1 FROM shapes WHERE shape_id=? LIMIT 1', (shape_id,)).fetchone() is not None
+
     def shape_by_id(self, shape_id):
         """0.17.0: a route line [(lon, lat), ...] by its own id, [] if unknown."""
         with self.lock:

@@ -31,6 +31,9 @@ from __future__ import annotations
 
 import importlib.util
 import gzip
+import hashlib
+import sqlite3
+import zlib
 import io
 import json
 import math
@@ -56,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.17.5'
+ENGINE_VERSION = '0.18.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1517,6 +1520,11 @@ def unplaced_reason(v, known) -> str:
         return 'notWorkedOutYet'
     if not known[1]:
         return 'severalJourneys' if UNSURE.get(v['key']) == known[0] else 'noTimetableMatch'
+    sid = shape_id_for(known[1])
+    if not sid:
+        return 'noRouteLine'
+    if sid.startswith('g-') and shape_for(known[1]) is None:
+        return 'lineBeingDrawn'                      # 0.18.0
     f = FOLLOW.get(v['key'])
     if not f or not f[1]:
         return 'offItsRoute'
@@ -1549,7 +1557,8 @@ def publish_round() -> dict:
     small: dict = {}
     big: dict = {}
     shown = hidden = matched = 0
-    why = {'noTimetableMatch': 0, 'severalJourneys': 0, 'notWorkedOutYet': 0, 'offItsRoute': 0, 'noRouteLine': 0}
+    why = {'noTimetableMatch': 0, 'severalJourneys': 0, 'notWorkedOutYet': 0, 'offItsRoute': 0, 'noRouteLine': 0,
+           'lineBeingDrawn': 0}
     by_company: dict = {}                             # 0.17.4 (owner 21:45 "are these buses spread across the uk?")
     lines = {}
     for i, v in enumerate(vehicles):
@@ -1799,6 +1808,7 @@ def open_timetable() -> bool:
         TIMETABLE['tt'] = new
         GROUP_MEMO.clear()          # 0.10.0: company names may have changed with the new timetable
         SHAPE_OF_TRIP.clear()       # 0.17.0: line ids belong to one timetable
+        GEN_PATTERN.clear()         # 0.18.0 (drawn lines are kept: same stops = same line)
         SHAPES.clear()
         STATE['timetable'] = 'ready'
         STATE['timetableDetail'] = (f"{c.get('tripsWithStops', 0)} journeys, {c.get('stopsNaptan', 0) + c.get('stopsOnlyInTimetable', 0)} stops, "
@@ -2295,16 +2305,60 @@ def match_args(v: dict) -> tuple:
 
 SHAPE_OF_TRIP: dict = {}      # 0.17.0: journey -> its route line's own id (many journeys share one line)
 
+# ---------------------------------------------------------------- route lines TPA draws itself (0.18.0)
+# Owner 13 Nov 2026 22:02-22:11 ("are we missing something?" -> the off-route sample): London (TfL), every Arriva company,
+# Go North East, Bee Network, Oxford, Metrobus ... publish NO route lines in the BODS timetable, so their buses were
+# matched to the right journey but had nothing to follow (labelled "off its route"; replayed along road legs instead -
+# 70% of the engine's work). TPA now draws those lines itself: the road map's drive between each pair of consecutive
+# stops, worked out once per stop pair (kept on disk, shared by every route that uses it) and joined per stop
+# pattern. Asked for by running buses first (shape_for), built in the background at about half a core at most.
+GEN_LOCK = threading.Lock()
+GEN_LINES: "OrderedDict[str, object]" = OrderedDict()   # 'g-<hash of the stops>' -> replay.Shape (newest last)
+GEN_KEEP = max(1000, int(os.environ.get('TPA_BUS_GEN_LINES_KEEP', '15000') or 15000))
+GEN_PATTERN: dict = {}        # trip_id -> ('g-...', ((stop id, lon, lat), ...)) or ('', ())
+GEN_QUEUE: deque = deque()
+GEN_QUEUED: set = set()
+GEN_WAKE = threading.Event()
+GEN = {'state': 'waiting', 'linesBuilt': 0, 'legsWorkedOut': 0, 'legsNoDrive': 0, 'legsFromDisk': 0, 'cpuSeconds': 0.0,
+       'error': ''}
+GEN_LEG_MAX_M = 8000.0        # stops further apart than this: joined straight (express legs; rare)
+GEN_DUTY = 0.5                # share of a core the builder may use
+
+
+def gen_pattern(trip_id):
+    """('g-<hash>', stops) for a journey without a published line; ('', ()) if its stops are not known."""
+    got = GEN_PATTERN.get(trip_id)
+    if got is not None:
+        return got
+    tt = TIMETABLE['tt']
+    out = ('', ())
+    try:
+        if tt is not None and hasattr(tt, 'stops_of'):
+            stops = tuple((r[0], r[2], r[1]) for r in tt.stops_of(trip_id) if r[1] is not None and r[2] is not None)
+            if len(stops) >= 2:
+                out = ('g-' + hashlib.sha1('|'.join(x[0] for x in stops).encode()).hexdigest()[:16], stops)
+    except Exception:          # one odd journey must never break the layer
+        out = ('', ())
+    if len(GEN_PATTERN) > 50000:
+        GEN_PATTERN.clear()
+    GEN_PATTERN[trip_id] = out
+    return out
+
 
 def shape_id_for(trip_id) -> str:
-    """The route line's own id for a journey, '' if none (remembered; cleared with a new timetable)."""
+    """The route line's own id for a journey, '' if none (remembered; cleared with a new timetable).
+    0.18.0: a journey without a published line gets the id of the line TPA draws for its stops ('g-...')."""
     if trip_id in SHAPE_OF_TRIP:
         return SHAPE_OF_TRIP[trip_id]
     tt = TIMETABLE['tt']
     try:
         sid = tt.shape_id_of(trip_id) if tt is not None and hasattr(tt, 'shape_id_of') else ''
+        if sid and hasattr(tt, 'has_shape') and not tt.has_shape(sid):
+            sid = ''
     except Exception:          # one odd journey must never break the layer
         sid = ''
+    if not sid and ROAD_MODE != 'off':
+        sid = gen_pattern(trip_id)[0]
     if len(SHAPE_OF_TRIP) > 300000:
         SHAPE_OF_TRIP.clear()
     SHAPE_OF_TRIP[trip_id] = sid
@@ -2313,8 +2367,20 @@ def shape_id_for(trip_id) -> str:
 
 def shape_for(trip_id):
     """0.17.0: route lines are kept by their own id, not per journey - the whole country's buses use about 8,000
-    lines but 20,000 journeys, so the old per-journey cache kept loading the same lines again."""
+    lines but 20,000 journeys, so the old per-journey cache kept loading the same lines again.
+    0.18.0: a line TPA draws itself is None until it is built (asked for here, built in the background)."""
     sid = shape_id_for(trip_id)
+    if sid.startswith('g-'):
+        with GEN_LOCK:
+            line = GEN_LINES.get(sid)
+            if line is not None:
+                GEN_LINES.move_to_end(sid)
+                return line
+            if sid not in GEN_QUEUED:
+                GEN_QUEUED.add(sid)
+                GEN_QUEUE.append((sid, gen_pattern(trip_id)[1]))
+        GEN_WAKE.set()
+        return None
     key = ('s', sid) if sid else ('t', trip_id)
     if key in SHAPES:
         SHAPES.move_to_end(key)
@@ -2329,6 +2395,125 @@ def shape_for(trip_id):
     while len(SHAPES) > SHAPES_KEEP:
         SHAPES.popitem(last=False)
     return sh
+
+
+class LegStore:
+    """The road drive between two stops, kept on disk (shared by every line that uses the pair). Cleared when the road
+    map changes. Value: [(lon, lat), ...], or [] when the road map has no drive (joined straight)."""
+    def __init__(self, path: Path, roads_sig: str):
+        self.db = sqlite3.connect(str(path), check_same_thread=False)
+        self.db.execute('CREATE TABLE IF NOT EXISTS legs (k TEXT PRIMARY KEY, data BLOB)')
+        self.db.execute('CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)')
+        row = self.db.execute("SELECT v FROM meta WHERE k='roads'").fetchone()
+        if not row or row[0] != roads_sig:
+            self.db.execute('DELETE FROM legs')
+            self.db.execute("INSERT OR REPLACE INTO meta VALUES ('roads', ?)", (roads_sig,))
+        self.db.commit()
+        self.pending = []
+
+    def get(self, k):
+        row = self.db.execute('SELECT data FROM legs WHERE k=?', (k,)).fetchone()
+        if row is None:
+            return None
+        return json.loads(zlib.decompress(row[0])) if row[0] else []
+
+    def put(self, k, pts):
+        self.pending.append((k, zlib.compress(json.dumps(pts, separators=(',', ':')).encode()) if pts else b''))
+        if len(self.pending) >= 200:
+            self.flush()
+
+    def flush(self):
+        if self.pending:
+            self.db.executemany('INSERT OR REPLACE INTO legs VALUES (?, ?)', self.pending)
+            self.db.commit()
+            self.pending = []
+
+
+def stop_leg(a, b):
+    """The road drive from stop a to stop b ((id, lon, lat) each), [(lon, lat), ...], or [] if none."""
+    rm = ROADS['map']
+    straight = metres(a[2], a[1], b[2], b[1])
+    if rm is None or straight > GEN_LEG_MAX_M:
+        return []
+    if straight < 5:
+        return [(a[1], a[2]), (b[1], b[2])]
+    try:
+        got = rm.between(a[1], a[2], _bearing(a[2], a[1], b[2], b[1]), b[1], b[2],
+                         max_m=max(400.0, 2.5 * straight + 200), snap_m=40.0)
+    except Exception:          # one odd stop must never break the layer
+        got = None
+    return [(round(p[0], 6), round(p[1], 6)) for p in got] if got else []
+
+
+def build_gen_line(stops, store) -> object:
+    pts = []
+    for a, b in zip(stops, stops[1:]):
+        k = a[0] + '>' + b[0]
+        leg = store.get(k)
+        if leg is None:
+            t0 = time.thread_time()
+            leg = stop_leg(a, b)
+            GEN['legsWorkedOut'] += 1
+            if not leg:
+                GEN['legsNoDrive'] += 1
+            store.put(k, leg)
+            spent = time.thread_time() - t0
+            if spent > 0:
+                time.sleep(spent * (1 - GEN_DUTY) / GEN_DUTY)     # at most GEN_DUTY of a core
+        else:
+            GEN['legsFromDisk'] += 1
+        way = [tuple(p) for p in leg] if leg else [(a[1], a[2]), (b[1], b[2])]
+        for p in way:
+            if not pts or p != pts[-1]:
+                pts.append(p)
+    return replay.Shape(pts) if len(pts) >= 2 else None
+
+
+def line_builder() -> None:
+    """0.18.0: draws the route lines asked for (running buses first), one at a time."""
+    store = None
+    while True:
+        GEN_WAKE.wait(timeout=30)
+        GEN_WAKE.clear()
+        while True:
+            if ROADS['map'] is None:
+                GEN['state'] = 'waiting for the road map'
+                break
+            if store is None:
+                path, _ = best_road_file()
+                sig = f"{path}:{int(path.stat().st_mtime) if path and path.exists() else 0}"
+                try:
+                    store = LegStore(DATA_DIR / 'stop-legs.sqlite', sig)
+                except Exception as exc:
+                    GEN['state'], GEN['error'] = 'stopped', ('store: ' + type(exc).__name__ + ' ' + str(exc))[:120]
+                    return
+            with GEN_LOCK:
+                item = GEN_QUEUE.popleft() if GEN_QUEUE else None
+            if item is None:
+                store.flush()
+                GEN['state'] = 'idle'
+                break
+            GEN['state'] = 'drawing'
+            sid, stops = item
+            t0 = time.thread_time()
+            try:
+                sh = build_gen_line(stops, store) if stops else None
+            except Exception as exc:     # one odd line must never stop the others
+                GEN['error'] = (type(exc).__name__ + ': ' + str(exc))[:120]
+                sh = None
+            GEN['cpuSeconds'] = round(GEN['cpuSeconds'] + time.thread_time() - t0, 1)
+            with GEN_LOCK:
+                GEN_QUEUED.discard(sid)
+                if sh is not None:
+                    GEN_LINES[sid] = sh
+                    GEN['linesBuilt'] += 1
+                    while len(GEN_LINES) > GEN_KEEP:
+                        GEN_LINES.popitem(last=False)
+
+
+def gen_summary() -> dict:
+    with GEN_LOCK:
+        return dict(GEN, linesKept=len(GEN_LINES), waiting=len(GEN_QUEUE))
 
 
 def follow_bus(v: dict) -> None:
@@ -3137,6 +3322,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'cpuSeconds': meter_summary(),
                                         'prepareTest': prepare_summary(),          # 0.16.0: Stage 0 dry run
                                         'publish': publish_summary(),              # 0.17.0: Plan B tiles
+                                        'drawnLines': gen_summary(),               # 0.18.0: route lines TPA draws itself
                                         'routeLinesKept': len(SHAPES),
                                         'lastView': STATE.get('lastView')})
         if split.path == '/details':
@@ -3262,6 +3448,8 @@ def main() -> None:
         threading.Thread(target=prepare_worker, daemon=True).start()     # 0.16.0: Stage 0 dry run
     if TILES_DIR:
         threading.Thread(target=publish_worker, daemon=True).start()     # 0.17.0: Plan B tiles
+    if ROAD_MODE != 'off':
+        threading.Thread(target=line_builder, daemon=True).start()       # 0.18.0: route lines TPA draws itself
     # 0.8.7 (owner 3 Nov 14:41): on its own Ampere server the engine listens on that server's PRIVATE address, so the
     # main server can ask it (both servers' firewalls only allow the main server's private address in)
     bind = BIND
