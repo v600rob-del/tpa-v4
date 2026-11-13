@@ -54,7 +54,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.15.1'
+ENGINE_VERSION = '0.15.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -866,6 +866,12 @@ def poller() -> None:
         go, area = poll_decision(time.time())
         if go:
             fetch_once(area)
+            try:                                       # 0.15.2: file the new buses by map patch now, not in a viewer's answer
+                with LOCK:
+                    fresh = STATE['vehicles']
+                bus_index(fresh)
+            except Exception as exc:
+                print('bus_index:', type(exc).__name__, exc, flush=True)
 
 
 def health(now: float) -> tuple[str, str]:
@@ -1835,6 +1841,7 @@ def journey_worker() -> None:
     the areas people are looking at, nearest first; everything else waits until someone looks."""
     while True:
         JOURNEY_WAKE.wait(timeout=30)
+        time.sleep(1.0)                   # 0.15.2: a crowd panning around wakes this many times a second: one round
         JOURNEY_WAKE.clear()
         if not REPLAY_SECONDS:
             continue
@@ -1847,23 +1854,14 @@ def journey_worker() -> None:
         if not views:
             continue
         picks = []
-        for v in vehicles:
-            if now - v['recorded'] > DROP_AFTER:
+        for best, v in journey_candidates(vehicles, views, now):
+            f = FOLLOW.get(v['key'])
+            if f and f[1] and f[1][-1][0] >= v['recorded'] and TRIPS.get(v['key'], (None,))[0] == journey_sig(v):
+                continue          # already up to date
+            legs = LEGS.get(v['key'])
+            if legs and any(b[0] >= v['recorded'] for b in legs.values()) and TRIPS.get(v['key'], (None,))[0] == journey_sig(v):
                 continue
-            best = None
-            for s0, w0, n0, e0 in views:
-                hs, hw = (n0 - s0) / 2, (e0 - w0) / 2
-                if s0 - hs <= v['lat'] <= n0 + hs and w0 - hw <= v['lon'] <= e0 + hw:
-                    d = (v['lat'] - (s0 + n0) / 2) ** 2 + (v['lon'] - (w0 + e0) / 2) ** 2
-                    best = d if best is None or d < best else best
-            if best is not None:
-                f = FOLLOW.get(v['key'])
-                if f and f[1] and f[1][-1][0] >= v['recorded'] and TRIPS.get(v['key'], (None,))[0] == journey_sig(v):
-                    continue          # already up to date
-                legs = LEGS.get(v['key'])
-                if legs and any(b[0] >= v['recorded'] for b in legs.values()) and TRIPS.get(v['key'], (None,))[0] == journey_sig(v):
-                    continue
-                picks.append((best, v))
+            picks.append((best, v))
         picks.sort(key=lambda p: p[0])
         t0 = time.monotonic()
         for _, v in picks[:JOURNEY_MAX]:
@@ -1880,6 +1878,26 @@ def journey_worker() -> None:
                     del d[k]
             STATE['journeyRound'] = {'buses': min(len(picks), JOURNEY_MAX), 'waiting': max(0, len(picks) - JOURNEY_MAX),
                                      'seconds': round(time.monotonic() - t0, 1)}
+
+
+def journey_candidates(vehicles, views, now):
+    """(distance, bus) for every bus within half a view of a recent view, nearest any view's middle first counted.
+    0.15.2 (load test 13 Nov 15:40: ~218 of 426 engine seconds were not in any meter): this checked all ~28,000 buses
+    against up to 50 views each round - over a million checks, every time someone looked somewhere new. Now only the
+    buses filed under the map patches those views cover are looked at."""
+    best: dict = {}
+    for s0, w0, n0, e0 in views:
+        hs, hw = (n0 - s0) / 2, (e0 - w0) / 2
+        cy, cx = (s0 + n0) / 2, (w0 + e0) / 2
+        for v in buses_near(vehicles, s0 - hs, w0 - hw, n0 + hs, e0 + hw):
+            if now - v['recorded'] > DROP_AFTER:
+                continue
+            if s0 - hs <= v['lat'] <= n0 + hs and w0 - hw <= v['lon'] <= e0 + hw:
+                d = (v['lat'] - cy) ** 2 + (v['lon'] - cx) ** 2
+                got = best.get(v['key'])
+                if got is None or d < got[0]:
+                    best[v['key']] = (d, v)
+    return list(best.values())
 
 
 def _leg(v: dict, a, b, before):
@@ -2579,6 +2597,12 @@ _replay_for = _metered('routes', _replay_for)
 road_replay_for = _metered('road routes', road_replay_for)
 _follow_bus = _metered('matching', _follow_bus)
 fetch_once = _metered('download', fetch_once)
+journey_candidates = _metered('choosing journeys', journey_candidates)   # 0.15.2
+road_legs = _metered('road legs', road_legs)                  # 0.15.2: was not in any meter
+road_motion = _metered('road paths ahead', road_motion)       # 0.15.2: was not in any meter
+count_matches = _metered('match counting', count_matches)     # 0.15.2: was not in any meter
+add_motion = _metered('after download', add_motion)           # 0.15.2: was not in any meter (if outside 'download')
+measure_guesses = _metered('after download', measure_guesses)
 save_memory = _metered('saving', save_memory)
 motion_for = _metered('old-style moves', motion_for)
 placed_for = _metered('placing on roads', placed_for)
