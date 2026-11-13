@@ -1428,6 +1428,16 @@ function busLine(build,sid){
     return sh;},()=>{BUS_TILES.asking.delete(key);return null;});
   BUS_TILES.asking.set(key,p);return p;
 }
+// 4.59.1 (owner 13 Nov 23:50, the tile page "teleporting"): a bus's stretch of road is worked out once and kept while it
+// is unchanged, instead of again every 10 s.
+const ROAD_SHAPES=new Map();
+function roadShape(it){
+  const w=it.w,sig=w.length+':'+w[0]+':'+w[w.length-1],got=ROAD_SHAPES.get(it.i);
+  if(got&&got.sig===sig)return got.sh;
+  const sh=new window.TPA_BUS_REPLAY.Shape(w);ROAD_SHAPES.delete(it.i);ROAD_SHAPES.set(it.i,{sig,sh});
+  if(ROAD_SHAPES.size>2000)ROAD_SHAPES.delete(ROAD_SHAPES.keys().next().value);
+  return sh;
+}
 async function busTileFrame(){
   const R=window.TPA_BUS_REPLAY;if(!R)throw Error('no replay');
   const slot=Math.floor(serverNow()/10000);
@@ -1464,7 +1474,7 @@ async function busTileFrame(){
     let tr=null;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0;
     if(sh&&Array.isArray(it.r))tr=R.track(sh,it.r,now,delay,kl);
     // 4.58.0 (bus 0.19.0): a bus not on a timetabled route brings its own way along the roads
-    if(!tr&&small&&Array.isArray(it.w)&&it.w.length>=2&&Array.isArray(it.r)){try{tr=R.track(new R.Shape(it.w),it.r,now,delay,kl,it.jm);}catch(_){tr=null;}}
+    if(!tr&&small&&Array.isArray(it.w)&&it.w.length>=2&&Array.isArray(it.r)){try{tr=R.track(roadShape(it),it.r,now,delay,kl,it.jm);}catch(_){tr=null;}}
     if(!tr)tr=R.straight(it.p,now,delay,it.j===1);
     if(!tr)continue;
     const r6=v=>Math.round(v*1e6)/1e6,pos=tr.position;

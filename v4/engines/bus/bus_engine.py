@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.19.1'
+ENGINE_VERSION = '0.19.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1453,8 +1453,17 @@ def bus_item(v, hist, now):
         pts = rplaced[-PUBLISH_KEEP:]
         cut = len(rplaced) - len(pts)
         ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (rsh.point_at(m),)]
-        small = dict(base, w=[[round(a, 6), round(b, 6)] for a, b in zip(rsh.lon, rsh.lat)][:400],
-                     r=[[int(t), _r1(m)] for t, m in pts], p=ps)
+        # 0.19.2 (owner 13 Nov 23:50: the tile page "teleporting", ?tiles=0 smoother): only the stretch of road between
+        # the reports in the tile, not the whole way since the bus was first seen - far smaller tiles to fetch and read
+        # every 10 s. Distances are measured from the start of that stretch.
+        m0, m1 = pts[0][1], pts[-1][1]
+        way = [rsh.point_at(m0)] + [(rsh.lon[k], rsh.lat[k]) for k in range(len(rsh.cum)) if m0 < rsh.cum[k] < m1] \
+            + [rsh.point_at(m1)]
+        way = [q for i, q in enumerate(way) if i == 0 or q != way[i - 1]]
+        if len(way) < 2:
+            way = [rsh.point_at(m0), rsh.point_at(m0)]
+        small = dict(base, w=[[round(a, 6), round(b, 6)] for a, b in way][:400],
+                     r=[[int(t), _r1(m - m0)] for t, m in pts], p=ps)
         js = sorted(j - cut for j in jumps if j >= cut)
         if js:
             small['jm'] = js
@@ -2403,7 +2412,7 @@ GEN_WAKE = threading.Event()
 GEN = {'state': 'waiting', 'linesBuilt': 0, 'legsWorkedOut': 0, 'legsNoDrive': 0, 'legsSharp': 0, 'legsFromDisk': 0, 'cpuSeconds': 0.0,
        'error': ''}
 GEN_LEG_MAX_M = 8000.0        # stops further apart than this: joined straight (express legs; rare)
-GEN_DUTY = 0.5                # share of a core the builder may use
+GEN_DUTY = 0.25               # share of a core the builder may use (0.19.2: was 0.5 - the stop boards waited behind it)
 
 
 def gen_pattern(trip_id):
