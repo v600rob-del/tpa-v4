@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""tpa-cftest - does Cloudflare share our live tiles? (server kit 4.56, the publish plan's early Cloudflare proof)
+
+Owner 13 Nov 2026 16:36: "yes its ok to do the cloudflare proof" (target: 10,000 people at once). Before Stage 1 is
+built, prove the two ways a tile can be shared:
+  round folders  /r/<round>/tile.json  - a new folder every 10 s, each file never changes (kept a day)
+  10-second file /short/tile.json      - one name, replaced every 10 s (kept 10 s)
+  pointer        /latest.json          - "the newest round is N" (kept 2 s)
+For 3 minutes the server writes DUMMY files (random padding, no real data) on the password-free address
+cftest.tpalive.co.uk, while this asks for them through Cloudflare like a crowd would and reads Cloudflare's own
+answer (cf-cache-status: HIT = Cloudflare answered without asking our server). Everything is removed at the end.
+
+Run from Oracle Cloud Shell:  python3 tpa-cftest
+Needs the DNS record "cftest" (proxied, orange cloud) in Cloudflare, and kit 4.56 on the server.
+"""
+import argparse
+import json
+import re
+import socket
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+VERSION = '1.0'
+BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
+KEY = str(Path('~/.ssh/tpa_v4_server').expanduser())
+KINDS = ('round folders', '10-second file', 'pointer')
+WRITER = r'''
+set -u
+D=/var/lib/tpa-cftest
+[ -d "$D" ] || { echo "NO-FOLDER"; exit 3; }
+clean() { rm -rf "$D/r" "$D/short" "$D/latest.json" "$D"/*.tmp; }
+trap clean EXIT HUP INT TERM
+mkdir -p "$D/r" "$D/short"
+i=0; end=$((SECONDS + DUR))
+while [ $SECONDS -lt $end ]; do
+  i=$((i + 1)); now=$(date +%s)
+  body="{\"round\":$i,\"made\":$now,\"pad\":\"$(head -c 15000 /dev/urandom | base64 -w0)\"}"
+  mkdir -p "$D/r/$i"
+  printf '%s' "$body" > "$D/r/$i/t.tmp" && mv "$D/r/$i/t.tmp" "$D/r/$i/tile.json"
+  printf '%s' "$body" > "$D/short/t.tmp" && mv "$D/short/t.tmp" "$D/short/tile.json"
+  printf '{"round":%s,"made":%s}' "$i" "$now" > "$D/l.tmp" && chmod 644 "$D/l.tmp" && mv "$D/l.tmp" "$D/latest.json"
+  chmod -R a+rX "$D"
+  echo "ROUND $i"
+  sleep 10
+done
+echo DONE
+'''
+
+
+def fetch(url, timeout=10):
+    """(status, cf-cache-status, age, body dict or None)."""
+    req = urllib.request.Request(url, headers={'User-Agent': 'tpa-cftest/' + VERSION, 'Accept-Encoding': 'identity'})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            body = r.read()
+            h = r.headers
+            code = r.status
+    except urllib.error.HTTPError as e:
+        return e.code, e.headers.get('cf-cache-status') or ('none' if not e.headers.get('cf-ray') else '-'), None, None
+    except Exception as exc:
+        return None, 'error: ' + type(exc).__name__, None, None
+    try:
+        data = json.loads(body)
+    except ValueError:
+        data = None
+    cf = h.get('cf-cache-status') or ('NOT-THROUGH-CLOUDFLARE' if not h.get('cf-ray') else 'none')
+    age = h.get('age')
+    return code, cf.upper(), int(age) if age and age.isdigit() else None, data
+
+
+class Tally:
+    def __init__(self):
+        self.rows = {k: [] for k in KINDS}       # (cf status, data age seconds or None)
+
+    def add(self, kind, cf, made, now):
+        self.rows[kind].append((cf, None if made is None else max(0.0, now - made)))
+
+    def summary(self, kind):
+        rows = self.rows[kind]
+        n = len(rows)
+        counts = {}
+        for cf, _ in rows:
+            counts[cf] = counts.get(cf, 0) + 1
+        ages = [a for _, a in rows if a is not None]
+        return {'n': n, 'hit': counts.get('HIT', 0) / n if n else 0.0, 'counts': counts,
+                'oldest': max(ages) if ages else None}
+
+
+def verdicts(t):
+    out = []
+    r, s, p = t.summary('round folders'), t.summary('10-second file'), t.summary('pointer')
+    every = set(r['counts']) | set(s['counts']) | set(p['counts'])
+    if 'NOT-THROUGH-CLOUDFLARE' in every:
+        out.append('NOT THROUGH CLOUDFLARE: the cftest record is missing or grey (DNS only). It must be orange (proxied).')
+        return out
+    if every <= {'DYNAMIC', 'BYPASS', 'NONE'}:
+        out.append('CLOUDFLARE IS NOT STORING THESE FILES (all DYNAMIC): a Cache Rule is needed - hostname cftest, '
+                   '"Eligible for cache", edge TTL "use cache-control header if present". Then run this again.')
+        return out
+    out.append(f"Round folders: Cloudflare answered {r['hit']:.0%} itself -> "
+               + ('WORKS: Stage 1 can publish tiles in round folders.' if r['hit'] >= 0.8 else 'NOT SHARED WELL ENOUGH.'))
+    oldest = '-' if s['oldest'] is None else f"{s['oldest']:.0f} s"
+    out.append(f"10-second file: Cloudflare answered {s['hit']:.0%} itself, oldest data seen {oldest} -> "
+               + ('also works.' if s['hit'] >= 0.8 and (s['oldest'] or 0) <= 30
+                  else 'not reliable on the free plan: use round folders.'))
+    out.append(f"Pointer (asked by every visitor every 10 s): Cloudflare answered {p['hit']:.0%} itself.")
+    return out
+
+
+def table(t, host, seconds):
+    L = [f'TPA Cloudflare proof {VERSION} · {time.strftime("%d %b %H:%M")} · {host} · {seconds:.0f} s, dummy files only']
+    L.append(f"  {'kind':<15} {'asked':>6} {'HIT':>5}  {'oldest data':>11}  Cloudflare's answers")
+    for k in KINDS:
+        s = t.summary(k)
+        old = '-' if s['oldest'] is None else f"{s['oldest']:.0f} s"
+        L.append(f"  {k:<15} {s['n']:>6} {s['hit']:>5.0%}  {old:>11}  " + ', '.join(f'{c} {n}' for c, n in sorted(s['counts'].items())))
+    L.append('')
+    L += ['  ' + v for v in verdicts(t)]
+    return L
+
+
+def run(host, target, seconds, every=1.0, fetcher=fetch, popen=subprocess.Popen, clock=time.time, sleep=time.sleep):
+    base = f'https://{host}'
+    code, cf, _, _ = fetcher(base + '/latest.json')
+    if cf == 'NOT-THROUGH-CLOUDFLARE' or (code is None and cf.startswith('error')):
+        print(f'{host} does not answer through Cloudflare yet ({cf}). Is the DNS record "cftest" there and orange?')
+        return None, 2
+    writer = popen(['ssh', '-i', KEY, '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', target,
+                    f'sudo DUR={int(seconds)} bash -s'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                   stderr=subprocess.STDOUT, text=True)
+    writer.stdin.write(WRITER)
+    writer.stdin.close()
+    first = writer.stdout.readline().strip()
+    if not first.startswith('ROUND'):
+        print('The server did not start writing the dummy files' + (' (kit 4.56 not installed yet?)' if 'NO-FOLDER' in first else f': {first}'))
+        writer.wait()
+        return None, 3
+    print(f'Server is writing dummy files; asking Cloudflare for them for {seconds:.0f} s...', flush=True)
+    t = Tally()
+    t0 = clock()
+    while clock() - t0 < seconds - 5:
+        code, cf, _, data = fetcher(base + '/latest.json')
+        if code == 200 and data:
+            t.add('pointer', cf, data.get('made'), clock())
+            rnd = data.get('round')
+            for _ in range(3):                  # a crowd: the same tile asked for again and again
+                code, cf, _, d = fetcher(f'{base}/r/{rnd}/tile.json')
+                if code == 200:
+                    t.add('round folders', cf, (d or {}).get('made'), clock())
+                code, cf, _, d = fetcher(base + '/short/tile.json')
+                if code == 200:
+                    t.add('10-second file', cf, (d or {}).get('made'), clock())
+        sleep(every)
+    writer.wait()                                # the writer removes everything when it ends
+    return t, 0
+
+
+def main(argv=None):
+    p = argparse.ArgumentParser(description='Does Cloudflare share our live tiles? (dummy files only)')
+    p.add_argument('--host', default='cftest.tpalive.co.uk')
+    p.add_argument('--server-from', default='test.tpalive.co.uk', help='site name that points straight at our server')
+    p.add_argument('--seconds', type=float, default=180)
+    args = p.parse_args(argv)
+    try:
+        ip = socket.gethostbyname(args.server_from)
+    except OSError:
+        print(f'Could not look up {args.server_from}.'); return 2
+    if not re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', ip):
+        print('Unexpected server address.'); return 2
+    t, code = run(args.host, 'ubuntu@' + ip, args.seconds)
+    if t is None:
+        return code
+    print(BANNER_FROM)
+    print('\n'.join(table(t, args.host, args.seconds)))
+    print(BANNER_TO)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

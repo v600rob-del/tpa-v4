@@ -45,3 +45,21 @@ tpalive.co.uk {
 www.tpalive.co.uk {
 	redir https://tpalive.co.uk{uri} permanent
 }
+
+# kit 4.56 (owner 13 Nov 16:36: "yes its ok to do the cloudflare proof"): a password-free test address holding ONLY
+# dummy files that tpa-cftest writes and removes (/var/lib/tpa-cftest; empty = every address answers "not found").
+# Proves Cloudflare shares live tiles before Stage 1 is built. Needs the DNS record cftest (orange cloud) in
+# Cloudflare; remove that record to switch it off. "tls internal": Cloudflare (SSL mode Full) talks to us with our own
+# certificate, so nothing waits on a public certificate; plain http too, for SSL mode Flexible.
+cftest.tpalive.co.uk, http://cftest.tpalive.co.uk {
+	tls internal
+	header {
+		X-Robots-Tag "noindex, nofollow"
+		-Server
+	}
+	header /r/* Cache-Control "public, max-age=86400, immutable"
+	header /short/* Cache-Control "public, max-age=10"
+	header /latest.json Cache-Control "public, max-age=2"
+	root * /var/lib/tpa-cftest
+	file_server
+}

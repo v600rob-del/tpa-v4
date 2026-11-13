@@ -132,6 +132,7 @@ if [[ "$(/usr/local/bin/caddy version 2>/dev/null | cut -d' ' -f1)" != "v$CADDY_
     rm -rf "$tmp"
 fi
 install -d -m 0755 /etc/tpa-web    # no secrets in here; the web front door reads it
+install -d -m 0755 /var/lib/tpa-cftest   # kit 4.56: Cloudflare proof (dummy files only; empty = nothing to see)
 install -m 0644 "$REL/v4/server/Caddyfile" /etc/tpa-web/Caddyfile
 # kit 4.17 (owner 5 Nov 16:41): HQ unit gets TPA_HQ_DEFAULT_VIEW=user - the test site's main address is the user page, /full the full one
 # kit 4.16 (owner 5 Nov 15:50): tpalive.co.uk shows a "coming soon" page until launch (no password, read-only files)
