@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.16.0'
+ENGINE_VERSION = '0.16.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1195,6 +1195,11 @@ TILE_SMALL = (0.05, 0.08)             # degrees lat x lon (~5.5 x 5.3 km): stree
 TILE_BIG = (0.4, 0.64)                # (~44 x 42 km): city and region views
 PREPARE_ON = os.environ.get('TPA_BUS_PREPARE_TEST', '1').strip() != '0'
 PREPARE = {'state': 'starting' if PREPARE_ON else 'off', 'rounds': 0, 'recent': [], 'last': None, 'stopped': ''}
+# 0.16.1 (first run 13 Nov 16:26: 230 s per round, every bus drawn again each round because the visitors' drawings
+# last only DRAWN_SECONDS 20 s and a round took 257 s): a published tile keeps a bus's drawing until its next report, so
+# the dry run does too (up to REPLAY_MEMO_SECONDS, while its track is kept)
+PREP_MEMO: dict = {}          # (bus key, roads) -> (recorded, drawn at, json)
+PREP_PARTS = ('drawing', 'routes', 'matching', 'road routes', 'road legs', 'road paths ahead', 'placing on roads', 'old-style moves')
 
 
 def _memory_share():
@@ -1231,7 +1236,7 @@ def prepare_round() -> dict:
         hist_of = {v['key']: list(HISTORY.get(v['key']) or ())[-12:] for v in vehicles}
     recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
     deadline = time.monotonic() + 3600          # everything worked out now, nothing left for helpers
-    drawn0, reused0 = SHARE_STATS['busesDrawn'], SHARE_STATS['busesReused']
+    drawn = reused = 0
     small: dict = {}
     big: dict = {}
     shown = waited = 0
@@ -1241,19 +1246,35 @@ def prepare_round() -> dict:
             while FETCHING.is_set():                # the download comes first, as everywhere else
                 time.sleep(0.2)
                 waited += 1
+            if PREPARE_OFF_FILE.exists():           # 0.16.1: paused at once, not after the round (rounds took 4 min)
+                return None
         age = now - v['recorded']
         if age > SHOW_FOR:
             continue
         shown += 1
         d0 = time.thread_time()
-        raw_s, _ = drawn_bus(v, age, now, deadline, True)
-        raw_b, _ = drawn_bus(v, age, now, deadline, False)
+        raws = []
+        for roads in (True, False):
+            got = PREP_MEMO.get((v['key'], roads))
+            if got and got[0] == v['recorded'] and 0 <= now - got[1] < REPLAY_MEMO_SECONDS:
+                raws.append(got[2])
+                reused += 1
+                continue
+            entity, _ = build_entity(v, age, now, deadline, roads)
+            raw = json.dumps(entity, separators=(',', ':'))
+            PREP_MEMO[(v['key'], roads)] = (v['recorded'], now, raw)
+            raws.append(raw)
+            drawn += 1
+        raw_s, raw_b = raws
         draw_cpu += time.thread_time() - d0
         hist = (hist_of.get(v['key']) or ()) if REPLAY_SECONDS and age <= STALE_AFTER else ()
         for k in _tiles_for(v, hist, recent, TILE_SMALL):
             small.setdefault(k, []).append(raw_s)
         for k in _tiles_for(v, hist, recent, TILE_BIG):
             big.setdefault(k, []).append(raw_b)
+    live = {v['key'] for v in vehicles}
+    for k in [k for k in PREP_MEMO if k[0] not in live]:
+        del PREP_MEMO[k]
     t_pack = time.thread_time()
     sizes, packed = [], []
     for tiles in (small, big):
@@ -1266,7 +1287,8 @@ def prepare_round() -> dict:
     big_counts = sorted(len(p) for p in big.values())
     return {'at': iso(now), 'cpuSeconds': round(time.thread_time() - t_cpu, 2), 'wallSeconds': round(time.monotonic() - t_wall, 2),
             'drawCpu': round(draw_cpu, 2), 'packCpu': round(pack_cpu, 2), 'buses': shown,
-            'drawnNew': SHARE_STATS['busesDrawn'] - drawn0, 'reused': SHARE_STATS['busesReused'] - reused0,
+            'drawnNew': drawn, 'reused': reused,
+            'parts': {k: round(v, 2) for k, v in (getattr(_TL, 'meter', None) or {}).items() if k in PREP_PARTS},
             'tilesSmall': len(small), 'tilesBig': len(big), 'mb': round(sum(sizes) / 1e6, 1),
             'packedMb': round(sum(packed) / 1e6, 1),
             'packedKbTypical': round(packed[len(packed) // 2] / 1024, 1) if packed else 0,
@@ -1286,6 +1308,15 @@ def prepare_summary() -> dict:
         out['cpuWorst'] = cpus[-1]
         out['cpuPer10s'] = round(statistics.fmean(r['cpuSeconds'] / max(PREPARE_EVERY, r['wallSeconds']) * PREPARE_EVERY for r in rs), 2)
         out['fitsLimit'] = PREPARE_FITS_CPU
+        per = {}
+        for r in rs:
+            f = PREPARE_EVERY / max(PREPARE_EVERY, r['wallSeconds'])
+            for k, v in (r.get('parts') or {}).items():
+                per[k] = per.get(k, 0.0) + v * f / len(rs)
+            per['packing'] = per.get('packing', 0.0) + r.get('packCpu', 0.0) * f / len(rs)
+        out['partsPer10s'] = {k: round(v, 2) for k, v in per.items()}
+        # matching (incl. placing reports on routes) and road legs are per-report work any plan needs on the server
+        # (Plan B too, unless unmatched buses move without roads); the rest is drawing tracks and tiles
         out['verdict'] = 'FITS' if out['cpuPer10s'] < PREPARE_FITS_CPU else 'TOO BIG - Plan B'
     return out
 
@@ -1305,8 +1336,13 @@ def prepare_worker() -> None:
                 return
             PREPARE['state'] = 'running'
             t0 = time.monotonic()
+            _TL.meter = {}
             try:
                 r = prepare_round()
+                if r is None:
+                    PREPARE['state'] = 'paused'
+                    time.sleep(rest)
+                    continue
             except Exception as exc:     # the dry run must never take the bus layer down
                 PREPARE['state'], PREPARE['stopped'] = 'stopped', ('error: ' + type(exc).__name__ + ': ' + str(exc))[:160]
                 return
@@ -2724,13 +2760,20 @@ METER: dict = {}
 METER_STARTED = time.process_time()
 
 
+_TL = threading.local()       # 0.16.1: the dry run's own split (parts metered in its thread only)
+
+
 def _metered(name, fn):
     def wrapped(*a, **k):
         t0 = time.thread_time()
         try:
             return fn(*a, **k)
         finally:
-            METER[name] = METER.get(name, 0.0) + time.thread_time() - t0
+            dt = time.thread_time() - t0
+            METER[name] = METER.get(name, 0.0) + dt
+            mine = getattr(_TL, 'meter', None)
+            if mine is not None:
+                mine[name] = mine.get(name, 0.0) + dt
     wrapped.__name__ = getattr(fn, '__name__', name)
     return wrapped
 
