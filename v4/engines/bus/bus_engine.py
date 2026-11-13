@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.17.2'
+ENGINE_VERSION = '0.17.3'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1459,6 +1459,57 @@ def bus_item(v, hist, now):
 
 
 UNSURE: dict = {}                     # 0.17.1: bus key -> journey signature that matched several timetabled journeys
+# 0.17.3 (owner 13 Nov 21:13 "pushing on"): how far "off its route" buses really are from their route line, and how
+# detailed those lines are (corners per km) next to the lines of buses that are placed - rough lines or real diversions?
+OFF_BUCKETS = ((100, 'under100m'), (250, '100to250m'), (500, '250to500m'), (2000, '500mTo2km'), (float('inf'), 'over2km'))
+OFF_MEASURE = {'sampled': 0, **{k: 0 for _, k in OFF_BUCKETS}, 'linePtsPerKmOff': [], 'linePtsPerKmPlaced': []}
+
+
+def distance_to_line(sh, lon, lat) -> float:
+    """Metres from a point to the nearest part of a route line, however far."""
+    px, py = lon * sh.k, lat * replay.M_PER_DEG
+    best = float('inf')
+    xs, ys = sh.lon, sh.lat
+    for i in range(1, len(xs)):
+        ax, ay, bx, by = xs[i - 1] * sh.k, ys[i - 1] * replay.M_PER_DEG, xs[i] * sh.k, ys[i] * replay.M_PER_DEG
+        vx, vy = bx - ax, by - ay
+        L2 = vx * vx + vy * vy
+        f = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / L2))
+        d = math.hypot(ax + vx * f - px, ay + vy * f - py)
+        if d < best:
+            best = d
+    return best
+
+
+def _pts_per_km(sh) -> float:
+    return len(sh.lon) / max(0.1, sh.length / 1000)
+
+
+def measure_off_route(v, known, placed_ok) -> None:
+    tid = known[1] if known else None
+    if not tid:
+        return
+    sh = shape_for(tid)
+    if sh is None:
+        return
+    key = 'linePtsPerKmPlaced' if placed_ok else 'linePtsPerKmOff'
+    OFF_MEASURE[key] = (OFF_MEASURE[key] + [_pts_per_km(sh)])[-2000:]
+    if placed_ok:
+        return
+    d = distance_to_line(sh, v['lon'], v['lat'])
+    for limit, name in OFF_BUCKETS:
+        if d < limit:
+            OFF_MEASURE[name] += 1
+            break
+    OFF_MEASURE['sampled'] += 1
+
+
+def off_route_summary() -> dict:
+    out = {k: v for k, v in OFF_MEASURE.items() if not isinstance(v, list)}
+    for k in ('linePtsPerKmOff', 'linePtsPerKmPlaced'):
+        xs = sorted(OFF_MEASURE[k])
+        out[k.replace('linePtsPerKm', 'lineCornersPerKmMedian')] = round(xs[len(xs) // 2], 1) if xs else None
+    return out
 
 
 def unplaced_reason(v, known) -> str:
@@ -1507,8 +1558,15 @@ def publish_round() -> dict:
             sid = shape_id_for(known[1])
             if sid:
                 lines[sid] = known[1]
+            if random.random() < 0.02:                # a random few each round, so every bus has the same chance
+                with JOURNEY_LOCK:
+                    measure_off_route(v, known, True)
         else:
-            why[unplaced_reason(v, known)] += 1
+            reason = unplaced_reason(v, known)
+            why[reason] += 1
+            if reason == 'offItsRoute' and random.random() < 0.05:
+                with JOURNEY_LOCK:
+                    measure_off_route(v, known, False)
         th = hist if REPLAY_SECONDS and age <= STALE_AFTER else ()
         for k in _tiles_for(v, th, recent, TILE_SMALL):
             small.setdefault(k, []).append(got[0])
@@ -1577,6 +1635,7 @@ PUBLISH_SMALL_SPAN = 0.15             # views up to this tall (degrees of latitu
 def publish_summary() -> dict:
     out = {k: PUBLISH[k] for k in ('state', 'rounds', 'error')}
     out['dir'] = TILES_DIR
+    out['offRouteMeasure'] = off_route_summary()          # 0.17.3
     out['last'] = PUBLISH['last']
     rs = PUBLISH['recent']
     if rs:
