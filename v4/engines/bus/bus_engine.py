@@ -56,7 +56,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.17.1'
+ENGINE_VERSION = '0.17.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -2285,6 +2285,11 @@ def _follow_bus(v: dict) -> None:
         return
     with LOCK:
         hist = list(HISTORY.get(v['key']) or [(v['recorded'], v['lat'], v['lon'])])
+    # 0.17.2: only reports from this journey (from 5 minutes before it was due to leave): a bus's last reports from its
+    # previous journey (often the other way along the same road) placed it wrongly, or not at all
+    dep_t = parse_time(v.get('dep') or '')
+    if dep_t:
+        hist = [h for h in hist if h[0] >= dep_t - 300] or hist[-1:]
     was = FOLLOW.get(v['key'])
     prev = was[1] if was and was[0] == tid and was[1] else None
     placed = replay.follow(sh, [(t, lon, lat) for t, lat, lon in hist], prev)

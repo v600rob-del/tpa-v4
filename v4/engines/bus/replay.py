@@ -84,22 +84,28 @@ def follow(shape, reports, known=None):
     (GPS jitter at a stop counts as standing still). Returns the new list, or None when the newest
     report is off the route (the engine then moves this bus the ordinary way)."""
     out = list(known or [])
-    for t, lon, lat in reports:
+    last = len(reports) - 1
+    for k, (t, lon, lat) in enumerate(reports):
         if out and t <= out[-1][0]:
             continue
         if out:
             pt, pm = out[-1]
             hi = pm + max(300.0, MAX_SPEED * (t - pt))
             got = shape.project(lon, lat, pm - 30.0, hi)
-            if got is None:
-                return None
-            out.append((t, max(pm, got[0])))
         else:
             got = shape.project(lon, lat)
-            if got is None:
+        if got is None:
+            # bus 0.17.2 (13 Nov 2026 20:34: 61% of matched buses were "off their route"): one stray report (a GPS blip)
+            # no longer loses the whole bus - it is skipped. Only the NEWEST report off the route means a diversion.
+            if k == last:
+                if out:                      # the earlier reports were placed wrongly (e.g. a loop): start again from this one
+                    again = shape.project(lon, lat)
+                    if again is not None:
+                        return [(t, again[0])]
                 return None
-            out.append((t, got[0]))
-    return out
+            continue
+        out.append((t, max(out[-1][1], got[0]) if out else got[0]))
+    return out or None
 
 
 def _keep_left(points, metres, lat):

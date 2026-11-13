@@ -33,8 +33,8 @@
     "label": "Buy Rob a coffee or Geoff some treats",
     "text": "If you enjoy this, please consider buying Rob, the creator of TPA, a coffee, or Geoff his cat some treats.",
     "note": "Completely optional. TPA stays free either way.",
-    "url": "",
-    "preview": true,
+    "url": "https://buymeacoffee.com/tpalive",
+    "preview": false,
     "picture": "/assets/geoff.jpg",
     "pictureAlt": "Geoff, Rob's black and white cat"
   },
@@ -120,5 +120,12 @@
       "kidsOnly": true
     }
   ],
-  "report": true
+  "report": true,
+  "support": {
+    "entry": "Support TPA",
+    "title": "Support TPA",
+    "text": "TPA is free for everyone, and it will stay that way. If you find it useful, a small contribution helps cover what it costs to run: hosting and servers, live data services, and the time that goes into developing new features.",
+    "button": "Buy Rob a coffee (or Geoff some treats)",
+    "note": "Completely optional, no account needed. Opens Buy Me a Coffee in a new tab. TPA stays free either way."
+  }
 }

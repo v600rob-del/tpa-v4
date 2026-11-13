@@ -1832,6 +1832,24 @@ function buildCredits(list){
   const close=el('button','tpa-primary','Close');close.type='button';close.onclick=()=>closeDialog(back);
   card.append(items,close);return back;
 }
+// 4.57.0 (owner 13 Nov 2026 20:32, voluntary donations): a small "Support TPA" entry always at the top of the menu
+// opens this panel - why contributions help and one clear link. Only ever opened by the visitor: no prompts, no
+// timers, nothing over the live map. Text from site-config.json "support"; the link is the tip link.
+function buildSupport(tip,sup){
+  const url=safeLink(tip?.url);if(!url)return null;
+  const {back,card}=makeDialog('tpa-support',str(sup?.title,40)||'Support TPA');card.classList.add('support-card');
+  const body=el('div','support-body');
+  const pic=typeof tip?.picture==='string'&&/^\/assets\/[a-z0-9-]{1,40}\.(?:jpg|png)$/.test(tip.picture)?tip.picture:'';
+  if(pic){const img=el('img','support-picture');img.src=pic;img.alt=str(tip?.pictureAlt,80)||'';img.width=88;img.height=88;img.loading='lazy';body.append(img);}
+  body.append(el('p','support-text',str(sup?.text,400)||'TPA is free for everyone. If you find it useful, a small contribution helps cover hosting, servers, data services and development.'));
+  card.append(body);
+  const a=el('a','tip-button support-button','☕ '+(str(sup?.button,60)||'Buy Rob a coffee (or Geoff some treats)'));a.href=url;a.target='_blank';a.rel='noopener noreferrer';
+  card.append(a);
+  const note=str(sup?.note,200);if(note)card.append(el('small','support-note',note));
+  const close=el('button','tpa-link-button support-close','Close');close.type='button';close.onclick=()=>closeDialog(back);
+  card.append(close);
+  return back;
+}
 function buildWelcome(w,tip,credits){
   const {back,card}=makeDialog('tpa-welcome',str(w?.title,80)||'Welcome to TPA');
   card.classList.add('welcome-card');
@@ -2004,8 +2022,13 @@ async function loadSiteConfig(){
   const creditsBtn=el('button','tpa-link-button','Data sources & credits');creditsBtn.type='button';creditsBtn.id='credits-button';creditsBtn.onclick=()=>openDialog(credits);
   const welcomeBtn=welcome?el('button','tpa-link-button','Show welcome screen'):null;
   if(welcomeBtn){welcomeBtn.type='button';welcomeBtn.id='welcome-button';welcomeBtn.onclick=()=>openDialog(welcome);}
-  about.append(...[title,tipControl(cfg.tip),creditsBtn,welcomeBtn].filter(Boolean));
+  // 4.57.0: the coffee link now lives in the Support TPA panel (entry at the top of the menu), not twice in the menu
+  const support=KIDS?null:buildSupport(cfg.tip,cfg.support);
+  about.append(...[title,support?null:tipControl(cfg.tip),creditsBtn,welcomeBtn].filter(Boolean));
   $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
+  if(support){const entry=el('button','support-entry','☕ '+(str(cfg.support?.entry,30)||'Support TPA'));entry.type='button';entry.id='support-button';
+    entry.setAttribute('aria-haspopup','dialog');entry.onclick=()=>openDialog(support);
+    const brand=document.querySelector('#sidebar .brand');if(brand)brand.after(entry);else $('sidebar').prepend(entry);}
   let seen=false;try{seen=localStorage.getItem(WELCOME_KEY)==='1';}catch(_){}
   if(cfg.welcome?.everyVisit===true)seen=false;      // 4.7.0 (owner 1 Nov 15:22): the welcome screen every visit
   if(KIDS){try{openDialog(buildKidsWelcome(cfg.welcome,credits));}catch(_){}return;}
