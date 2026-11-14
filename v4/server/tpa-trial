@@ -19,7 +19,9 @@ The trial itself runs detached from the connection that started it: what you see
         [--max-road-legs 10] [--max-memory-mb 2700] [--max-round-factor 1.2] [--max-tiles-age 45]
 
   sudo python3 -B -u tpa-trial --reading [--minutes 2]
-        LOOK-ONLY: the same one-minute reading the trial takes, as many times as asked. Changes and writes nothing.
+        LOOK-ONLY: the same one-minute reading the trial takes, as many times as asked, then what the engine's memory is
+        made of (limit and highest so far, the RAM disk by folder, route lines held and their measured size).
+        Changes and writes nothing.
 
 Pass marks (all must be met, or the old version goes back):
   - the engine answers, says the expected version, and its health is "ready"
@@ -341,10 +343,162 @@ def worker(argv):
         return 5
 
 
+# ---------------------------------------------------------------- what the memory is made of (14 Nov 2026, 19:31)
+# Memory reached 2,993 of 3,072 MB at 19:20 and the limit went to 6 GB. Before choosing any permanent limit, measure WHAT
+# is growing. Everything here only reads: the system's own files for the bus service, the engine's own status answers,
+# and the RAM disk (whose files count against the engine's memory). Limits below are the engine's settings (bus_engine.py
+# SHAPES_KEEP, GEN_KEEP, STOP_KERB_KEEP; the server does not change them).
+LINES_KEEP, DRAWN_KEEP, KERB_KEEP = 20000, 15000, 300000
+POINT_BYTES = 40                         # a route line holds 5 numbers of 8 bytes for each point (replay.Shape)
+SAMPLE_FILES = 1000                      # route files measured of each kind (timetable / drawn by TPA)
+
+
+def _ask(path):
+    try:
+        with OPEN(f'http://{host()}:{PORT}{path}', timeout=20) as r:
+            return json.loads(r.read().decode())
+    except Exception:
+        return None
+
+
+def _read(path):
+    try:
+        return open(path).read().strip()
+    except OSError:
+        return None
+
+
+def _mb(n):
+    return round(n / 1048576)
+
+
+def _engine_line():
+    cg = os.path.dirname(MEMSTAT)
+    parts = []
+    pids = [p for p in (_read(os.path.join(cg, 'cgroup.procs')) or '').split() if p.isdigit()]
+    best = None
+    for pid in pids:                     # the engine is the oldest process in its group (builders come and go)
+        stat = _read(f'/proc/{pid}/stat')
+        if stat:
+            try:
+                start = int(stat.rsplit(')', 1)[1].split()[19])
+            except (IndexError, ValueError):
+                continue
+            if best is None or start < best[1]:
+                best = (pid, start)
+    if best:
+        try:
+            up = float(open('/proc/uptime').read().split()[0]) - best[1] / os.sysconf('SC_CLK_TCK')
+            threads = next((ln.split()[1] for ln in open(f'/proc/{best[0]}/status') if ln.startswith('Threads:')), '?')
+            parts.append(f'running for {int(up // 3600)} h {int(up % 3600 // 60)} min, {threads} threads')
+        except (OSError, ValueError):
+            parts.append('running time not readable')
+    else:
+        parts.append('running time not readable')
+    limit, peak = _read(os.path.join(cg, 'memory.max')), _read(os.path.join(cg, 'memory.peak'))
+    if limit and limit.isdigit():
+        parts.append(f'memory limit {_mb(int(limit))} MB' + (f', highest so far {_mb(int(peak))} MB' if peak and peak.isdigit() else ''))
+    elif limit == 'max':
+        parts.append('no memory limit set')
+    else:
+        parts.append('memory limit not readable')
+    return 'engine: ' + ' | '.join(parts)
+
+
+def _ramdisk(root, build):
+    """{folder label: [bytes, files]} for the published tiles' folder, and the route files of each timetable build."""
+    sizes, total = {}, 0
+    route_files = {}
+    for here, dirs, files in os.walk(root):
+        rel = os.path.relpath(here, root).split(os.sep)
+        if rel[0] in ('s', 'b'):
+            key = 'small tiles' if rel[0] == 's' else 'big tiles'
+        elif rel[0] == 'routes' and len(rel) >= 2:
+            key = ('route lines for timetable ' if rel[1] == build else 'route lines for an OLDER timetable ') + rel[1]
+        else:
+            key = None
+        for name in files:
+            try:
+                st = os.lstat(os.path.join(here, name))
+            except OSError:
+                continue
+            used = st.st_blocks * 512
+            total += used
+            if key:
+                got = sizes.setdefault(key, [0, 0])
+                got[0] += used
+                if name.endswith('.json'):
+                    got[1] += 1
+                    if rel[0] == 'routes' and rel[1] == build:
+                        route_files.setdefault('drawn' if name.startswith('g-') else 'timetable', []).append(os.path.join(here, name))
+    return total, sizes, route_files
+
+
+def _average_points(paths):
+    if not paths:
+        return None, 0
+    paths = sorted(paths)
+    step = max(1, len(paths) // SAMPLE_FILES)
+    counts = []
+    for p in paths[::step][:SAMPLE_FILES]:
+        try:
+            text = open(p).read()
+        except OSError:
+            continue
+        counts.append(text.count('],[') + 1 if '[[' in text else 0)
+    return (round(sum(counts) / len(counts)) if counts else None), len(counts)
+
+
+def memory_detail(s):
+    """Lines for the copy-back block: what the engine's memory is made of. Look-only."""
+    out = ['MEMORY DETAIL (look-only):', '   ' + _engine_line()]
+    root = os.path.dirname(META)
+    try:
+        build = str(json.load(open(META)).get('build') or '')
+    except Exception:
+        build = ''
+    if not build:
+        try:
+            build = max((n for n in os.listdir(os.path.join(root, 'routes')) if n.isdigit()), key=int, default='')
+        except OSError:
+            build = ''
+    total, sizes, route_files = _ramdisk(root, build) if os.path.isdir(root) else (0, {}, {})
+    if sizes or total:
+        order = sorted(sizes, key=lambda k: (('small tiles', 'big tiles').index(k) if k.endswith('tiles') else 2 + ('OLDER' in k), k))
+        out.append('   RAM disk (counts against the engine): all ' + str(_mb(total)) + ' MB | ' + ' | '.join(
+            f'{k}: {_mb(sizes[k][0])} MB ({sizes[k][1]} lines)' if k.startswith('route') else f'{k} {_mb(sizes[k][0])} MB ({sizes[k][1]} tiles)'
+            for k in order))
+    else:
+        out.append('   RAM disk: not found')
+    s = s or {}
+    kept, drawn = s.get('routeLinesKept'), s.get('drawnLines') or {}
+    written = ((s.get('publish') or {}).get('last') or {}).get('routeLines')
+    out.append(f"   route lines held in the engine's memory: from the timetable {kept} (limit {LINES_KEEP}), drawn by TPA "
+               f"{drawn.get('linesKept')} (limit {DRAWN_KEEP}), waiting to be drawn {drawn.get('waiting')} | route-line files written {written}")
+    tt_avg, n1 = _average_points(route_files.get('timetable'))
+    dr_avg, n2 = _average_points(route_files.get('drawn'))
+    if n1 + n2 == 0:
+        out.append('   average size: no route files to measure')
+    else:
+        a, b = tt_avg if tt_avg is not None else dr_avg, dr_avg if dr_avg is not None else tt_avg
+        est = ((kept or 0) * a + (drawn.get('linesKept') or 0) * b) * POINT_BYTES
+        out.append(f'   average size (measured on {n1 + n2} route files): timetable lines {tt_avg if tt_avg is not None else "none"} points, '
+                   f'lines drawn by TPA {dr_avg if dr_avg is not None else "none"} points -> the route lines held come to about '
+                   f'{_mb(est)} MB (estimate at {POINT_BYTES} bytes a point)')
+    stops = _ask('/stops/status') or {}
+    kerb = (stops.get('stopsOnKerb') or {}).get('kept')
+    out.append(f"   also remembered: stops placed on the kerb {kerb} (limit {KERB_KEEP}), buses' drawings {(s.get('sharing') or {}).get('busesKept')}")
+    return out
+
+
 def look(argv):
     """--reading: one-minute readings of the engine as it is. Look-only: nothing is changed and nothing is written."""
     global _log_on
     _log_on = False
+    try:
+        os.nice(10)                      # a reading gives way to the engine (it measures the engine's own counters)
+    except OSError:
+        pass
     minutes = 2
     if '--minutes' in argv:
         try:
@@ -362,6 +516,12 @@ def look(argv):
         if r is None:
             ok = False
             break
+    if ok:
+        say('Looking at what the memory is made of (a few seconds)...')
+        try:
+            lines.extend(memory_detail(status()))
+        except Exception as exc:           # the readings above still count
+            lines.append(f'MEMORY DETAIL could not be read: {type(exc).__name__}: {str(exc)[:150]}')
     say('===== COPY BACK FROM HERE =====')
     say(time.strftime('%a %d %b %H:%M:%S UTC', time.gmtime()) + ' | tpa-trial --reading (look-only)')
     for line in lines:
