@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.19.3'
+ENGINE_VERSION = '0.20.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -494,7 +494,63 @@ def metres(lat1, lon1, lat2, lon2) -> float:
 
 HISTORY: dict = {}            # bus key -> recent reports [(recorded, lat, lon), ...] (0.4.2)
 SPEED_WINDOW = 180           # seconds of recent reports used for a bus's speed
-HISTORY_KEEP = 8
+HISTORY_KEEP = 24              # 0.20.0: was 8 - a bus reporting every 10 s needs ~4 min of reports for its delay
+
+
+# 0.20.0 (owner 14 Nov 2026 00:34, option 1 "definitely"): each bus is shown just far enough behind its reports that
+# there is always a next report to glide towards. London's reports reach us ~80 s late and ~1 a minute (tpa-tilecheck
+# 00:32), so at a fixed 90 s many buses caught up with their newest report, waited, and jumped when the next came.
+# A bus's delay = how late its reports usually arrive + how far apart they usually are + 20 s for the tiles (written
+# every 10 s, read every 10 s), between DELAY_MIN and DELAY_MAX. It changes by at most a second or two per 10 s
+# round, so a bus only ever runs a touch slower or faster - never lurches.
+DELAY_MIN, DELAY_MAX = REPLAY_SECONDS, 240
+DELAY_SAMPLES = 8
+LATE: dict = {}               # bus key -> how late its recent reports arrived (s)
+DELAY: dict = {}              # bus key -> the delay it is shown with now (s)
+
+
+def note_lateness(vehicles: list, old: list, fetched_at: float) -> None:
+    """0.20.0: how late each new report arrived."""
+    before = {v['key']: v['recorded'] for v in old}
+    for v in vehicles:
+        if before.get(v['key']) == v['recorded']:
+            continue
+        late = fetched_at - v['recorded']
+        if 0 <= late <= 600:
+            q = LATE.setdefault(v['key'], [])
+            q.append(late)
+            del q[:-DELAY_SAMPLES]
+
+
+def _high(xs):
+    xs = sorted(xs)
+    return xs[int(0.8 * (len(xs) - 1))] if xs else 0.0
+
+
+def delay_target(key: str) -> float:
+    if not REPLAY_SECONDS:
+        return 0
+    late = LATE.get(key) or ()
+    times = [h[0] for h in (HISTORY.get(key) or ())][-(DELAY_SAMPLES + 1):]
+    gaps = [b - a for a, b in zip(times, times[1:]) if 0 < b - a <= 600]
+    if not late or not gaps:
+        return DELAY_MIN
+    want = _high(late) + _high(gaps) + 20
+    return float(min(DELAY_MAX, max(DELAY_MIN, math.ceil(want / 5) * 5)))
+
+
+def step_delay(key: str) -> int:
+    """Move this bus's delay towards its target (once per publish round) and return it."""
+    tgt = delay_target(key)
+    cur = DELAY.get(key)
+    cur = tgt if cur is None else cur + max(-1.0, min(2.0, tgt - cur))
+    DELAY[key] = cur
+    return int(round(cur))
+
+
+def delay_of(key: str) -> int:
+    d = DELAY.get(key)
+    return int(round(d)) if d is not None else REPLAY_SECONDS
 
 
 def _bearing(lat1, lon1, lat2, lon2) -> float:
@@ -798,6 +854,7 @@ def _fetch_once(area) -> None:
         with LOCK:
             old = STATE['vehicles']
         add_motion(vehicles, old)
+        note_lateness(vehicles, old, started)
         measure_guesses(vehicles, old)
         with LOCK:
             STATE['busesInFile'] = in_file
@@ -808,6 +865,9 @@ def _fetch_once(area) -> None:
                 del PLACED[k]
             for k in [k for k in HISTORY if k not in live]:
                 del HISTORY[k]
+            for memo in (LATE, DELAY):
+                for k in [k for k in memo if k not in live]:
+                    del memo[k]
             STATE['reportAgeMedian'] = round(ages[len(ages) // 2]) if ages else None
             STATE['busesWithSpeed'] = sum(1 for v in vehicles if v.get('speed'))
             STATE.update(vehicles=vehicles, fetchedAt=started, coverage=coverage, lastError='',
@@ -934,7 +994,7 @@ def snapshot(view) -> dict:
     # report does. Before, a bus that had just driven out of the view in real life was left out while its
     # icon was still in the middle of the street being watched, and vanished.
     near_lat, near_lon = REPLAY_MARGIN_DEG, REPLAY_MARGIN_DEG / max(0.2, math.cos(math.radians(clat)))
-    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
+    recent = now - DELAY_MAX - REPLAY_LOOKBACK
     for v in vehicles:
         age = now - v['recorded']
         if age > SHOW_FOR:
@@ -994,7 +1054,7 @@ def build_entity(v, age, now, deadline, roads):
         # 0.7.0: replayed along its real route, REPLAY_SECONDS behind, between its real reports
         entity['position']['lon'], entity['position']['lat'] = round(r['position'][0], 6), round(r['position'][1], 6)
         entity['motion'] = {'mode': 'timed', 'points': [[round(a, 6), round(b, 6)] for a, b in r['points']],
-                            'times': r['times'], 'delaySeconds': REPLAY_SECONDS}
+                            'times': r['times'], 'delaySeconds': delay_of(v['key'])}
         keys.append('replay-waiting' if r['waiting'] else 'replay-roads' if r.get('road') else 'replay')
         return entity, keys
     if REPLAY_SECONDS and TIMETABLE['tt'] is not None and v.get('origin') and v.get('dep') and v['key'] not in TRIPS:
@@ -1053,7 +1113,7 @@ def bus_index(vehicles):
         return INDEX['buckets']
     buckets: dict = {}
     now = time.time()
-    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK - 60          # a minute of slack: the list lives ~30 s
+    recent = now - DELAY_MAX - REPLAY_LOOKBACK - 60          # a minute of slack: the list lives ~30 s
     for v in vehicles:
         lo_lat = hi_lat = v['lat']
         lo_lon = hi_lon = v['lon']
@@ -1137,7 +1197,7 @@ def snapshot_fast(view) -> bytes:
         south, west, north, east = view
         clat, clon = (south + north) / 2, (west + east) / 2
         near_lat, near_lon = REPLAY_MARGIN_DEG, REPLAY_MARGIN_DEG / max(0.2, math.cos(math.radians(clat)))
-        recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
+        recent = now - DELAY_MAX - REPLAY_LOOKBACK
         inside = []
         for v in buses_near(vehicles, south, west, north, east):
             age = now - v['recorded']
@@ -1240,7 +1300,7 @@ def prepare_round() -> dict:
     with LOCK:
         vehicles = STATE['vehicles']
         hist_of = {v['key']: list(HISTORY.get(v['key']) or ())[-12:] for v in vehicles}
-    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
+    recent = now - DELAY_MAX - REPLAY_LOOKBACK
     deadline = time.monotonic() + 3600          # everything worked out now, nothing left for helpers
     drawn = reused = 0
     small: dict = {}
@@ -1375,7 +1435,6 @@ def prepare_worker() -> None:
 TILES_DIR = (os.environ.get('TPA_BUS_TILES_DIR') or '').strip()
 PUBLISH_EVERY = 10.0
 PUBLISH_KEEP = 6                      # reports per bus in a tile (the page replays REPLAY_SECONDS behind the newest)
-BIG_KEEP = PUBLISH_KEEP                 # 0.19.3: city tiles keep the same reports (the replay is 90 s behind)
 PUBLISH = {'state': 'off' if not TILES_DIR else 'starting', 'rounds': 0, 'last': None, 'recent': [], 'error': ''}
 ITEM_MEMO: dict = {}                  # bus key -> (signature, small json, big json)
 PLACE_MEMO: dict = {}                 # (bus key, report time) -> (lon, lat) on the road (unmatched buses)
@@ -1416,6 +1475,26 @@ def _tile_remove(path: Path) -> None:
             pass
 
 
+def delay_summary(delays):
+    """0.20.0: how far behind the buses are shown: typical, the slowest tenth, and the share at the minimum."""
+    if not delays:
+        return {}
+    d = sorted(delays)
+    return {'typical': d[len(d) // 2], 'slowestTenth': d[int(0.9 * (len(d) - 1))], 'max': d[-1],
+            'atMinimumPct': round(100 * sum(1 for x in d if x <= DELAY_MIN) / len(d))}
+
+
+def keep_recent(seq, now):
+    """0.20.0: the reports a tile needs - every one the replay may still show (up to DELAY_MAX behind, plus a margin),
+    and the one before - rather than a fixed six (too few for a bus reporting every 10 s, more than needed for one a
+    minute). At least PUBLISH_KEEP when there are that many, at most 30."""
+    since = now - DELAY_MAX - 60
+    i = len(seq)
+    while i > 0 and seq[i - 1][0] >= since:
+        i -= 1
+    return list(seq[max(0, min(i - 1, len(seq) - PUBLISH_KEEP)):])[-30:]
+
+
 def _r1(x):
     return round(x, 1)
 
@@ -1448,13 +1527,13 @@ def bus_item(v, hist, now):
     if badge:
         base['b'] = badge
     if placed and sh is not None and sid:
-        pts = placed[-PUBLISH_KEEP:]
+        pts = keep_recent(placed, now)
         ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (sh.point_at(m),)]
         small = dict(base, s=sid, r=[[int(t), _r1(m)] for t, m in pts], p=ps)
-        big = dict(base, p=ps[-BIG_KEEP:])
+        big = dict(base, p=ps)
     elif ROAD_GLIDE and ROADS['map'] is not None and (made := road_way(v, now)) is not None:
         rsh, rplaced, jumps = made
-        pts = rplaced[-PUBLISH_KEEP:]
+        pts = keep_recent(rplaced, now)
         cut = len(rplaced) - len(pts)
         ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (rsh.point_at(m),)]
         # 0.19.2 (owner 13 Nov 23:50: the tile page "teleporting", ?tiles=0 smoother): only the stretch of road between
@@ -1471,18 +1550,18 @@ def bus_item(v, hist, now):
         js = sorted(j - cut for j in jumps if j >= cut)
         if js:
             small['jm'] = js
-        big = dict(base, p=ps[-BIG_KEEP:])
+        big = dict(base, p=ps)
     else:
         # not matched: where it reported, put on the road (left-hand side), stepping from report to report
         out = []
-        for t, la, lo in [h for h in hist if h[0] <= v['recorded']][-PUBLISH_KEEP:] or [(v['recorded'], v['lat'], v['lon'])]:
+        for t, la, lo in keep_recent([h for h in hist if h[0] <= v['recorded']], now) or [(v['recorded'], v['lat'], v['lon'])]:
             p = PLACE_MEMO.get((key, t))
             if p is None:
                 p = place({'lon': lo, 'lat': la, 'bearing': None}) if ROADS['map'] is not None else None
                 p = PLACE_MEMO[(key, t)] = tuple(p) if p else (lo, la)
             out.append([int(t), round(p[0], 6), round(p[1], 6)])
         small = dict(base, p=out, j=1)
-        big = dict(base, p=out[-BIG_KEEP:], j=1)
+        big = dict(base, p=out, j=1)
     small_j = json.dumps(small, separators=(',', ':'))
     big_j = json.dumps(big, separators=(',', ':'))
     ITEM_MEMO[key] = (sig, small_j, big_j)
@@ -1594,8 +1673,9 @@ def publish_round() -> dict:
         vehicles = STATE['vehicles']
         fetched = STATE['fetchedAt']
         h, notice = health(now)
-        hist_of = {v['key']: list(HISTORY.get(v['key']) or ())[-12:] for v in vehicles}
-    recent = now - REPLAY_SECONDS - REPLAY_LOOKBACK
+        hist_of = {v['key']: list(HISTORY.get(v['key']) or ()) for v in vehicles}
+    recent = now - DELAY_MAX - REPLAY_LOOKBACK      # 0.20.0: as far back as any bus may be shown
+    delays = []
     small: dict = {}
     big: dict = {}
     shown = hidden = matched = 0
@@ -1618,6 +1698,9 @@ def publish_round() -> dict:
             hidden += 1
             continue
         shown += 1
+        d = step_delay(v['key'])                      # 0.20.0: this bus's own delay, carried in its tile item
+        delays.append(d)
+        got = ('{"d":%d,' % d + got[0][1:], '{"d":%d,' % d + got[1][1:])
         noc = v['key'].split(':', 1)[0]
         row = by_company.setdefault(noc, [0, 0, 0])   # placed, off its route, not matched (none or several)
         if known and known[1] and '"s":' in got[0]:
@@ -1700,6 +1783,7 @@ def publish_round() -> dict:
     _tile_write(_folder(root) / 'meta.json', json.dumps(meta, separators=(',', ':')))
     return {'at': iso(now), 'cpuSeconds': round(time.thread_time() - t_cpu, 2), 'wallSeconds': round(time.monotonic() - t_wall, 2),
             'buses': shown, 'hiddenNoDetails': hidden, 'matched': matched, 'notPlaced': why,
+            'delaySeconds': delay_summary(delays),
             'companies': len(by_company), 'byCompany': company_table(by_company), 'tilesSmall': len(small), 'tilesBig': len(big),
             'tilesWritten': written, 'packedKbWritten': round(packed_bytes / 1024), 'largestKb': round(largest / 1024, 1),
             'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN)}
@@ -2772,7 +2856,7 @@ def road_legs(v: dict, now: float, deadline: float | None):
         hist = list(HISTORY.get(v['key']) or [])
     if not hist or hist[-1][0] < v['recorded']:
         hist.append((v['recorded'], v['lat'], v['lon']))
-    keep_from = now - REPLAY_SECONDS - 120
+    keep_from = now - DELAY_MAX - 120          # 0.20.0: as far back as any bus may be shown
     idx = [i for i in range(len(hist)) if i == len(hist) - 1 or hist[i + 1][0] >= keep_from]
     if not idx:
         return None
@@ -2810,7 +2894,7 @@ def road_replay_for(v: dict, now: float, deadline: float | None):
         p = legs[-1][2][-1]
         return {'position': p, 'points': [p], 'times': [round(now, 1)], 'waiting': False, 'road': True}
     sh, placed, jumps = made
-    r = replay.track(sh, placed, now, REPLAY_SECONDS, KEEP_LEFT_M, jumps)
+    r = replay.track(sh, placed, now, delay_of(v['key']), KEEP_LEFT_M, jumps)
     if r is not None:
         r['road'] = True
         if v['key'] in STAND_IN:
@@ -2976,7 +3060,7 @@ def trace(entity_id: str) -> dict:
     if r is not None:
         out['shownAt'] = {'lon': round(r['position'][0], 6), 'lat': round(r['position'][1], 6),
                           'how': 'waiting for its next report' if r['waiting'] else 'along the roads' if r.get('road') else 'along its timetabled route',
-                          'secondsBehind': REPLAY_SECONDS}
+                          'secondsBehind': delay_of(v['key'])}
     else:
         out['shownAt'] = {'lon': v['lon'], 'lat': v['lat'], 'how': 'at its newest report (not replayed)'}
     return out
@@ -3173,13 +3257,13 @@ def details(entity_id: str) -> dict:
     shown_clock = None
     try:
         started = datetime.fromisoformat(str(v.get('dep') or '').replace('Z', '+00:00')).timestamp()
-        shown_clock = first[4] + (time.time() - REPLAY_SECONDS - started)
+        shown_clock = first[4] + (time.time() - delay_of(v['key']) - started)
     except (TypeError, ValueError):
         pass
     # where the bus is shown now along its route
     shown_m = None
     if f and f[1] and sh is not None:
-        r = replay.track(sh, f[1], time.time(), REPLAY_SECONDS)
+        r = replay.track(sh, f[1], time.time(), delay_of(v['key']))
         if r is not None:
             lon, lat = r['position']
             # look near its own reports first (a route can pass the same place twice)
@@ -3291,7 +3375,7 @@ def _replay_for(v: dict, now: float, deadline: float):
         with JOURNEY_LOCK:
             sh = shape_for(f[0])         # 0.16.0: was SHAPES.get - a line pushed out of the cache sent the bus onto roads
     if sh is not None:
-        r = replay.track(sh, f[1], now, REPLAY_SECONDS, KEEP_LEFT_M)
+        r = replay.track(sh, f[1], now, delay_of(v['key']), KEEP_LEFT_M)
         if r is not None and not fresh:
             r['standIn'] = True      # 0.8.11: up to an older report only - never remembered (see replay_for)
         return r

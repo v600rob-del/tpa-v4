@@ -92,12 +92,13 @@ def poll(box, now):
         for c in range(math.floor(w / size[1]), math.floor(e / size[1]) + 1):
             for it in load(ROOT / d / f'{r}_{c}.json') or []:
                 items.setdefault(it['i'], it)
-    delay, kl = meta.get('delay', 90), meta.get('keepLeft', 0)
-    recent = now - delay - 120
+    delay0, kl = meta.get('delay', 90), meta.get('keepLeft', 0)
     inside = lambda q: w <= q[1] <= e and s <= q[2] <= n
     out = {}
     for it in items.values():
         p = it.get('p') or []
+        delay = it.get('d', delay0)                      # bus 0.20.0: each bus's own delay
+        recent = now - delay - 120
         if not p or not (inside(p[-1]) or any(q[0] >= recent and inside(q) for q in p)):
             continue
         tr, kind = None, 'straight'
@@ -169,8 +170,8 @@ def main():
                         gone += 1
                         if len(examples) < 14:
                             examples.append(f'  vanished mid-view: {pit.get("l", "")[:34]:34} ({pkind})')
-        delay = (meta or {}).get('delay', 90)
         for tr, kind, it in cur.values():
+            delay = it.get('d', (meta or {}).get('delay', 90))
             p = it.get('p') or []
             if len(p) >= 2:
                 gaps.extend(p[j][0] - p[j - 1][0] for j in range(1, len(p)))
@@ -192,6 +193,9 @@ def main():
     for x in examples:
         print(x)
     med = lambda v: sorted(v)[len(v) // 2] if v else 0
+    ds = sorted(it.get('d', 90) for tr, kind, it in prev.values())
+    if ds:
+        print(f'Shown behind (last poll): typical {ds[len(ds) // 2]} s, slowest {ds[-1]} s')
     print(f'Reports: typical gap {med(gaps):.0f} s; newest report typically {med(late):.0f} s old when read;'
           f' history in the tile too short for the replay moment: {short * 100 // max(1, counted)}% of buses')
     for x in detail:

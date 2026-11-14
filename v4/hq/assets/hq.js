@@ -1456,10 +1456,12 @@ async function busTileFrame(){
   if((r1-r0+1)*(c1-c0+1)>80)throw Error('too many tiles');
   const asks=[];for(let r=r0;r<=r1;r++)for(let c=c0;c<=c1;c++)asks.push(tileJSON(`/tiles/bus/${dir}/${r}_${c}.json?r=${slot}`,6000,true));
   const items=new Map();for(const t of await Promise.all(asks))if(Array.isArray(t))for(const it of t)if(it&&typeof it.i==='string'&&!items.has(it.i))items.set(it.i,it);
-  const now=serverNow()/1000,delay=validNum(meta.delay)?meta.delay:90,recent=now-delay-120;
+  // 4.60.0 (bus 0.20.0, owner 14 Nov 00:34): each bus carries its own delay (d) - just far enough behind its reports
+  const now=serverNow()/1000,delay0=validNum(meta.delay)?meta.delay:90,dOf=it=>validNum(it.d)&&it.d>=0&&it.d<=600?it.d:delay0;
   const inView=q=>q[1]>=w&&q[1]<=e&&q[2]>=s&&q[2]<=n;
   const cy=(s+n)/2,cx=(w+e)/2,chosen=[];
   for(const it of items.values()){const p=Array.isArray(it.p)?it.p:[];if(!p.length)continue;const last=p[p.length-1];
+    const recent=now-dOf(it)-120;
     if(!(inView(last)||p.some(q=>q[0]>=recent&&inView(q))))continue;
     chosen.push([(last[2]-cy)**2+(last[1]-cx)**2,it]);}
   chosen.sort((a,b)=>a[0]-b[0]);
@@ -1471,7 +1473,7 @@ async function busTileFrame(){
   if(small&&meta.build){const want=[...new Set(pick.filter(it=>typeof it.s==='string'&&Array.isArray(it.r)).map(it=>it.s))];
     await Promise.race([Promise.all(want.map(sid=>busLine(meta.build,sid).then(sh=>lines.set(sid,sh)))),new Promise(ok=>setTimeout(ok,2500))]);}
   for(const it of pick){
-    let tr=null;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0;
+    let tr=null;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0,delay=dOf(it);
     if(sh&&Array.isArray(it.r))tr=R.track(sh,it.r,now,delay,kl);
     // 4.58.0 (bus 0.19.0): a bus not on a timetabled route brings its own way along the roads
     if(!tr&&small&&Array.isArray(it.w)&&it.w.length>=2&&Array.isArray(it.r)){try{tr=R.track(roadShape(it),it.r,now,delay,kl,it.jm);}catch(_){tr=null;}}
