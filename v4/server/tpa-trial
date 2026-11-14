@@ -16,7 +16,10 @@ The trial itself runs detached from the connection that started it: what you see
 `sudo cat /run/tpa-trial.log` shows how it went. Only one trial can run at a time.
 
   sudo python3 -B -u tpa-trial <new 40-character commit> --expect-version 0.20.4 [--expect-road-mb 800]
-        [--max-road-legs 10] [--max-memory-mb 2700] [--max-round-factor 1.2]
+        [--max-road-legs 10] [--max-memory-mb 2700] [--max-round-factor 1.2] [--max-tiles-age 45]
+
+  sudo python3 -B -u tpa-trial --reading [--minutes 2]
+        LOOK-ONLY: the same one-minute reading the trial takes, as many times as asked. Changes and writes nothing.
 
 Pass marks (all must be met, or the old version goes back):
   - the engine answers, says the expected version, and its health is "ready"
@@ -25,6 +28,7 @@ Pass marks (all must be met, or the old version goes back):
   - the bus engine's memory at most --max-memory-mb
   - a round of tiles takes no longer than --max-round-factor times what it took before
   - (if given) the road-map memory limit it reports is --expect-road-mb
+  - (if given) the published tiles are at most --max-tiles-age seconds old (the page only uses tiles under a minute old)
 """
 import json
 import os
@@ -43,6 +47,7 @@ BIND_FILE = os.environ.get('TPA_TRIAL_BIND_FILE', '/etc/tpa/bus-bind')
 PORT = os.environ.get('TPA_TRIAL_PORT', '8781')
 META = os.environ.get('TPA_TRIAL_META', '/run/tpa-bus-tiles/bus/meta.json')
 MEMORY_CMD = os.environ.get('TPA_TRIAL_MEMORY_CMD', 'systemctl show -p MemoryCurrent --value tpa-bus')
+MEMSTAT = os.environ.get('TPA_TRIAL_MEMSTAT', '/sys/fs/cgroup/system.slice/tpa-bus.service/memory.stat')
 SETTLE_ROUNDS = 3
 SETTLE_MAX_S = 12 * 60
 SETTLE_EXTRA_S = 240
@@ -53,6 +58,7 @@ STARTED_FROM = {'commit': ''}                       # the version running when t
 _T0 = time.monotonic()
 _log = None
 _stdout_ok = True                       # False in the detached worker: it writes the log only
+_log_on = True                          # False in --reading mode: look-only, nothing is written
 
 
 def now():
@@ -66,13 +72,14 @@ def wait(seconds):
 
 def say(text=''):
     global _stdout_ok, _log
-    try:
-        if _log is None:
-            _log = open(LOG, 'a')
-        _log.write(text + '\n')
-        _log.flush()
-    except OSError:
-        pass
+    if _log_on:
+        try:
+            if _log is None:
+                _log = open(LOG, 'a')
+            _log.write(text + '\n')
+            _log.flush()
+        except OSError:
+            pass
     if _stdout_ok:
         try:
             print(text, flush=True)
@@ -101,6 +108,17 @@ def memory_mb():
     try:
         out = subprocess.run(MEMORY_CMD.split(), capture_output=True, text=True, timeout=20).stdout.strip()
         return round(int(out) / 1048576)
+    except Exception:
+        return None
+
+
+def memory_parts():
+    """What the engine's memory is made of, in MB: (the program itself, files it has read, tiles and other shared
+    memory), from the system's own count for the bus service; None if it cannot be read."""
+    try:
+        st = dict(line.split()[:2] for line in open(MEMSTAT) if len(line.split()) >= 2)
+        anon, file, shmem = int(st['anon']), int(st['file']), int(st.get('shmem', 0))
+        return round(anon / 1048576), round((file - shmem) / 1048576), round(shmem / 1048576)
     except Exception:
         return None
 
@@ -138,7 +156,7 @@ def reading(label):
             'rounds': (pb.get('rounds') or 0) - (pa.get('rounds') or 0), 'roundsTotal': pb.get('rounds') or 0,
             'roundSeconds': last.get('wallSeconds'), 'buses': last.get('buses'),
             'cpu': {k: round((cb.get(k, 0) - ca.get(k, 0)) / mins, 1) for k in ('road legs', 'publishing', 'matching', 'engine total')},
-            'memoryMB': memory_mb(), 'roadMB': b.get('roadCacheMB'), 'roadLimitMB': b.get('roadCacheLimitMB'),
+            'memoryMB': memory_mb(), 'memoryParts': memory_parts(), 'roadMB': b.get('roadCacheMB'), 'roadLimitMB': b.get('roadCacheLimitMB'),
             'tilesAge': tiles_age()}
 
 
@@ -149,7 +167,10 @@ def show(label, r):
     return (f'{label}: version {r["version"]}, health {r["health"]} | rounds of tiles in the minute: {r["rounds"]}, last round took '
             f'{r["roundSeconds"]} s, tiles {r["tilesAge"]} s old, buses {r["buses"]} | processor-seconds a minute: road legs '
             f'{c["road legs"]}, all publishing {c["publishing"]}, matching {c["matching"]}, engine total {c["engine total"]} | '
-            f'memory {r["memoryMB"]} MB, of it road map {r["roadMB"]} MB (limit {r["roadLimitMB"]} MB)')
+            f'memory {r["memoryMB"]} MB'
+            + ('' if not r.get('memoryParts') else ' (the program itself {} MB, files it has read {} MB, tiles and other shared memory {} MB)'
+               .format(*r['memoryParts']))
+            + f', road map {r["roadMB"]} MB (limit {r["roadLimitMB"]} MB) | rounds since it started: {r["roundsTotal"]}')
 
 
 def update(commit):
@@ -197,10 +218,12 @@ def trial(argv):
     max_legs = opt('--max-road-legs', 10.0, float)
     max_mem = opt('--max-memory-mb', 2700, int)
     max_factor = opt('--max-round-factor', 1.2, float)
+    max_age = opt('--max-tiles-age', None, int)
     new = a[0] if a else ''
     if len(a) != 1 or len(new) != 40 or any(ch not in '0123456789abcdef' for ch in new) or not expect_version:
         say('Usage: sudo python3 -B -u tpa-trial <new 40-character commit> --expect-version <version> [--expect-road-mb N] '
-            '[--max-road-legs 10] [--max-memory-mb 2700] [--max-round-factor 1.2]')
+            '[--max-road-legs 10] [--max-memory-mb 2700] [--max-round-factor 1.2] [--max-tiles-age 45]   |   look-only: '
+            'sudo python3 -B -u tpa-trial --reading [--minutes 2]')
         return 2
     old = running_commit()
     say(f'tpa-trial: about 12 to 20 minutes; up to 35 if the old version has to go back. Progress shows below, the result '
@@ -273,6 +296,9 @@ def trial(argv):
                                   f'a round takes no longer than {max_factor:g} x before ({before["roundSeconds"]} s)', f'{after["roundSeconds"]} s'))
                 if expect_road is not None:
                     marks.append((after['roadLimitMB'] == expect_road, f'road-map memory limit is {expect_road} MB', f'{after["roadLimitMB"]} MB'))
+                if max_age is not None:
+                    marks.append((after['tilesAge'] is not None and after['tilesAge'] <= max_age, f'tiles at most {max_age} s old',
+                                  f'{after["tilesAge"]} s'))
                 for ok, what, got in marks:
                     lines.append(f'   {"PASS" if ok else "MISSED"}: {what} - measured {got}')
                     if not ok:
@@ -315,9 +341,41 @@ def worker(argv):
         return 5
 
 
+def look(argv):
+    """--reading: one-minute readings of the engine as it is. Look-only: nothing is changed and nothing is written."""
+    global _log_on
+    _log_on = False
+    minutes = 2
+    if '--minutes' in argv:
+        try:
+            minutes = max(1, min(30, int(argv[argv.index('--minutes') + 1])))
+        except (ValueError, IndexError):
+            print('Usage: sudo python3 -B -u tpa-trial --reading [--minutes 2]', flush=True)
+            return 2
+    say(f'tpa-trial --reading: look-only, takes about {minutes} minute{"s" if minutes != 1 else ""}. Progress shows below, the result comes at the end.')
+    lines = [f'Running now: {running_commit() or "unknown"}']
+    ok = True
+    for k in range(minutes):
+        say(f'Reading {k + 1} of {minutes}...')
+        r = reading(f'reading {k + 1}')
+        lines.append(show(f'READING {k + 1}', r))
+        if r is None:
+            ok = False
+            break
+    say('===== COPY BACK FROM HERE =====')
+    say(time.strftime('%a %d %b %H:%M:%S UTC', time.gmtime()) + ' | tpa-trial --reading (look-only)')
+    for line in lines:
+        say(line)
+    say('Nothing was changed.')
+    say('===== COPY BACK TO HERE =====')
+    return 0 if ok else 1
+
+
 def main(argv):
     """Start the trial detached from this connection, then show its log as it grows until it has finished."""
     global _stdout_ok, _log
+    if '--reading' in argv:
+        return look(argv)
     import fcntl
     lock = open(LOCK, 'w')
     try:
