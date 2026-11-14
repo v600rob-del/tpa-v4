@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.20.2'
+ENGINE_VERSION = '0.20.4'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -177,6 +177,12 @@ JOURNEY_MAX = 900            # buses worked on per round, nearest what people ar
 LEGS: dict = {}              # bus key -> {report time a: (report time b, way)}
 LEG_MAX_M = 3000.0
 ROADS = {'map': None, 'licence': '', 'source': ''}
+# 0.20.4 (owner 14 Nov 2026 13:30, after two look-only readings with tpa-roadcheck on the server): the engine's own road
+# map is limited by memory alone, 800 MB, no longer by 350 squares. Measured 12:41-13:17: the buses not on a timetable
+# route needed ~3,200 road-map squares at once; with 350 kept, 93% of "road legs" time (~36 of every 60
+# processor-seconds in the daytime) went on fetching squares again and again - 9.04 ms a drive against 0.56 ms at 800 MB
+# (0.65 at 600, 3.29 at 400, 0.53 with everything kept). The least recently used squares are still thrown out at the limit.
+ROAD_MEMORY_MB = max(20, int(os.environ.get('TPA_BUS_ROAD_CACHE_MB', '800') or 800))
 PATHS: dict = {}             # bus key -> (report time, motion or None)
 PLACED: dict = {}            # 0.5.7: bus key -> (report time, [lon, lat] on its road, or None)
 KEEP_LEFT_M = 2.0            # 0.5.7: buses drawn on the left-hand side of two-way roads (UK traffic keeps left)
@@ -1860,7 +1866,7 @@ def open_road_map() -> bool:
     if path is None:
         return False
     try:
-        new = road_map.RoadMap(str(path))
+        new = road_map.RoadMap(str(path), max_tiles=10 ** 9, max_points=10 ** 12, max_bytes=ROAD_MEMORY_MB * 1_000_000)
     except Exception as exc:   # damaged or old format: the next check rebuilds it
         with LOCK:
             STATE['roadMapError'] = ('open: ' + type(exc).__name__ + ' ' + str(exc))[:100]

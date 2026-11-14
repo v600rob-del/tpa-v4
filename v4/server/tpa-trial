@@ -1,0 +1,369 @@
+#!/usr/bin/env python3
+"""tpa-trial - try a new bus engine version on the server against pass marks agreed beforehand, with the way back built in.
+
+Owner 14 Nov 2026 (after a day of installs that failed): every install is a trial. This tool
+  1. takes a reading of the engine as it is now (one minute),
+  2. installs the new version (sudo tpa-update bus <commit> - only the bus engine restarts),
+  3. lets it settle (until it has published a few rounds of tiles, then four more minutes),
+  4. takes the same reading again,
+  5. compares with the pass marks, and
+  6. if any mark is missed - or the new version does not come up at all - puts the version that was running back by
+     itself and checks it is running again.
+It prints its progress as it goes and one block to copy back.
+
+The trial itself runs detached from the connection that started it: what you see is only a view of its log
+(/run/tpa-trial.log). If the connection is lost the trial carries on to the end, including putting the old version back;
+`sudo cat /run/tpa-trial.log` shows how it went. Only one trial can run at a time.
+
+  sudo python3 -B -u tpa-trial <new 40-character commit> --expect-version 0.20.4 [--expect-road-mb 800]
+        [--max-road-legs 10] [--max-memory-mb 2700] [--max-round-factor 1.2]
+
+Pass marks (all must be met, or the old version goes back):
+  - the engine answers, says the expected version, and its health is "ready"
+  - it is publishing rounds of tiles
+  - "road legs" processor-seconds per minute at most --max-road-legs
+  - the bus engine's memory at most --max-memory-mb
+  - a round of tiles takes no longer than --max-round-factor times what it took before
+  - (if given) the road-map memory limit it reports is --expect-road-mb
+"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+from urllib.request import ProxyHandler, build_opener
+
+LOG = os.environ.get('TPA_TRIAL_LOG', '/run/tpa-trial.log')
+LOCK = LOG + '.lock'
+SPEED = float(os.environ.get('TPA_TRIAL_SPEED', '1') or 1)          # tests only: 0.01 = a minute passes in 0.6 s
+UPDATE = os.environ.get('TPA_TRIAL_UPDATE', '/usr/local/sbin/tpa-update')
+LAYER_LINK = os.environ.get('TPA_TRIAL_LAYER_LINK', '/opt/tpa/layers/bus')
+BIND_FILE = os.environ.get('TPA_TRIAL_BIND_FILE', '/etc/tpa/bus-bind')
+PORT = os.environ.get('TPA_TRIAL_PORT', '8781')
+META = os.environ.get('TPA_TRIAL_META', '/run/tpa-bus-tiles/bus/meta.json')
+MEMORY_CMD = os.environ.get('TPA_TRIAL_MEMORY_CMD', 'systemctl show -p MemoryCurrent --value tpa-bus')
+SETTLE_ROUNDS = 3
+SETTLE_MAX_S = 12 * 60
+SETTLE_EXTRA_S = 240
+BACK_MAX_S = 10 * 60
+
+OPEN = build_opener(ProxyHandler({})).open          # straight to the engine, never through a proxy
+STARTED_FROM = {'commit': ''}                       # the version running when the trial began (the way back)
+_T0 = time.monotonic()
+_log = None
+_stdout_ok = True                       # False in the detached worker: it writes the log only
+
+
+def now():
+    """Seconds since the trial began (tests run the clock fast)."""
+    return (time.monotonic() - _T0) / SPEED
+
+
+def wait(seconds):
+    time.sleep(seconds * SPEED)
+
+
+def say(text=''):
+    global _stdout_ok, _log
+    try:
+        if _log is None:
+            _log = open(LOG, 'a')
+        _log.write(text + '\n')
+        _log.flush()
+    except OSError:
+        pass
+    if _stdout_ok:
+        try:
+            print(text, flush=True)
+        except OSError:                  # the connection has gone: carry on, the log has everything
+            _stdout_ok = False
+
+
+def host():
+    try:
+        h = open(BIND_FILE).read().strip()
+        return h or '127.0.0.1'
+    except OSError:
+        return '127.0.0.1'
+
+
+def status():
+    """The bus engine's own status, or None if it does not answer."""
+    try:
+        with OPEN(f'http://{host()}:{PORT}/status', timeout=20) as r:
+            return json.loads(r.read().decode())
+    except Exception:
+        return None
+
+
+def memory_mb():
+    try:
+        out = subprocess.run(MEMORY_CMD.split(), capture_output=True, text=True, timeout=20).stdout.strip()
+        return round(int(out) / 1048576)
+    except Exception:
+        return None
+
+
+def tiles_age():
+    try:
+        return round(time.time() - json.load(open(META))['updatedAt'])
+    except Exception:
+        return None
+
+
+def running_commit():
+    try:
+        return os.path.basename(os.readlink(LAYER_LINK))
+    except OSError:
+        return ''
+
+
+def reading(label):
+    """One minute of the engine: {version, health, rounds in the minute, last round s, processor-seconds per minute by
+    job, memory, road-map memory, tiles age}; None if the engine did not answer."""
+    a, ta = status(), now()
+    if a is None:
+        return None
+    say(f'   {label}: measuring for one minute...')
+    wait(60)
+    b, tb = status(), now()
+    if b is None or (b.get('cpuSeconds') or {}).get('engine total', 0) < (a.get('cpuSeconds') or {}).get('engine total', 0):
+        return None                      # stopped answering, or restarted in the middle
+    mins = max((tb - ta) / 60, 1e-6)
+    ca, cb = a.get('cpuSeconds') or {}, b.get('cpuSeconds') or {}
+    pa, pb = a.get('publish') or {}, b.get('publish') or {}
+    last = pb.get('last') or {}
+    return {'version': b.get('engineVersion'), 'health': b.get('health'),
+            'rounds': (pb.get('rounds') or 0) - (pa.get('rounds') or 0), 'roundsTotal': pb.get('rounds') or 0,
+            'roundSeconds': last.get('wallSeconds'), 'buses': last.get('buses'),
+            'cpu': {k: round((cb.get(k, 0) - ca.get(k, 0)) / mins, 1) for k in ('road legs', 'publishing', 'matching', 'engine total')},
+            'memoryMB': memory_mb(), 'roadMB': b.get('roadCacheMB'), 'roadLimitMB': b.get('roadCacheLimitMB'),
+            'tilesAge': tiles_age()}
+
+
+def show(label, r):
+    if r is None:
+        return f'{label}: the bus engine did not answer'
+    c = r['cpu']
+    return (f'{label}: version {r["version"]}, health {r["health"]} | rounds of tiles in the minute: {r["rounds"]}, last round took '
+            f'{r["roundSeconds"]} s, tiles {r["tilesAge"]} s old, buses {r["buses"]} | processor-seconds a minute: road legs '
+            f'{c["road legs"]}, all publishing {c["publishing"]}, matching {c["matching"]}, engine total {c["engine total"]} | '
+            f'memory {r["memoryMB"]} MB, of it road map {r["roadMB"]} MB (limit {r["roadLimitMB"]} MB)')
+
+
+def update(commit):
+    try:
+        r = subprocess.run([UPDATE, 'bus', commit], capture_output=True, text=True, timeout=600)
+        for line in (r.stdout + r.stderr).strip().splitlines()[-3:]:
+            say('   | ' + line[:200])
+        return r.returncode == 0
+    except Exception as exc:
+        say(f'   | the update command itself failed: {type(exc).__name__}: {str(exc)[:150]}')
+        return False
+
+
+def settle(want_version, max_s, rounds=SETTLE_ROUNDS):
+    """Wait until the engine answers with this version and has published `rounds` rounds; True if it did in time."""
+    start = now()
+    told = -1
+    while now() - start < max_s:
+        s = status()
+        done = ((s or {}).get('publish') or {}).get('rounds') or 0
+        if s is not None and s.get('engineVersion') == want_version and done >= rounds:
+            return True
+        minute = int((now() - start) // 60)
+        if minute != told:
+            told = minute
+            what = 'not answering yet' if s is None else f'version {s.get("engineVersion")}, rounds of tiles so far: {done} of {rounds}'
+            say(f'   settling, minute {minute + 1} (up to {max_s // 60}): {what}')
+        wait(15)
+    return False
+
+
+def trial(argv):
+    """The trial itself (runs detached; everything goes to the log)."""
+    a = list(argv)
+
+    def opt(name, default=None, kind=str):
+        if name in a:
+            k = a.index(name)
+            v = a[k + 1]
+            del a[k:k + 2]
+            return kind(v)
+        return default
+    expect_version = opt('--expect-version')
+    expect_road = opt('--expect-road-mb', None, int)
+    max_legs = opt('--max-road-legs', 10.0, float)
+    max_mem = opt('--max-memory-mb', 2700, int)
+    max_factor = opt('--max-round-factor', 1.2, float)
+    new = a[0] if a else ''
+    if len(a) != 1 or len(new) != 40 or any(ch not in '0123456789abcdef' for ch in new) or not expect_version:
+        say('Usage: sudo python3 -B -u tpa-trial <new 40-character commit> --expect-version <version> [--expect-road-mb N] '
+            '[--max-road-legs 10] [--max-memory-mb 2700] [--max-round-factor 1.2]')
+        return 2
+    old = running_commit()
+    say(f'tpa-trial: about 12 to 20 minutes; up to 35 if the old version has to go back. Progress shows below, the result '
+        f'comes at the end. (If this connection drops, the trial carries on by itself: sudo cat {LOG})')
+    lines = []                           # the block to copy back
+
+    def finish(verdict, code):
+        say('===== COPY BACK FROM HERE =====')
+        say(time.strftime('%a %d %b %H:%M:%S UTC', time.gmtime()) + ' | tpa-trial')
+        for line in lines:
+            say(line)
+        say(verdict)
+        say('===== COPY BACK TO HERE =====')
+        return code
+
+    STARTED_FROM['commit'] = old if len(old) == 40 else ''
+    if len(old) != 40:
+        lines.append('Could not tell which bus version is running now, so there would be no way back.')
+        return finish('RESULT: NOTHING WAS CHANGED.', 1)
+    if old == new:
+        lines.append(f'The bus engine is already running {new}.')
+        return finish('RESULT: NOTHING WAS CHANGED.', 1)
+
+    say('Step 1 of 5: reading the engine as it is now...')
+    before = reading('before')
+    lines.append(show('BEFORE', before))
+    if before is None:
+        return finish('RESULT: NOTHING WAS CHANGED (the engine must be answering before a trial starts).', 1)
+    lines.append(f'Way back: {old} (version {before["version"]})')
+
+    say(f'Step 2 of 5: installing {new[:8]}... (only the bus engine restarts)')
+    installed = update(new)
+    failed = []
+    after = None
+    if not installed and running_commit() == old:
+        s = status()
+        lines.append('The update did not go in; the version that was running is still in place'
+                     + ('.' if s is not None and s.get('engineVersion') == before['version'] else ', BUT IT IS NOT ANSWERING - please tell Claude.'))
+        return finish('RESULT: THE UPDATE DID NOT GO IN. NOTHING WAS CHANGED.', 1)
+    if not installed or running_commit() != new:
+        failed.append('the update did not go in cleanly')
+    else:
+        say(f'Step 3 of 5: letting it settle (until it has published {SETTLE_ROUNDS} rounds of tiles, then 4 more minutes)...')
+        if not settle(expect_version, SETTLE_MAX_S):
+            s = status()
+            failed.append('the engine did not answer after the install' if s is None else
+                          f'after {SETTLE_MAX_S // 60} minutes it had not published {SETTLE_ROUNDS} rounds of tiles as version {expect_version} '
+                          f'(it says version {s.get("engineVersion")}, rounds {((s.get("publish") or {}).get("rounds"))})')
+        else:
+            extra = SETTLE_EXTRA_S // 60
+            for minute in range(extra):
+                say(f'   settled; running on before the reading, minute {minute + 1} of {extra}...')
+                wait(60)
+            say('Step 4 of 5: reading the new version...')
+            after = reading('after')
+            lines.append(show('AFTER ', after))
+            if after is None:
+                failed.append('the engine stopped answering during the reading')
+            else:
+                marks = [
+                    (after['version'] == expect_version, f'version is {expect_version}', f'{after["version"]}'),
+                    (after['health'] == 'ready', 'health is ready', f'{after["health"]}'),
+                    (after['rounds'] >= 1, 'publishing rounds of tiles (at least 1 in the minute)', f'{after["rounds"]}'),
+                    (after['cpu']['road legs'] <= max_legs, f'road legs at most {max_legs:g} processor-seconds a minute',
+                     f'{after["cpu"]["road legs"]} (before: {before["cpu"]["road legs"]})'),
+                    (after['memoryMB'] is not None and after['memoryMB'] <= max_mem, f'memory at most {max_mem} MB', f'{after["memoryMB"]} MB'),
+                ]
+                if before['roundSeconds'] and after['roundSeconds'] is not None:
+                    marks.append((after['roundSeconds'] <= max_factor * before['roundSeconds'],
+                                  f'a round takes no longer than {max_factor:g} x before ({before["roundSeconds"]} s)', f'{after["roundSeconds"]} s'))
+                if expect_road is not None:
+                    marks.append((after['roadLimitMB'] == expect_road, f'road-map memory limit is {expect_road} MB', f'{after["roadLimitMB"]} MB'))
+                for ok, what, got in marks:
+                    lines.append(f'   {"PASS" if ok else "MISSED"}: {what} - measured {got}')
+                    if not ok:
+                        failed.append(what)
+    if not failed:
+        say('Step 5 of 5: every pass mark met - the new version stays.')
+        return finish(f'RESULT: EVERY PASS MARK MET. The new version ({expect_version}, {new}) is running and STAYS.', 0)
+
+    lines.append('Not met: ' + '; '.join(failed))
+    say(f'Step 5 of 5: pass marks missed - putting the old version ({old[:8]}...) back...')
+    update(old)
+    back = running_commit() == old and settle(before['version'], BACK_MAX_S, rounds=1)
+    s = status()
+    lines.append('AFTER GOING BACK: ' + ('the bus engine is not answering' if s is None else
+                 f'version {s.get("engineVersion")}, health {s.get("health")}, rounds of tiles so far {((s.get("publish") or {}).get("rounds"))}'))
+    if back:
+        return finish(f'RESULT: PASS MARKS MISSED. The old version ({before["version"]}, {old}) was PUT BACK and is running.', 3)
+    return finish(f'RESULT: PASS MARKS MISSED, AND THE OLD VERSION IS NOT CONFIRMED RUNNING. Please tell Claude straight away. '
+                  f'To put it back by hand: sudo tpa-update bus {old}', 4)
+
+
+def worker(argv):
+    try:
+        return trial(argv)
+    except Exception as exc:
+        import traceback
+        say('===== COPY BACK FROM HERE =====')
+        say('tpa-trial STOPPED WITH AN ERROR: ' + type(exc).__name__ + ': ' + str(exc)[:200])
+        for line in traceback.format_exc().strip().splitlines()[-6:]:
+            say('   ' + line)
+        was = STARTED_FROM['commit']
+        if was and running_commit() != was:          # never leave an untried version running after an error
+            say(f'Putting the version that was running back ({was})...')
+            try:
+                update(was)
+            except Exception:
+                pass
+        say(f'The bus engine is running: {running_commit()}' + (f' (the trial began from {was})' if was else ''))
+        say('===== COPY BACK TO HERE =====')
+        return 5
+
+
+def main(argv):
+    """Start the trial detached from this connection, then show its log as it grows until it has finished."""
+    global _stdout_ok, _log
+    import fcntl
+    lock = open(LOCK, 'w')
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print(f'A trial is already running. To see how it is going: sudo cat {LOG}', flush=True)
+        return 6
+    open(LOG, 'w').close()               # a fresh log for this trial
+    pid = os.fork()
+    if pid == 0:                         # the trial: its own session, no ties to the connection
+        os.setsid()
+        signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        null = os.open(os.devnull, os.O_RDWR)
+        for fd in (0, 1, 2):
+            os.dup2(null, fd)
+        _stdout_ok = False
+        code = 5
+        try:
+            code = worker(argv)
+        finally:
+            os._exit(code)
+    lock.close()                         # the trial holds the lock from here
+    code = 0
+    try:
+        with open(LOG, 'rb') as view:
+            pending = b''
+            while True:
+                chunk = view.read()
+                if chunk:
+                    pending += chunk
+                    *whole, pending = pending.split(b'\n')
+                    for line in whole:
+                        print(line.decode('utf-8', 'replace'), flush=True)
+                    continue
+                done, st = os.waitpid(pid, os.WNOHANG)
+                if done:
+                    rest = pending + view.read()
+                    for line in rest.decode('utf-8', 'replace').splitlines():
+                        print(line, flush=True)
+                    code = os.waitstatus_to_exitcode(st)
+                    break
+                time.sleep(0.2 if SPEED == 1 else 0.02)
+    except OSError:                      # this connection has gone; the trial itself carries on
+        return 7
+    return code
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))
