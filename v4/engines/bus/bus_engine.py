@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.19.2'
+ENGINE_VERSION = '0.19.3'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1194,7 +1194,10 @@ PREPARE_WARMUP = 3                     # first rounds match every journey in the
 PREPARE_KEEP = 30                      # rounds kept for the figures (~5 minutes)
 PREPARE_OFF_FILE = DATA_DIR / 'prepare-test-off'    # tpa-compare pauses the dry run during its load test
 PREPARE_MEMORY_STOP = 0.85             # stops itself if the engine reaches this share of its memory limit
-TILE_SMALL = (0.05, 0.08)             # degrees lat x lon (~5.5 x 5.3 km): street views, buses on their roads
+# 0.19.3 (owner 13 Nov 23:50: tile page choppier than ?tiles=0; 23:59 measured: a central London street tile was 105 KB
+# packed, and a street view up to 0.15 deg tall needed up to 20 of them every 10 s): street tiles a fifth of the area, and
+# the street level only when zoomed in to neighbourhood level (the city tiles take over above that).
+TILE_SMALL = (0.02, 0.032)            # degrees lat x lon (~2.2 x 2.2 km): street views, buses on their roads
 TILE_BIG = (0.4, 0.64)                # (~44 x 42 km): city and region views
 PREPARE_ON = os.environ.get('TPA_BUS_PREPARE_TEST', '0').strip() == '1'   # 0.17.0: off unless asked (Stage 0 done)
 PREPARE = {'state': 'starting' if PREPARE_ON else 'off', 'rounds': 0, 'recent': [], 'last': None, 'stopped': ''}
@@ -1372,6 +1375,7 @@ def prepare_worker() -> None:
 TILES_DIR = (os.environ.get('TPA_BUS_TILES_DIR') or '').strip()
 PUBLISH_EVERY = 10.0
 PUBLISH_KEEP = 6                      # reports per bus in a tile (the page replays REPLAY_SECONDS behind the newest)
+BIG_KEEP = PUBLISH_KEEP                 # 0.19.3: city tiles keep the same reports (the replay is 90 s behind)
 PUBLISH = {'state': 'off' if not TILES_DIR else 'starting', 'rounds': 0, 'last': None, 'recent': [], 'error': ''}
 ITEM_MEMO: dict = {}                  # bus key -> (signature, small json, big json)
 PLACE_MEMO: dict = {}                 # (bus key, report time) -> (lon, lat) on the road (unmatched buses)
@@ -1447,7 +1451,7 @@ def bus_item(v, hist, now):
         pts = placed[-PUBLISH_KEEP:]
         ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (sh.point_at(m),)]
         small = dict(base, s=sid, r=[[int(t), _r1(m)] for t, m in pts], p=ps)
-        big = dict(base, p=ps)
+        big = dict(base, p=ps[-BIG_KEEP:])
     elif ROAD_GLIDE and ROADS['map'] is not None and (made := road_way(v, now)) is not None:
         rsh, rplaced, jumps = made
         pts = rplaced[-PUBLISH_KEEP:]
@@ -1467,7 +1471,7 @@ def bus_item(v, hist, now):
         js = sorted(j - cut for j in jumps if j >= cut)
         if js:
             small['jm'] = js
-        big = dict(base, p=ps)
+        big = dict(base, p=ps[-BIG_KEEP:])
     else:
         # not matched: where it reported, put on the road (left-hand side), stepping from report to report
         out = []
@@ -1478,7 +1482,7 @@ def bus_item(v, hist, now):
                 p = PLACE_MEMO[(key, t)] = tuple(p) if p else (lo, la)
             out.append([int(t), round(p[0], 6), round(p[1], 6)])
         small = dict(base, p=out, j=1)
-        big = dict(base, p=out, j=1)
+        big = dict(base, p=out[-BIG_KEEP:], j=1)
     small_j = json.dumps(small, separators=(',', ':'))
     big_j = json.dumps(big, separators=(',', ':'))
     ITEM_MEMO[key] = (sig, small_j, big_j)
@@ -1701,7 +1705,7 @@ def publish_round() -> dict:
             'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN)}
 
 
-PUBLISH_SMALL_SPAN = 0.15             # views up to this tall (degrees of latitude) use the small tiles
+PUBLISH_SMALL_SPAN = 0.06             # views up to this tall (degrees of latitude) use the small tiles (0.19.3: was 0.15)
 
 
 def publish_summary() -> dict:
