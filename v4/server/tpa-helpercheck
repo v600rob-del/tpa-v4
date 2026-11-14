@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""tpa-helpercheck (bus 0.20.3, fix C) - LOOK-ONLY timing of the road helpers on the real server, before installing.
+
+Owner 14 Nov 2026: nothing goes live without a real-size timing run. This reads the bus tiles the live engine has just
+published (/run/tpa-bus-tiles/bus/s), takes every pair of reports of the buses NOT on a timetable route (the work the
+helpers would take over), and works out their drives along the real road map:
+  1. on one processor, the way the engine does it today (a sample),
+  2. shared between 2 helpers, then 3 (all of them, twice: first with empty memory, then warmed up),
+and checks the helpers' drives are exactly the engine's own. It changes nothing: the road map is opened read-only and
+the live engine is not touched. Run with nice so the live site comes first.
+
+  sudo nice -n 10 python3 tpa-helpercheck <folder with road_helpers.py + road_map.py> [road map file] [tiles folder]
+"""
+import importlib.util
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+
+def load(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m
+
+
+def rss_mb(pid):
+    try:
+        for line in open(f'/proc/{pid}/status'):
+            if line.startswith('VmRSS:'):
+                return round(int(line.split()[1]) / 1024)
+    except OSError:
+        pass
+    return None
+
+
+def main():
+    code = Path(sys.argv[1] if len(sys.argv) > 1 else '.').resolve()
+    road = sys.argv[2] if len(sys.argv) > 2 else '/var/lib/tpa/bus/roads-osm.sqlite'
+    tiles = Path(sys.argv[3] if len(sys.argv) > 3 else '/run/tpa-bus-tiles/bus/s')
+    rh = load('tpa_check_road_helpers', code / 'road_helpers.py')
+    road_map = load('tpa_check_road_map', code / 'road_map.py')
+    print('===== COPY BACK FROM HERE =====')
+    print(time.strftime('%a %d %b %H:%M:%S UTC', time.gmtime()), '| look-only, nothing changed')
+    seen, legs = set(), []
+    buses = 0
+    for f in sorted(tiles.glob('*.json')):
+        try:
+            items = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        for it in items:
+            if not isinstance(it, dict) or it.get('i') in seen or 's' in it:
+                continue                      # buses on a timetable route need no road drives
+            seen.add(it.get('i'))
+            p = [q for q in it.get('p') or [] if isinstance(q, list) and len(q) == 3]
+            if len(p) < 2:
+                continue
+            buses += 1
+            for k in range(1, len(p)):
+                a = (p[k - 1][0], p[k - 1][2], p[k - 1][1])
+                b = (p[k][0], p[k][2], p[k][1])
+                before = (p[k - 2][0], p[k - 2][2], p[k - 2][1]) if k >= 2 else None
+                legs.append((len(legs), a, b, before))
+    print(f'Buses not on a timetable route in the tiles: {buses}; drives between their reports: {len(legs)}')
+    if not legs:
+        print('Nothing to time (no unplaced buses in the tiles right now).')
+        print('===== COPY BACK TO HERE =====')
+        return
+
+    # 1. one processor, as today (a sample of up to 1,500 drives, fresh road-map memory like a new bus area)
+    rm = road_map.RoadMap(road)
+    sample = legs[:: max(1, len(legs) // 1500)][:1500]
+    own = {}
+    for run in ('first (empty memory)', 'again (warmed up)'):
+        t0 = time.monotonic()
+        for jid, a, b, before in sample:
+            own[jid], _ = rh.compute_leg(rm, a, b, before)
+        one = time.monotonic() - t0
+        per_ms = 1000 * one / len(sample)
+        print(f'1 processor (today), {run}: {len(sample)} drives in {one:.1f} s = {per_ms:.1f} ms each '
+              f'-> all {len(legs)} would take about {per_ms * len(legs) / 1000:.0f} s')
+    rm.close()
+
+    # 2. helpers: everything, cold then warm; exact same drives as the engine's own?
+    for n in (2, 3):
+        pool = rh.RoadHelpers(road, n)
+        try:
+            times = []
+            for run in ('first (empty memory)', 'again (warmed up)'):
+                t0 = time.monotonic()
+                done = pool.legs(legs, timeout=600)
+                times.append(time.monotonic() - t0)
+                print(f'{n} helpers, {run}: {len(done)} of {len(legs)} drives in {times[-1]:.1f} s')
+            same = sum(1 for jid, w in own.items() if done.get(jid) == w)
+            mem = [rss_mb(p.pid) for p in pool.procs if p is not None]
+            print(f'   same drives as the engine: {same} of {len(own)} checked | memory per helper (MB): {mem}')
+            print(f'   speed-up on all drives vs 1 processor (warm): x{per_ms * len(legs) / 1000 / max(times[-1], 0.001):.1f}')
+        finally:
+            pool.close()
+    print('===== COPY BACK TO HERE =====')
+
+
+if __name__ == '__main__':
+    main()
