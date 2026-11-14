@@ -87,6 +87,66 @@
     for(let k=1;k<times.length;k++)times[k]=Math.max(times[k],times[k-1]);
     return {position:start,points:pts.slice(0,MAX_POINTS),times:times.slice(0,MAX_POINTS),waiting:false};
   }
-  const api={Shape,track,straight,keepLeft};
+  // ---- HQ 4.61.0 (forecast plan Stage 3; Rob 14 Nov 2026 21:55 "Yes, build it now"): a bus shown about where it is NOW.
+  // The engine (bus 0.22.0) publishes each timetabled bus's forecast f = [[clock time, metres along its line], ...] from
+  // its newest report forward. The page moves the bus along it in real time (no delay), with the page's own rules for a
+  // new forecast (as 4.1.9/4.1.14 for estimates):
+  //  - shown AHEAD of the new forecast: it never slides back - it waits where it is until the forecast catches up
+  //    (at most HOLD_MAX_S; further than that it is put where it should be, which the page fades);
+  //  - shown BEHIND: it catches up gradually, at most CATCHUP_SHARE faster than its own pace, within CATCHUP_MAX_S
+  //    (further than that: put where it should be, faded).
+  const HOLD_MAX_S=20,CATCHUP_SHARE=0.4,CATCHUP_MAX_S=30,SAME_M=1;
+  function alongAt(seq,t){                       // metres at time t on [[t,m],...] (held before the first / after the last)
+    if(t<=seq[0][0])return seq[0][1];
+    for(let k=1;k<seq.length;k++)if(t<=seq[k][0]){const [t0,m0]=seq[k-1],[t1,m1]=seq[k];return t1>t0?m0+(m1-m0)*(t-t0)/(t1-t0):m1;}
+    return seq[seq.length-1][1];
+  }
+  function timeAt(seq,m){                        // first time the sequence reaches m metres (null if it never does)
+    if(m<=seq[0][1])return seq[0][0];
+    for(let k=1;k<seq.length;k++)if(seq[k][1]>=m){const [t0,m0]=seq[k-1],[t1,m1]=seq[k];return m1>m0?t0+(t1-t0)*(m-m0)/(m1-m0):t1;}
+    return null;
+  }
+  function paceAt(seq,t){                        // metres a second at time t (the next stretch with any movement)
+    for(let k=1;k<seq.length;k++)if(seq[k][0]>t&&seq[k][1]>seq[k-1][1])return (seq[k][1]-seq[k-1][1])/Math.max(1e-6,seq[k][0]-seq[k-1][0]);
+    return 0;
+  }
+  function forecastMarks(f,now,prev){
+    const want=alongAt(f,now),later=f.filter(q=>q[0]>now);
+    const was=Array.isArray(prev)&&prev.length?alongAt(prev,now):null;
+    if(was!==null&&was>want+SAME_M){                     // ahead: wait here until the forecast reaches this spot
+      const tc=timeAt(f,was);
+      if(tc!==null&&tc-now<=HOLD_MAX_S){const out=[[now,was]];if(tc>now)out.push([tc,was]);
+        for(const q of f)if(q[0]>tc&&q[1]>=was)out.push([q[0],q[1]]);return {marks:out,how:'waiting'};}
+      return {marks:[[now,want]].concat(later),how:'faded'};
+    }
+    if(was!==null&&was<want-SAME_M){                     // behind: catch up gently
+      const pace=Math.max(3,paceAt(f,now)),gap=want-was,dur=gap/(CATCHUP_SHARE*pace);
+      if(dur<=CATCHUP_MAX_S){const te=now+Math.max(5,dur),out=[[now,was],[te,alongAt(f,te)]];
+        for(const q of f)if(q[0]>te)out.push([q[0],q[1]]);return {marks:out,how:'catching up'};}
+      return {marks:[[now,want]].concat(later),how:'faded'};
+    }
+    return {marks:[[now,want]].concat(later),how:'on time'};
+  }
+  // The track for the page: points along the line through every corner, at their clock times. `prev` = this bus's marks
+  // from the page's last frame on the same line (or null).
+  function forecastTrack(shape,f,now,keepLeftM,prev){
+    if(!Array.isArray(f)||f.length<2)return null;
+    for(let k=0;k<f.length;k++){const q=f[k];if(!Array.isArray(q)||q.length!==2||!isFinite(q[0])||!isFinite(q[1])||(k&&(q[0]<=f[k-1][0]||q[1]<f[k-1][1])))return null;}
+    const {marks,how}=forecastMarks(f,now,prev);
+    if(marks.length===1||now>=f[f.length-1][0]){const p=shape.pointAt(marks[marks.length-1][1]);
+      return {position:p,points:[p],times:[r1(now)],marks:[[now,marks[marks.length-1][1]]],how:'arrived',waiting:true};}
+    let out=[];
+    for(let z=0;z+1<marks.length;z++){const [ta,ma]=marks[z],[tb,mb]=marks[z+1];
+      if(!out.length)out.push([ta,ma]);
+      if(mb>ma)for(const m of shape.verticesBetween(ma,mb))out.push([ta+(tb-ta)*(m-ma)/(mb-ma),m]);
+      out.push([tb,mb]);}
+    if(out.length>MAX_POINTS){const step=(out.length-1)/(MAX_POINTS-1),keep=[];for(let j=0;j<MAX_POINTS;j++)keep.push(out[Math.round(j*step)]);out=keep;}
+    let pts=out.map(x=>shape.pointAt(x[1]));
+    pts=keepLeft(pts,keepLeftM||0,pts[0][1]);
+    const times=out.map(x=>r1(x[0]));
+    for(let k=1;k<times.length;k++)times[k]=Math.max(times[k],times[k-1]);
+    return {position:pts[0],points:pts,times,marks,how,waiting:false};
+  }
+  const api={Shape,track,straight,keepLeft,forecastTrack,forecastMarks,alongAt};
   if(typeof module==='object'&&module.exports)module.exports=api;else root.TPA_BUS_REPLAY=api;
 })(typeof window!=='undefined'?window:globalThis);

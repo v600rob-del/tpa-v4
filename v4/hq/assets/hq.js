@@ -724,6 +724,7 @@ function infoText(e,est){
   if(e.component==='stations')return 'Railway station'+(e.badge?' · code '+e.badge:'');   // 4.52.0
   if(e.component==='stops')return 'Bus stop'+(e.badge?' '+e.badge:'')+' · live times where buses are seen';   // 4.53.0
   if(e.component==='busstations')return ({coach:'Coach station',interchange:'Interchange'}[e.variant]||'Bus station')+' · live times where buses are seen';   // 4.54.0
+  if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'About here now · worked out from its timetable and its last report at '+seen+(e.quality==='stale'?' · may have moved':'');   // 4.61.0
   if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
   if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
@@ -1382,7 +1383,7 @@ function checkMotion(m,p){
     const delay=validNum(m.delaySeconds)&&m.delaySeconds>=0&&m.delaySeconds<=600?Math.round(m.delaySeconds):0;
     const jumps=[],kk=Math.cos(p.lat*Math.PI/180);
     for(let i=1;i<pts.length;i++)if(times[i]-times[i-1]<=200&&Math.hypot((pts[i][0]-pts[i-1][0])*kk,pts[i][1]-pts[i-1][1])*111195>30)jumps.push(times[i]);
-    return {mode:'timed',pts,times,delay,jumps};
+    return {mode:'timed',pts,times,delay,jumps,forecast:m.forecast===true};
   }
   return null;
 }
@@ -1408,6 +1409,12 @@ async function requestBounded(url,maxBytes,timeoutMs){
 // with ?tiles=1 for now; the default stays the old per-visitor answer.
 // 4.59.0 (owner 13 Nov 23:11: "movement is great"): the tile way is the normal way for everyone; ?tiles=0 is the way back.
 const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')!=='0',used:false,lines:new Map(),asking:new Map()};
+// 4.61.0 (forecast plan Stage 3; Rob 14 Nov 2026 21:55 "Yes, build it now"; bus 0.22.0's forecast `f`): with ?forecast=1
+// a bus on a timetabled journey is shown about where it is NOW (its forecast, no delay) instead of ~2 min behind; the
+// normal map is unchanged. prev = each bus's last forecast marks, so a new forecast never slides a bus back
+// (bus-replay.js forecastTrack). Counts of how each new frame met the bus: window.TPA_BUS_FORECAST().
+const BUS_FORECAST={on:new URLSearchParams(location.search).get('forecast')==='1',prev:new Map(),how:{}};
+window.TPA_BUS_FORECAST=()=>({on:BUS_FORECAST.on,kept:BUS_FORECAST.prev.size,how:{...BUS_FORECAST.how}});
 async function tileJSON(url,timeoutMs,missingOk){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{const r=await fetch(url,{signal:ctl.signal});
@@ -1473,8 +1480,13 @@ async function busTileFrame(){
   if(small&&meta.build){const want=[...new Set(pick.filter(it=>typeof it.s==='string'&&Array.isArray(it.r)).map(it=>it.s))];
     await Promise.race([Promise.all(want.map(sid=>busLine(meta.build,sid).then(sh=>lines.set(sid,sh)))),new Promise(ok=>setTimeout(ok,2500))]);}
   for(const it of pick){
-    let tr=null;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0,delay=dOf(it);
-    if(sh&&Array.isArray(it.r))tr=R.track(sh,it.r,now,delay,kl);
+    let tr=null,fc=false;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0,delay=dOf(it);
+    if(BUS_FORECAST.on&&sh&&Array.isArray(it.f)&&typeof R.forecastTrack==='function'){
+      const pv=BUS_FORECAST.prev.get(it.i),ft=R.forecastTrack(sh,it.f,now,kl,pv&&pv.s===it.s?pv.marks:null);
+      if(ft){tr=ft;fc=true;BUS_FORECAST.prev.delete(it.i);BUS_FORECAST.prev.set(it.i,{s:it.s,marks:ft.marks});
+        BUS_FORECAST.how[ft.how]=(BUS_FORECAST.how[ft.how]||0)+1;
+        if(BUS_FORECAST.prev.size>3000)BUS_FORECAST.prev.delete(BUS_FORECAST.prev.keys().next().value);}}
+    if(!tr&&sh&&Array.isArray(it.r))tr=R.track(sh,it.r,now,delay,kl);
     // 4.58.0 (bus 0.19.0): a bus not on a timetabled route brings its own way along the roads
     if(!tr&&small&&Array.isArray(it.w)&&it.w.length>=2&&Array.isArray(it.r)){try{tr=R.track(roadShape(it),it.r,now,delay,kl,it.jm);}catch(_){tr=null;}}
     if(!tr)tr=R.straight(it.p,now,delay,it.j===1);
@@ -1482,7 +1494,7 @@ async function busTileFrame(){
     const r6=v=>Math.round(v*1e6)/1e6,pos=tr.position;
     frame.entities.push({id:it.i,label:String(it.l||'Bus').slice(0,160),badge:it.b||null,
       position:{lon:r6(pos[0]),lat:r6(pos[1]),headingDeg:null},quality:now-it.o>300?'stale':'observed',observedAt:iso(it.o),
-      motion:{mode:'timed',points:tr.points.map(q=>[r6(q[0]),r6(q[1])]),times:tr.times,delaySeconds:delay}});}
+      motion:{mode:'timed',points:tr.points.map(q=>[r6(q[0]),r6(q[1])]),times:tr.times,delaySeconds:fc?0:delay,forecast:fc}});}
   return frame;
 }
 window.TPA_BUS_TILES=()=>({on:BUS_TILES.on,used:BUS_TILES.used,lines:BUS_TILES.lines.size});

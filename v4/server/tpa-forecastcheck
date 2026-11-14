@@ -6,6 +6,7 @@ How good is the forecast? Every 10 s it reads the street tiles over a few areas,
 sends a NEW report, it asks: using only what had been published BEFORE that report, where would each way of showing the
 bus have put it at that moment - and how far was that from where the bus really was?
   - forecast:               the bus's forecast `f` (bus 0.22.0 on): timetable pace from how late it is
+  - forecast, cautious N s: the same, as if the bus were N seconds later (fewer buses shown ahead, for Stage 3)
   - stay put:               where it last reported
   - carry on at its speed:  on along its route at the speed between its last two reports
   - today's map:            where today's map shows it then (its replay, `d` seconds behind)
@@ -36,7 +37,8 @@ AREAS = {                                         # south, west, north, east
 }
 BUCKETS = ((60, 'up to 1 min after its last report'), (120, '1 to 2 min after'), (180, '2 to 3 min after'),
            (300, '3 to 5 min after'))
-METHODS = ('forecast', 'stay put', 'carry on at its speed')
+METHODS = ('forecast', 'forecast, cautious 15 s', 'forecast, cautious 30 s', 'stay put', 'carry on at its speed')
+CAUTIOUS = (15.0, 30.0)                          # HQ 4.61.0 Stage 3: the same forecast, as if the bus were this much later
 KEEP_S = 300.0
 
 
@@ -112,6 +114,8 @@ class Check:
             before = [p for p in rep if p[0] < t0]
             speed = (m0 - before[-1][1]) / (t0 - before[-1][0]) if before and t0 > before[-1][0] else 0.0
             got = {'forecast': along(fc, t2), 'stay put': m0, 'carry on at its speed': m0 + max(0.0, speed) * h}
+            for c in CAUTIOUS:                      # waits at its report for c seconds, then follows the forecast that much later
+                got[f'forecast, cautious {c:g} s'] = along(fc, t2 - c) if t2 - c > t0 else m0
             for meth, m in got.items():
                 self.errors.setdefault((meth, bucket), []).append(m - m2)
             self.with_forecast += 1
