@@ -159,7 +159,8 @@ def reading(label):
             'roundSeconds': last.get('wallSeconds'), 'buses': last.get('buses'),
             'cpu': {k: round((cb.get(k, 0) - ca.get(k, 0)) / mins, 1) for k in ('road legs', 'publishing', 'matching', 'engine total')},
             'memoryMB': memory_mb(), 'memoryParts': memory_parts(), 'roadMB': b.get('roadCacheMB'), 'roadLimitMB': b.get('roadCacheLimitMB'),
-            'tilesAge': tiles_age()}
+            'tilesAge': tiles_age(), 'packedKb': last.get('packedKbWritten'), 'largestKb': last.get('largestKb'),
+            'forecast': last.get('forecast')}
 
 
 def show(label, r):
@@ -172,7 +173,10 @@ def show(label, r):
             f'memory {r["memoryMB"]} MB'
             + ('' if not r.get('memoryParts') else ' (the program itself {} MB, files it has read {} MB, tiles and other shared memory {} MB)'
                .format(*r['memoryParts']))
-            + f', road map {r["roadMB"]} MB (limit {r["roadLimitMB"]} MB) | rounds since it started: {r["roundsTotal"]}')
+            + f', road map {r["roadMB"]} MB (limit {r["roadLimitMB"]} MB) | rounds since it started: {r["roundsTotal"]}'
+            + ('' if r.get('packedKb') is None else f' | tiles written last round {r["packedKb"]} KB packed, largest {r["largestKb"]} KB')
+            + ('' if not r.get('forecast') else ' | forecast: buses with one {buses}, journeys ready {journeysKept}, waiting {waiting}'
+               .format(**{k: r['forecast'].get(k) for k in ('buses', 'journeysKept', 'waiting')})))
 
 
 def update(commit):

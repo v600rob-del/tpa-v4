@@ -1,0 +1,218 @@
+#!/usr/bin/env python3
+"""tpa-forecastcheck - forecast plan Stage 2 (Rob 14 Nov 2026 19:58: "Yes, after the route files"). LOOK-ONLY: reads the
+published bus tiles on this server, writes nothing, changes nothing.
+
+How good is the forecast? Every 10 s it reads the street tiles over a few areas, as the map page does. Each time a bus
+sends a NEW report, it asks: using only what had been published BEFORE that report, where would each way of showing the
+bus have put it at that moment - and how far was that from where the bus really was?
+  - forecast:               the bus's forecast `f` (bus 0.22.0 on): timetable pace from how late it is
+  - stay put:               where it last reported
+  - carry on at its speed:  on along its route at the speed between its last two reports
+  - today's map:            where today's map shows it then (its replay, `d` seconds behind)
+Distances are metres along the bus's route line. "Ahead" = shown further along than it really was (looks worse than
+behind: a bus that runs ahead then slides back). Split by how long after the bus's last report (the page shows a bus
+for a minute or more after it), and by area for the forecast.
+
+  sudo python3 -B -u tpa-forecastcheck [--minutes 12] [area ...]
+  areas: hull-beverley manchester leeds london-greenwich rural-north-yorkshire (default: all five)
+"""
+import json
+import math
+import os
+import statistics
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(os.environ.get('TPA_FORECASTCHECK_DIR', '/run/tpa-bus-tiles')) / 'bus'
+SPEED = float(os.environ.get('TPA_FORECASTCHECK_SPEED', '1') or 1)      # tests only: run the clock fast
+POLL_S = 10.0
+AREAS = {                                         # south, west, north, east
+    'hull-beverley': (53.72, -0.47, 53.86, -0.28),
+    'manchester': (53.45, -2.28, 53.51, -2.20),
+    'leeds': (53.77, -1.60, 53.83, -1.50),
+    'london-greenwich': (51.46, 0.00, 51.51, 0.10),
+    'rural-north-yorkshire': (54.05, -1.25, 54.25, -0.85),
+}
+BUCKETS = ((60, 'up to 1 min after its last report'), (120, '1 to 2 min after'), (180, '2 to 3 min after'),
+           (300, '3 to 5 min after'))
+METHODS = ('forecast', 'stay put', 'carry on at its speed')
+KEEP_S = 300.0
+
+
+def load(p):
+    try:
+        return json.loads(Path(p).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def along(points, t):
+    """Metres at time t on [(time, metres)] (straight between points; before the first / after the last: held)."""
+    if t <= points[0][0]:
+        return points[0][1]
+    for (t0, m0), (t1, m1) in zip(points, points[1:]):
+        if t <= t1:
+            return m0 + (m1 - m0) * ((t - t0) / (t1 - t0) if t1 > t0 else 1.0)
+    return points[-1][1]
+
+
+class Bus:
+    __slots__ = ('line', 'area', 'reports', 'forecasts', 'delay')
+
+    def __init__(self, line, area):
+        self.line, self.area, self.reports, self.forecasts, self.delay = line, area, {}, [], 90
+
+
+class Check:
+    """Everything the check has seen and scored. observe() takes one poll's items; result() makes the copy-back lines."""
+
+    def __init__(self):
+        self.buses = {}
+        self.errors = {}                            # (method, bucket) -> [signed metres]
+        self.today = []                             # today's map: signed metres
+        self.by_area = {}                           # area -> [signed metres] (forecast, all times)
+        self.scored = 0
+        self.with_forecast = 0
+
+    def observe(self, items, area_of):
+        for i, it in items.items():
+            if not it.get('s') or not it.get('r'):
+                continue
+            b = self.buses.get(i)
+            if b is None or b.line != it['s']:
+                b = self.buses[i] = Bus(it['s'], area_of.get(i, ''))          # new journey (or first seen): start again
+            b.delay = it.get('d', b.delay)
+            known = max(b.reports) if b.reports else None
+            fresh = sorted((float(t), float(m)) for t, m in it['r'] if known is None or t > known)
+            for t2, m2 in fresh:
+                if known is not None:
+                    self.score(b, t2, m2)
+                b.reports[t2] = m2
+            f = it.get('f')
+            if f and len(f) >= 2 and (not b.forecasts or f[0][0] > b.forecasts[-1][0][0]):
+                b.forecasts.append([(float(t), float(m)) for t, m in f])
+            newest = max(b.reports)
+            b.forecasts = [fc for fc in b.forecasts if newest - fc[0][0] <= KEEP_S]
+            for t in [t for t in b.reports if newest - t > KEEP_S + 600]:
+                del b.reports[t]
+
+    def score(self, b, t2, m2):
+        """A new report (t2, m2): score what was published before it."""
+        self.scored += 1
+        rep = sorted(b.reports.items())
+        shown = along(rep, t2 - b.delay)            # today's map at t2: the replay, delay seconds behind
+        self.today.append(shown - m2)
+        for fc in b.forecasts:
+            t0, m0 = fc[0]
+            h = t2 - t0
+            if h <= 0 or h > KEEP_S:
+                continue
+            bucket = next(k for k, (top, _) in enumerate(BUCKETS) if h <= top)
+            before = [p for p in rep if p[0] < t0]
+            speed = (m0 - before[-1][1]) / (t0 - before[-1][0]) if before and t0 > before[-1][0] else 0.0
+            got = {'forecast': along(fc, t2), 'stay put': m0, 'carry on at its speed': m0 + max(0.0, speed) * h}
+            for meth, m in got.items():
+                self.errors.setdefault((meth, bucket), []).append(m - m2)
+            self.with_forecast += 1
+            self.by_area.setdefault(b.area or 'other', []).append(got['forecast'] - m2)
+
+    @staticmethod
+    def sums(errs):
+        a = sorted(abs(e) for e in errs)
+        n = len(a)
+        p90 = a[min(n - 1, int(math.ceil(0.9 * n)) - 1)]
+        return (f'typical {round(statistics.median(a))} m, 9 in 10 within {round(p90)} m, within 100 m: '
+                f'{round(100 * sum(1 for x in a if x <= 100) / n)}%, shown ahead: {round(100 * sum(1 for e in errs if e > 5) / n)}%')
+
+    def result(self):
+        out = [f'buses watched {len(self.buses)}, new reports scored {self.scored}, forecasts scored {self.with_forecast} '
+               f'(each new report checks every earlier forecast of that bus up to 5 minutes old)']
+        if not self.with_forecast:
+            out.append('NO FORECASTS IN THE TILES: the bus engine is older than 0.22.0, or its forecast is switched off. '
+                       'Only today\'s map was measured.')
+        for k, (_, label) in enumerate(BUCKETS):
+            rows = [(meth, self.errors.get((meth, k))) for meth in METHODS]
+            if not any(r for _, r in rows):
+                continue
+            out.append(f'{label} (n={len(rows[0][1] or [])}):')
+            for meth, errs in rows:
+                if errs:
+                    out.append(f'   {meth}: {self.sums(errs)}')
+        if self.today:
+            behind = statistics.median(self.today)
+            out.append(f"today's map (each report against the replay, shown {round(statistics.median([b.delay for b in self.buses.values()]))} s "
+                       f"behind): typical {abs(round(behind))} m {'behind' if behind < 0 else 'ahead'} | {self.sums(self.today)} (n={len(self.today)})")
+        if self.by_area:
+            out.append('forecast by area (all times): ' + ' | '.join(
+                f'{a}: typical {round(statistics.median([abs(e) for e in errs]))} m (n={len(errs)})' for a, errs in sorted(self.by_area.items())))
+        return out
+
+
+def tiles_for(box, size):
+    s, w, n, e = box
+    dl, dn = size
+    return [(r, c) for r in range(math.floor(s / dl), math.floor(n / dl) + 1) for c in range(math.floor(w / dn), math.floor(e / dn) + 1)]
+
+
+def poll(areas, size):
+    items, area_of = {}, {}
+    for name, box in areas.items():
+        for r, c in tiles_for(box, size):
+            for it in load(ROOT / 's' / f'{r}_{c}.json') or []:
+                if isinstance(it, dict) and 'i' in it:
+                    items[it['i']] = it
+                    area_of.setdefault(it['i'], name)
+    return items, area_of
+
+
+def main(argv):
+    a = list(argv)
+    minutes = 12
+    if '--minutes' in a:
+        k = a.index('--minutes')
+        try:
+            minutes = max(1, min(60, int(a[k + 1])))
+        except (ValueError, IndexError):
+            print('Usage: sudo python3 -B -u tpa-forecastcheck [--minutes 12] [area ...]', flush=True)
+            return 2
+        del a[k:k + 2]
+    bad = [x for x in a if x not in AREAS]
+    if bad:
+        print('Unknown area: ' + ', '.join(bad) + '. Areas: ' + ' '.join(AREAS), flush=True)
+        return 2
+    areas = {k: AREAS[k] for k in (a or AREAS)}
+    try:
+        os.nice(10)                                 # gives way to the engine
+    except OSError:
+        pass
+    print(f'tpa-forecastcheck: look-only, takes about {minutes} minutes. Progress every minute, the result at the end.', flush=True)
+    meta = load(ROOT / 'meta.json')
+    if not meta or 'small' not in meta:
+        print('===== COPY BACK FROM HERE =====\ntpa-forecastcheck: no bus tiles found (is the bus engine publishing?). Nothing was changed.'
+              '\n===== COPY BACK TO HERE =====', flush=True)
+        return 1
+    size = tuple(meta['small'])
+    check = Check()
+    start, polls, told = time.monotonic(), 0, 0
+    while (time.monotonic() - start) / SPEED < minutes * 60:
+        items, area_of = poll(areas, size)
+        check.observe(items, area_of)
+        polls += 1
+        minute = int((time.monotonic() - start) / SPEED // 60)
+        if minute > told:
+            told = minute
+            print(f'   minute {minute} of {minutes}: buses watched {len(check.buses)}, new reports scored {check.scored}', flush=True)
+        time.sleep(POLL_S * SPEED)
+    meta = load(ROOT / 'meta.json') or {}
+    print('===== COPY BACK FROM HERE =====', flush=True)
+    print(time.strftime('%a %d %b %H:%M:%S UTC', time.gmtime()) + f' | tpa-forecastcheck (look-only), {minutes} min, '
+          f'{polls} polls, areas: {" ".join(areas)}', flush=True)
+    for line in check.result():
+        print(line, flush=True)
+    print('Nothing was changed.\n===== COPY BACK TO HERE =====', flush=True)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv[1:]))

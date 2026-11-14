@@ -50,6 +50,7 @@ import sys
 import threading
 import time
 import zipfile
+from array import array
 from collections import deque
 from collections import OrderedDict
 from datetime import datetime, timezone
@@ -60,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.20.5'
+ENGINE_VERSION = '0.22.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -153,6 +154,9 @@ _spec.loader.exec_module(replay)
 _spec = importlib.util.spec_from_file_location('tpa_bus_stop_boards', Path(__file__).resolve().parent / 'stop_boards.py')
 stop_boards = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(stop_boards)
+_spec = importlib.util.spec_from_file_location('tpa_bus_forecast', Path(__file__).resolve().parent / 'forecast.py')
+forecast = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(forecast)
 _spec = importlib.util.spec_from_file_location('tpa_bus_fleet_lists', Path(__file__).resolve().parent / 'fleet_lists.py')
 fleet_lists = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(fleet_lists)
@@ -1477,6 +1481,15 @@ ROUTES_WRITTEN: set = set()           # (build, line id) already written
 # at most ROUTE_FILES_KEEP are kept, least recently used first, never one used in the last ROUTE_FILE_MIN_IDLE
 # (pages only use tiles under a minute old, so no page can still be asking for it).
 ROUTE_USED: dict = {}                 # (build, line id) -> when a bus last used it in a round
+# 0.22.0 (forecast plan Stage 1; Rob 14 Nov 19:58 "Yes, after the route files"): each bus on a timetabled journey gets
+# its forecast in the street tiles (`f`, forecast.py); the page ignores it until Stage 3. A journey's stops are placed
+# on its line once and kept (FORECAST_KEEP journeys); at most FORECAST_BUILD_PER_ROUND new journeys a round.
+FORECAST_ON = os.environ.get('TPA_BUS_FORECAST', '1').strip() != '0'
+FORECAST_KNOTS: "OrderedDict[str, array]" = OrderedDict()   # trip_id -> metres, seconds after the first departure, ... (flat; ~0.7 KB)
+FORECAST_KEEP = 20000
+FORECAST_BUILD_PER_ROUND = 150
+FORECAST_ROUND = {'built': 0, 'waiting': set(), 'buses': 0}
+FORECAST_WINDOW_M = 3000.0            # a stop is looked for this far along the line after the one before (then anywhere)
 ROUTE_BUILDS: dict = {}               # timetable build -> when its route files were first used
 ROUTE_TIDY = {'at': 0.0, 'removed': 0}
 ROUTE_TIDY_EVERY = 60.0
@@ -1543,6 +1556,65 @@ def _r1(x):
     return round(x, 1)
 
 
+def forecast_knots(trip_id: str, sh):
+    """0.22.0: the journey's timetable as (metres along its line, seconds after its first departure), kept; None if not
+    made yet (this round's allowance is used up) or the timetable cannot give its stops."""
+    got = FORECAST_KNOTS.get(trip_id)
+    if got is not None:
+        FORECAST_KNOTS.move_to_end(trip_id)
+        return got
+    tt = TIMETABLE['tt']
+    if tt is None or not hasattr(tt, 'stops_of'):
+        return None
+    if FORECAST_ROUND['built'] >= FORECAST_BUILD_PER_ROUND:
+        FORECAST_ROUND['waiting'].add(trip_id)
+        return None
+    FORECAST_ROUND['built'] += 1
+    FORECAST_ROUND['waiting'].discard(trip_id)
+    try:
+        rows = tt.stops_of(trip_id)
+        stops, last = [], 0.0
+        for _sid, lat, lon, _name, _ind, arr, dep in rows:
+            m = None
+            if lat is not None and lon is not None:
+                at = sh.project(lon, lat, max(0.0, last - 50), last + FORECAST_WINDOW_M) or sh.project(lon, lat, max(0.0, last - 50), None)
+                if at is not None:
+                    m = last = max(last, at[0])
+            stops.append((m, arr, dep))
+        kn = array('d', [x for pair in forecast.knots(stops, 0.0) for x in pair]) if stops else array('d')
+    except Exception:          # one odd journey must never break the layer
+        kn = array('d')
+    FORECAST_KNOTS[trip_id] = kn
+    while len(FORECAST_KNOTS) > FORECAST_KEEP:
+        FORECAST_KNOTS.popitem(last=False)
+    return kn
+
+
+def _departed_at(dep_iso: str):
+    """The journey's timetabled departure from its first stop, as a clock time; None if unreadable."""
+    try:
+        t = datetime.fromisoformat(dep_iso.strip().replace('Z', '+00:00'))
+    except (ValueError, AttributeError):
+        return None
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    return t.timestamp()
+
+
+def bus_forecast(v, tid, sh, last):
+    """0.22.0: [[time, metres], ...] for the street tiles, or None."""
+    kn = forecast_knots(tid, sh)
+    if not kn:
+        return None
+    start = _departed_at(v.get('dep') or '')
+    if start is None:
+        return None
+    fc = forecast.forecast(float(last[0]), float(last[1]), [(kn[k], start + kn[k + 1]) for k in range(0, len(kn), 2)])
+    if len(fc) < 2:
+        return None
+    return [[int(t), _r1(m)] for t, m in fc]
+
+
 def bus_item(v, hist, now):
     """(small json, big json) for one bus, or None (not shown). Kept until the bus reports again."""
     key = v['key']
@@ -1560,7 +1632,10 @@ def bus_item(v, hist, now):
     placed = f[1] if f and tid and f[0] == tid and f[1] else None
     sid = shape_id_for(tid) if placed else ''
     sh = shape_for(tid) if placed else None
-    sig = (v['recorded'], tid, placed[-1] if placed else None, v['route'], v['destination'])
+    if placed and sh is not None and tid and FORECAST_ON:
+        forecast_knots(tid, sh)                       # 0.22.0: made once per journey (within this round's allowance)
+    has_fc = bool(placed and FORECAST_ON and FORECAST_KNOTS.get(tid))
+    sig = (v['recorded'], tid, placed[-1] if placed else None, v['route'], v['destination'], has_fc)
     got = ITEM_MEMO.get(key)
     if got and got[0] == sig:
         return got[1], got[2]
@@ -1575,6 +1650,10 @@ def bus_item(v, hist, now):
         ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (sh.point_at(m),)]
         small = dict(base, s=sid, r=[[int(t), _r1(m)] for t, m in pts], p=ps)
         big = dict(base, p=ps)
+        if has_fc and pts:
+            fc = bus_forecast(v, tid, sh, pts[-1])
+            if fc:
+                small['f'] = fc
     elif ROAD_GLIDE and ROADS['map'] is not None and (made := road_way(v, now)) is not None:
         rsh, rplaced, jumps = made
         pts = keep_recent(rplaced, now)
@@ -1711,6 +1790,8 @@ def company_table(by_company: dict, top: int = 20) -> list:
 
 def publish_round() -> dict:
     t_cpu, t_wall = time.thread_time(), time.monotonic()
+    FORECAST_ROUND.update(built=0, waiting=set())    # 0.22.0: new journeys' stops placed this round
+    fc_buses = 0
     now = time.time()
     root = Path(TILES_DIR) / 'bus'
     with LOCK:
@@ -1742,6 +1823,8 @@ def publish_round() -> dict:
             hidden += 1
             continue
         shown += 1
+        if '"f":[' in got[0]:
+            fc_buses += 1
         d = step_delay(v['key'])                      # 0.20.0: this bus's own delay, carried in its tile item
         delays.append(d)
         got = ('{"d":%d,' % d + got[0][1:], '{"d":%d,' % d + got[1][1:])
@@ -1833,7 +1916,9 @@ def publish_round() -> dict:
             'delaySeconds': delay_summary(delays),
             'companies': len(by_company), 'byCompany': company_table(by_company), 'tilesSmall': len(small), 'tilesBig': len(big),
             'tilesWritten': written, 'packedKbWritten': round(packed_bytes / 1024), 'largestKb': round(largest / 1024, 1),
-            'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN), 'routeFilesRemoved': ROUTE_TIDY['removed']}
+            'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN), 'routeFilesRemoved': ROUTE_TIDY['removed'],
+            'forecast': {'buses': fc_buses, 'journeysKept': len(FORECAST_KNOTS), 'built': FORECAST_ROUND['built'],
+                         'waiting': len(FORECAST_ROUND['waiting'])}}
 
 
 PUBLISH_SMALL_SPAN = 0.06             # views up to this tall (degrees of latitude) use the small tiles (0.19.3: was 0.15)
