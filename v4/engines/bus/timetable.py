@@ -151,6 +151,15 @@ INDEXES = (
     'CREATE INDEX shapes_id ON shapes (shape_id, part)',
     'CREATE INDEX calendar_dates_sid ON calendar_dates (service_id, date)',
 )
+# 0.21.0 (London "passes through" matching): find a route's journeys by route number. Added to a timetable built
+# before 0.21.0 when it is opened (IF NOT EXISTS: costs nothing once there).
+ROUTE_INDEXES = (
+    'CREATE INDEX IF NOT EXISTS routes_short ON routes (short_name)',
+    'CREATE INDEX IF NOT EXISTS trips_route ON trips (route_id)',
+)
+INDEXES = INDEXES + ROUTE_INDEXES
+PASS_LOOK_BACK = 4 * 3600          # a journey passing a stop started at most this long before
+PASS_MAX_JOURNEYS = 120            # at most this many journeys' stop lists read for one bus
 
 
 def _table(zf, name, *cols):
@@ -409,6 +418,17 @@ class Timetable:
     """Read-only view of timetable.sqlite. Small, on-demand lookups only."""
 
     def __init__(self, path):
+        self.passes = True
+        try:                                             # 0.21.0: route indexes on an older timetable file
+            rw = sqlite3.connect(path, timeout=30)
+            try:
+                for q in ROUTE_INDEXES:
+                    rw.execute(q)
+                rw.commit()
+            finally:
+                rw.close()
+        except sqlite3.Error:
+            self.passes = False                          # read-only file: "passes through" matching is skipped
         self.db = sqlite3.connect(f'file:{path}?mode=ro', uri=True, check_same_thread=False)
         self.db.execute('PRAGMA cache_size=-4000')      # ~4 MB of SQLite page cache at most
         self.meta = {k: json.loads(v) for k, v in self.db.execute('SELECT key, value FROM meta')}
@@ -477,11 +497,54 @@ class Timetable:
             near = [c for c in look((-120, 120)) if c[1] == line.lower()]
             near = narrow(near)
             cands = near if len({c[0] for c in near}) == 1 or (near and len({c[1:4] + (c[5],) for c in near}) == 1) else []
+        # 0.21.0 (London no-match sample, 14 Nov 00:30: 5 of 6 buses "started at stop X at hh:mm" but no journey STARTS at
+        # X then - the stop is known): a journey of the same route that PASSES THROUGH X at that time. Exact time first,
+        # then within 2 minutes; accepted only when one journey (or identical copies) fits. Never guessed.
+        if not cands and line and self.passes:
+            for window in (0, 120):
+                near = narrow(self._passing(origin_ref, date, prev, secs, line, window))
+                if near:
+                    cands = near if len({c[0] for c in near}) == 1 or len({c[1:4] + (c[5],) for c in near}) == 1 else []
+                    break
         # 0.18.2 (owner 13 Nov 22:45: First Norfolk & Suffolk and First South Yorkshire publish each journey TWICE): copies
         # of the same journey - same route, company, end stop, times and number of stops - count as one (the first).
         if len({c[0] for c in cands}) > 1 and len({c[1:4] + (c[5],) for c in cands}) == 1:
             return [min(c[0] for c in cands)]
         return sorted({c[0] for c in cands})
+
+    def _passing(self, stop, date, prev, secs, line, window):
+        """0.21.0: journeys of route `line` that call at `stop` within +-window seconds of `secs` (that service day),
+        in match()'s candidate form. Only journeys under way then are read (started up to PASS_LOOK_BACK before)."""
+        names = sorted({line, line.upper(), line.lower()})
+        out = []
+        with self.lock:
+            rows = []
+            for day, base in ((date, secs), (prev, secs + 86400)):
+                rows += [(day, base) + tuple(r) for r in self.db.execute(
+                    'SELECT t.trip_id, t.service_id, r.short_name, e.last_stop, a.noc, t.journey_code, e.first_dep, e.last_arr, e.stops '
+                    'FROM routes r JOIN trips t ON t.route_id = r.route_id JOIN trip_ends e ON e.trip_id = t.trip_id '
+                    'LEFT JOIN agency a ON a.agency_id = r.agency_id '
+                    f'WHERE r.short_name IN ({",".join("?" * len(names))}) AND e.first_dep BETWEEN ? AND ? AND e.last_arr >= ?',
+                    (*names, base - PASS_LOOK_BACK, base + window, base - window))]
+            read = 0
+            for day, base, tid, sid, short, last, noc, code, dep, arr, n in rows:
+                if read >= PASS_MAX_JOURNEYS or not self.runs_on(sid, day):
+                    continue
+                read += 1
+                for (data,) in self.db.execute('SELECT data FROM trip_stops WHERE trip_id=?', (tid,)):
+                    text = zlib.decompress(data).decode()
+                    if stop not in text:
+                        continue
+                    hit = False
+                    for row in text.split('\n'):
+                        _, s, a, d = row.split(',')
+                        t = int(d) if int(d) >= 0 else int(a)
+                        if s == stop and abs(t - base) <= window:
+                            hit = True; break
+                    if hit:
+                        out.append((tid, (short or '').lower(), last or '', (noc or '').upper(), code or '', (dep, arr, n)))
+                        break
+        return out
 
     def stops_of(self, trip_id):
         """[(stop_id, lat, lon, name, indicator, arrive_s, depart_s)] in order."""

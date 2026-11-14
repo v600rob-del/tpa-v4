@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.20.2'
+ENGINE_VERSION = '0.21.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
