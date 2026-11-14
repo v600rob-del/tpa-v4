@@ -1,0 +1,300 @@
+#!/usr/bin/env python3
+"""tpa-roadcheck - LOOK-ONLY measurements of the bus engine's road-map work on the real server.
+
+Owner 14 Nov 2026 12:25 ("yes please"): after the road helpers (bus 0.20.3) failed to help, measure before designing.
+Working explanation to test: the slow part of "road legs" (36 of every 60 processor-seconds in the daytime) is fetching
+road-map squares from disk into a memory that only holds a few hundred, while the work is scattered over the country.
+
+It reads the bus tiles the live engine has published, takes the drives between reports of every bus NOT on a timetable
+route, and measures on the real road map:
+  1. today's memory size, drives in scattered order (as the engine meets them)
+  2. today's memory size, the same drives place by place
+  3. every square kept in memory: how many squares the work needs, what one costs to fetch, how much memory it takes
+  4. the same drives again with the squares already in memory (the sums alone)
+  5. where the time of fetching one square goes (disk read / unpacking / building)
+
+It changes nothing: files are only read, nothing is written (not even Python's own cache files), the live engine is not
+touched. It stops by itself if it would use more than its memory or time allowance.
+
+  sudo nice -n 10 python3 -B -u tpa-roadcheck [road_map.py] [road map file] [tiles folder]
+"""
+import importlib.util
+import json
+import os
+import random
+import sys
+import time
+import zlib
+from collections import Counter
+from pathlib import Path
+
+sys.dont_write_bytecode = True          # look-only: no __pycache__ beside the live engine's files
+
+ROAD_MAP_PY = '/opt/tpa/layers/bus/v4/engines/bus/road_map.py'
+ROAD_FILE = '/var/lib/tpa/bus/roads-osm.sqlite'
+TILES = '/run/tpa-bus-tiles/bus/s'
+SAMPLE_DRIVES = 6000                     # passes 1 and 2 (today's memory size)
+MEMORY_STOP_MB = int(os.environ.get('TPA_ROADCHECK_MAX_MB', '4000'))    # this check's own memory allowance
+TIME_STOP_S = int(os.environ.get('TPA_ROADCHECK_MAX_SECONDS', '480'))   # ... and time allowance
+LEG_MAX_M, PLACE_M = 3000.0, 20.0        # as the bus engine
+
+
+def say(text):
+    print(text, flush=True)
+
+
+def rss_mb(field='VmRSS:'):
+    try:
+        for line in open('/proc/self/status'):
+            if line.startswith(field):
+                return int(line.split()[1]) / 1024
+    except OSError:
+        pass
+    return 0.0
+
+
+def metres(lat1, lon1, lat2, lon2):
+    import math
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    a = math.sin((p2 - p1) / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(math.radians(lon2 - lon1) / 2) ** 2
+    return 12742000 * math.asin(min(1.0, math.sqrt(a)))
+
+
+def bearing(lat1, lon1, lat2, lon2):
+    import math
+    y = math.sin(math.radians(lon2 - lon1)) * math.cos(math.radians(lat2))
+    x = (math.cos(math.radians(lat1)) * math.sin(math.radians(lat2)) -
+         math.sin(math.radians(lat1)) * math.cos(math.radians(lat2)) * math.cos(math.radians(lon2 - lon1)))
+    return round(math.degrees(math.atan2(y, x)) % 360, 1)
+
+
+def drive(rm, a, b, before):
+    """One drive between two reports, the way the bus engine works it out (bus_engine._leg)."""
+    (ta, la, oa), (tb, lb, ob) = a, b
+    straight = metres(la, oa, lb, ob)
+    brg = None
+    if before is not None and metres(before[1], before[2], la, oa) >= 10:
+        brg = bearing(before[1], before[2], la, oa)
+    way = None
+    try:
+        if straight < 15:
+            rm.place(oa, la, brg, PLACE_M)
+            return
+        if straight <= LEG_MAX_M:
+            way = rm.between(oa, la, brg, ob, lb, max_m=min(LEG_MAX_M, max(300.0, 2.5 * straight + 150)))
+    except Exception:
+        way = None
+    if not way:
+        try:
+            rm.place(oa, la, brg, PLACE_M)
+            rm.place(ob, lb, None, PLACE_M)
+        except Exception:
+            pass
+
+
+class Counted:
+    """Wraps one RoadMap so every request for a square is counted and every fetch from disk is timed."""
+
+    def __init__(self, rm):
+        self.rm, self.requests, self.fetches, self.fetch_s = rm, 0, 0, 0.0
+        self.asked = Counter()
+        self.fetch_times = []
+        inner = rm.tile
+
+        def tile(tx, ty):
+            self.requests += 1
+            self.asked[(tx, ty)] += 1
+            if (tx, ty) in rm.tiles:
+                return inner(tx, ty)
+            t0 = time.perf_counter()
+            t = inner(tx, ty)
+            dt = time.perf_counter() - t0
+            self.fetches += 1
+            self.fetch_s += dt
+            self.fetch_times.append(dt)
+            return t
+        rm.tile = tile
+
+
+def read_drives(tiles):
+    """(per bus: list of drives) for every bus not on a timetable route in the published tiles."""
+    seen, buses = set(), []
+    for f in sorted(Path(tiles).glob('*.json')):
+        try:
+            items = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        for it in items:
+            if not isinstance(it, dict) or it.get('i') in seen or 's' in it:
+                continue
+            seen.add(it.get('i'))
+            p = [q for q in it.get('p') or [] if isinstance(q, list) and len(q) == 3]
+            if len(p) < 2:
+                continue
+            ds = []
+            for k in range(1, len(p)):
+                a = (p[k - 1][0], p[k - 1][2], p[k - 1][1])
+                b = (p[k][0], p[k][2], p[k][1])
+                before = (p[k - 2][0], p[k - 2][2], p[k - 2][1]) if k >= 2 else None
+                ds.append((a, b, before))
+            buses.append(ds)
+    return buses
+
+
+PASS_STOP_S = 150                        # each today's-memory pass stops itself after this long
+
+
+def run(rm_mod, road, drives, **cache):
+    """Work out these drives on a fresh road map: (seconds, Counted, drives done, the road map)."""
+    rm = rm_mod.RoadMap(road, **cache)
+    c = Counted(rm)
+    t0 = time.perf_counter()
+    done = 0
+    for i, (a, b, before) in enumerate(drives):
+        if i % 500 == 0 and (rss_mb() > MEMORY_STOP_MB or time.perf_counter() - t0 > PASS_STOP_S):
+            break
+        drive(rm, a, b, before)
+        done += 1
+    return time.perf_counter() - t0, c, done, rm
+
+
+def pct(sorted_vals, q):
+    return sorted_vals[min(len(sorted_vals) - 1, int(q * len(sorted_vals)))] if sorted_vals else 0.0
+
+
+def main():
+    road_py = sys.argv[1] if len(sys.argv) > 1 else ROAD_MAP_PY
+    road = sys.argv[2] if len(sys.argv) > 2 else ROAD_FILE
+    tiles = sys.argv[3] if len(sys.argv) > 3 else TILES
+    started = time.monotonic()
+    out = []
+    say('tpa-roadcheck: look-only, takes about 3 to 8 minutes. Progress shows below; the results come at the end.')
+    spec = importlib.util.spec_from_file_location('tpa_roadcheck_road_map', road_py)
+    rm_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(rm_mod)
+
+    say('Step 1 of 6: reading the published bus tiles...')
+    buses = read_drives(tiles)
+    all_drives = [d for ds in buses for d in ds]
+    newest = [ds[-1] for ds in buses]
+    out.append(f'Buses not on a timetable route: {len(buses)}; drives between their reports: {len(all_drives)}')
+    if not all_drives:
+        say('===== COPY BACK FROM HERE =====')
+        say('Nothing to measure: no unplaced buses in the tiles right now.')
+        say('===== COPY BACK TO HERE =====')
+        return
+    # the sample for today's-size passes: whole buses, evenly spread
+    step = max(1, len(all_drives) // SAMPLE_DRIVES)
+    sample = [d for ds in buses[::step] for d in ds][:SAMPLE_DRIVES]
+    scattered = list(sample)
+    random.Random(14).shuffle(scattered)
+    by_place = sorted(sample, key=lambda d: rm_mod.tile_of(round(d[0][2] * 1e6), round(d[0][1] * 1e6)))
+
+    say(f'Step 2 of 6: every square kept in memory - first the newest drive of each bus ({len(newest)}), then all {len(all_drives)}...')
+    big = dict(max_tiles=10 ** 9, max_points=10 ** 12, max_bytes=10 ** 13)
+    mb0 = rss_mb()
+    rm = rm_mod.RoadMap(road, **big)
+    c = Counted(rm)
+    t0 = time.perf_counter()
+    stopped = ''
+    done = 0
+    for i, (a, b, before) in enumerate(newest):
+        if i % 200 == 0 and rss_mb() > MEMORY_STOP_MB:
+            stopped = f'STOPPED EARLY at this check\'s memory allowance ({MEMORY_STOP_MB} MB) in the newest drives, after {i}'
+            break
+        drive(rm, a, b, before)
+    newest_squares, newest_s = len(rm.tiles), time.perf_counter() - t0
+    newest_fetch_s = c.fetch_s
+    for i, (a, b, before) in enumerate(all_drives if not stopped else ()):
+        if i % 500 == 0:
+            if rss_mb() > MEMORY_STOP_MB:
+                stopped = f'STOPPED EARLY at this check\'s memory allowance ({MEMORY_STOP_MB} MB) after {i} drives'
+                break
+            if time.monotonic() - started > TIME_STOP_S:
+                stopped = f'STOPPED EARLY at this check\'s time allowance ({TIME_STOP_S} s) after {i} drives'
+                break
+        drive(rm, a, b, before)
+        done += 1
+    cold_s = time.perf_counter() - t0
+    squares = len(rm.tiles)
+    real_mb = rss_mb() - mb0
+    ft = sorted(c.fetch_times)
+    out.append(f'EVERYTHING IN MEMORY: the newest drive of every bus needs {newest_squares} squares '
+               f'({newest_s:.1f} s, of which fetching {newest_fetch_s:.1f} s)')
+    out.append(f'   all {done} drives need {squares} squares | fetching them: {c.fetch_s:.1f} s = {1000 * c.fetch_s / max(c.fetches, 1):.1f} ms a square '
+               f'(half under {1000 * pct(ft, 0.5):.1f} ms, slowest tenth over {1000 * pct(ft, 0.9):.1f} ms, slowest {1000 * (ft[-1] if ft else 0):.0f} ms)')
+    out.append(f'   memory for those squares: {real_mb:.0f} MB measured = {real_mb / max(squares, 1):.2f} MB a square '
+               f'(the road map\'s own estimate: {rm.bytes / 1e6:.0f} MB)')
+    if stopped:
+        out.append('   ' + stopped)
+    counts = sorted(c.asked.values(), reverse=True)
+    total = sum(counts)
+    cover, run_sum, k = [], 0, 0
+    targets = [0.5, 0.8, 0.9, 0.95, 0.99]
+    for n in counts:
+        run_sum += n
+        k += 1
+        while targets and run_sum >= targets[0] * total:
+            cover.append(f'{round(targets.pop(0) * 100)}% of requests: {k} squares')
+    out.append('   busiest squares: ' + '; '.join(cover))
+
+    say(f'Step 3 of 6: the same {done} drives again with the squares already in memory...')
+    f_before, r_before = c.fetches, c.requests
+    t0 = time.perf_counter()
+    warm_done = 0
+    for i, (a, b, before) in enumerate(all_drives[:done]):
+        if i % 500 == 0 and time.monotonic() - started > TIME_STOP_S + 120:
+            break
+        drive(rm, a, b, before)
+        warm_done += 1
+    warm_s = time.perf_counter() - t0
+    out.append(f'SQUARES ALREADY IN MEMORY: {warm_done} drives in {warm_s:.1f} s = {1000 * warm_s / max(warm_done, 1):.2f} ms a drive '
+               f'(squares fetched meanwhile: {c.fetches - f_before}; squares asked for per drive: {(c.requests - r_before) / max(warm_done, 1):.1f})')
+
+    say('Step 4 of 6: where the time of fetching one square goes (200 squares)...')
+    keys = list(rm.tiles)
+    random.Random(15).shuffle(keys)
+    keys = keys[:200]
+    read_s = unpack_s = build_s = 0.0
+    packed = unpacked = 0
+    for tx, ty in keys:
+        t0 = time.perf_counter()
+        rows = [r[0] for r in rm.db.execute('SELECT d FROM tiles WHERE k=?', (rm_mod.tile_key(tx, ty),))]
+        t1 = time.perf_counter()
+        for blob in rows:
+            unpacked += len(zlib.decompress(blob))
+            packed += len(blob)
+        t2 = time.perf_counter()
+        rm_mod.Tile(rows, rm.fmt)
+        t3 = time.perf_counter()
+        read_s += t1 - t0
+        unpack_s += t2 - t1
+        build_s += (t3 - t2) - (t2 - t1)          # Tile() unpacks again itself: take that out
+    n = max(len(keys), 1)
+    out.append(f'ONE SQUARE ({len(keys)} measured): reading from disk {1000 * read_s / n:.2f} ms, unpacking {1000 * unpack_s / n:.2f} ms, '
+               f'building it in memory {1000 * build_s / n:.2f} ms | size on disk {packed / n / 1024:.0f} KB packed, {unpacked / n / 1024:.0f} KB unpacked')
+    rm.close()
+    del rm, c                              # the memory measured above was taken in a clean process: now free it
+
+    def today(label, drives, n):
+        say(f'Step {n} of 6: {len(drives)} drives with today\'s memory size, {label}...')
+        secs, c, done, rm = run(rm_mod, road, drives)
+        share = 100 * c.fetch_s / secs if secs else 0
+        out.append(f'TODAY\'S MEMORY ({rm.max_tiles} squares / {rm.max_bytes // 1_000_000} MB), {label}: {done} drives in {secs:.1f} s '
+                   f'= {1000 * secs / max(done, 1):.2f} ms a drive | squares asked for {c.requests}, fetched from disk {c.fetches} '
+                   f'({100 * c.fetches / max(c.requests, 1):.1f}%) | fetching took {c.fetch_s:.1f} s = {share:.0f}% of the time')
+        rm.close()
+    today('scattered order', scattered, 5)
+    today('place by place', by_place, 6)
+
+    out.append(f'This check: {time.monotonic() - started:.0f} s, peak memory {rss_mb('VmHWM:'):.0f} MB. Nothing was changed.')
+
+    say('===== COPY BACK FROM HERE =====')
+    say(time.strftime('%a %d %b %H:%M:%S UTC', time.gmtime()) + ' | tpa-roadcheck (look-only)')
+    for line in out:
+        say(line)
+    say('===== COPY BACK TO HERE =====')
+
+
+if __name__ == '__main__':
+    main()

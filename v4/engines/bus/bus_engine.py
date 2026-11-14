@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.20.3'
+ENGINE_VERSION = '0.20.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -146,9 +146,6 @@ _spec.loader.exec_module(timetable)
 TIMETABLE = {'tt': None}
 MATCH_EVERY = max(1, int(os.environ.get('TPA_BUS_MATCH_SECONDS', '300') or 300))
 MATCH_SAMPLE = 400
-_spec = importlib.util.spec_from_file_location('tpa_bus_road_helpers', Path(__file__).resolve().parent / 'road_helpers.py')
-road_helpers = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(road_helpers)
 _spec = importlib.util.spec_from_file_location('tpa_bus_replay', Path(__file__).resolve().parent / 'replay.py')
 replay = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(replay)
@@ -1525,12 +1522,8 @@ def _r1(x):
     return round(x, 1)
 
 
-DEFER = object()                      # 0.20.3: "this bus still needs drives the road helpers are to work out"
-
-
-def bus_item(v, hist, now, collect=None):
-    """(small json, big json) for one bus, or None (not shown). Kept until the bus reports again. With `collect` (0.20.3),
-    a bus still missing drives along the roads adds them to it and gets DEFER instead (nothing kept)."""
+def bus_item(v, hist, now):
+    """(small json, big json) for one bus, or None (not shown). Kept until the bus reports again."""
     key = v['key']
     if not (v.get('origin') and v.get('dep')):
         return None                                   # owner 16:54: no journey details -> not on the map
@@ -1561,9 +1554,7 @@ def bus_item(v, hist, now, collect=None):
         ps = [[int(t), round(lo, 6), round(la, 6)] for (t, m) in pts for lo, la in (sh.point_at(m),)]
         small = dict(base, s=sid, r=[[int(t), _r1(m)] for t, m in pts], p=ps)
         big = dict(base, p=ps)
-    elif ROAD_GLIDE and ROADS['map'] is not None and (made := road_way(v, now, collect)) is not None:
-        if made is DEFER:
-            return DEFER
+    elif ROAD_GLIDE and ROADS['map'] is not None and (made := road_way(v, now)) is not None:
         rsh, rplaced, jumps = made
         pts = keep_recent(rplaced, now)
         cut = len(rplaced) - len(pts)
@@ -1600,12 +1591,9 @@ def bus_item(v, hist, now, collect=None):
     return small_j, big_j
 
 
-def road_way(v, now, collect=None):
-    """0.19.0: (line along the roads through the bus's recent reports, [(t, metres)], jump indices) or None.
-    0.20.3: DEFER (with the missing drives added to `collect`) when drives are still to be worked out by the helpers."""
-    legs = road_legs(v, now, None, collect)      # each drive between two reports worked out once, then kept (LEGS)
-    if legs is DEFER:
-        return DEFER
+def road_way(v, now):
+    """0.19.0: (line along the roads through the bus's recent reports, [(t, metres)], jump indices) or None."""
+    legs = road_legs(v, now, None)               # each drive between two reports worked out once, then kept (LEGS)
     if not legs:
         return None
     try:
@@ -1718,28 +1706,20 @@ def publish_round() -> dict:
            'lineBeingDrawn': 0}
     by_company: dict = {}                             # 0.17.4 (owner 21:45 "are these buses spread across the uk?")
     lines = {}
-    # 0.20.3 (fix C, owner 11:25): buses still missing a drive along the roads are put aside in the first pass while the
-    # missing drives are collected; the road helpers then work them all out at once, each on its own processor, and the
-    # second pass builds those buses' items exactly as before (anything a helper could not do is done here, as before).
-    helpers = road_helpers_for_round()
-    collect = [] if helpers is not None else None
-    deferred = []
-    t_help = 0.0
-    def take(v, collect_now):
-        """One bus into the tiles; DEFER when it still needs drives the road helpers are to work out."""
-        nonlocal shown, hidden, matched
+    for i, v in enumerate(vehicles):
+        if i % 500 == 0:
+            while FETCHING.is_set():                  # the download comes first, as everywhere else
+                time.sleep(0.2)
         age = now - v['recorded']
         if age > SHOW_FOR:
-            return None
+            continue
         hist = hist_of.get(v['key']) or []
         with JOURNEY_LOCK:                            # held per bus, so visitors' answers never wait long
-            got = bus_item(v, hist, now, collect_now)
+            got = bus_item(v, hist, now)
             known = TRIPS.get(v['key'])
-        if got is DEFER:
-            return DEFER
         if got is None:
             hidden += 1
-            return None
+            continue
         shown += 1
         d = step_delay(v['key'])                      # 0.20.0: this bus's own delay, carried in its tile item
         delays.append(d)
@@ -1770,22 +1750,6 @@ def publish_round() -> dict:
             small.setdefault(k, []).append(got[0])
         for k in _tiles_for(v, th, recent, TILE_BIG):
             big.setdefault(k, []).append(got[1])
-        return None
-
-    for i, v in enumerate(vehicles):
-        if i % 500 == 0:
-            while FETCHING.is_set():                  # the download comes first, as everywhere else
-                time.sleep(0.2)
-        if take(v, collect) is DEFER:
-            deferred.append(v)
-    if deferred:
-        if collect:
-            t_h = time.monotonic()
-            jobs = [(n, a, b, before) for n, (_, a, b, before) in enumerate(collect)]
-            store_helper_legs(collect, helpers.legs(jobs))
-            t_help = time.monotonic() - t_h
-        for v in deferred:
-            take(v, None)
     live = {v['key'] for v in vehicles}
     for memo in (ITEM_MEMO, PUB_TRIED):
         for k in [k for k in memo if k not in live]:
@@ -1845,10 +1809,7 @@ def publish_round() -> dict:
             'delaySeconds': delay_summary(delays),
             'companies': len(by_company), 'byCompany': company_table(by_company), 'tilesSmall': len(small), 'tilesBig': len(big),
             'tilesWritten': written, 'packedKbWritten': round(packed_bytes / 1024), 'largestKb': round(largest / 1024, 1),
-            'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN),
-            # 0.20.3: buses whose drives the road helpers worked out this round, and how long that took
-            'helperBuses': len(deferred), 'helperLegs': len(collect or ()), 'helperSeconds': round(t_help, 2),
-            'roadHelpers': dict(helpers.stats) if helpers is not None else None}
+            'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN)}
 
 
 PUBLISH_SMALL_SPAN = 0.06             # views up to this tall (degrees of latitude) use the small tiles (0.19.3: was 0.15)
@@ -2883,53 +2844,37 @@ def journey_candidates(vehicles, views, now):
 
 
 def _leg(v: dict, a, b, before):
-    """The drive from report a to report b (each (t, lat, lon)); `before` is the report before a or None.
-    0.20.3: worked out by road_helpers.compute_leg - the same code the road helpers run."""
-    way, err = road_helpers.compute_leg(ROADS['map'], a, b, before, LEG_MAX_M, PLACE_M)
-    if err is not None:
+    """The drive from report a to report b (each (t, lat, lon)); `before` is the report before a or None."""
+    rm = ROADS['map']
+    (ta, la, oa), (tb, lb, ob) = a, b
+    straight = metres(la, oa, lb, ob)
+    bearing = None
+    if before is not None and metres(before[1], before[2], la, oa) >= 10:
+        bearing = _bearing(before[1], before[2], la, oa)
+    way = None
+    try:
+        if straight < 15:
+            p = rm.place(oa, la, bearing, PLACE_M) if rm else None
+            way = [(p[0], p[1]), (p[0], p[1])] if p else [(oa, la), (oa, la)]
+        elif rm is not None and straight <= LEG_MAX_M:
+            got = rm.between(oa, la, bearing, ob, lb, max_m=min(LEG_MAX_M, max(300.0, 2.5 * straight + 150)))
+            way = [tuple(q) for q in got] if got else None
+    except Exception as exc:   # one odd bus must never break the layer
         with LOCK:
-            STATE['roadMapError'] = ('leg: ' + type(err).__name__)[:100]
-    return way_of(way)
-
-
-def way_of(w):
-    """('w', points) -> the points; ('j', [from, to]) -> a jump."""
-    return replay.Jump([tuple(q) for q in w[1]]) if w[0] == 'j' else [tuple(q) for q in w[1]]
-
-
-# ---------------------------------------------------------------- road helpers (0.20.3, fix C)
-ROAD_HELPERS_N = max(0, min(8, int(os.environ.get('TPA_BUS_ROAD_HELPERS', '2') or 0)))
-HELPERS = {'pool': None, 'path': ''}
-
-
-def road_helpers_for_round():
-    """The helper programs for this round (started, or restarted for a new road map), or None (switched off / no map)."""
-    rm, path = ROADS['map'], ROADS.get('path') or ''
-    if not ROAD_HELPERS_N or rm is None or not path:
-        return None
-    if HELPERS['pool'] is None or HELPERS['path'] != path:
-        if HELPERS['pool'] is not None:
-            HELPERS['pool'].close()
-        HELPERS['pool'], HELPERS['path'] = road_helpers.RoadHelpers(path, ROAD_HELPERS_N), path
-    return HELPERS['pool']
-
-
-def store_helper_legs(collect: list, done: dict) -> None:
-    """Keep the drives the helpers worked out (job number -> way) exactly as road_legs keeps its own."""
-    with JOURNEY_LOCK:
-        for n, (key, a, b, _) in enumerate(collect):
-            w = done.get(n)
-            if w is not None:
-                LEGS.setdefault(key, {})[a[0]] = (b[0], way_of(w))
+            STATE['roadMapError'] = ('leg: ' + type(exc).__name__)[:100]
+    if way is None:
+        pa = (rm.place(oa, la, bearing, PLACE_M) if rm else None) or (oa, la)
+        pb = (rm.place(ob, lb, None, PLACE_M) if rm else None) or (ob, lb)
+        way = replay.Jump([tuple(pa), tuple(pb)])
+    return way
 
 
 STAND_IN: set = set()       # 0.8.11: buses whose road track this moment stops short of their newest report
 
 
-def road_legs(v: dict, now: float, deadline: float | None, collect: list | None = None):
+def road_legs(v: dict, now: float, deadline: float | None):
     """The legs between this bus's reports that the replay can still show; computes missing ones while
-    time allows (deadline None = no limit). None if any is still missing. 0.20.3: with `collect`, missing ones are not
-    worked out here but added to it as (bus key, a, b, before), and DEFER is returned."""
+    time allows (deadline None = no limit). None if any is still missing."""
     with LOCK:
         hist = list(HISTORY.get(v['key']) or [])
     if not hist or hist[-1][0] < v['recorded']:
@@ -2942,15 +2887,10 @@ def road_legs(v: dict, now: float, deadline: float | None, collect: list | None 
     with JOURNEY_LOCK:
         known = LEGS.setdefault(v['key'], {})
     legs = []
-    missing = False
     for i in range(first, len(hist) - 1):
         a, b = hist[i], hist[i + 1]
         got = known.get(a[0])
         if got is None or got[0] != b[0]:
-            if collect is not None:
-                collect.append((v['key'], a, b, hist[i - 1] if i > 0 else None))
-                missing = True
-                continue
             if deadline is not None and (time.monotonic() >= deadline or FETCHING.is_set()):
                 if legs:
                     STAND_IN.add(v['key'])
@@ -2959,8 +2899,6 @@ def road_legs(v: dict, now: float, deadline: float | None, collect: list | None 
         legs.append((a[0], b[0], got[1]))
     for t in [t for t in known if t < hist[first][0]]:
         del known[t]
-    if missing:
-        return DEFER
     if not legs:                         # a single report: the bus stands where it was seen
         p = (hist[-1][2], hist[-1][1])
         legs = [(hist[-1][0], hist[-1][0] + 0.001, [p, p])]
