@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""tpa-tilecheck (bus 0.19.3, owner 14 Nov 2026 00:22: a side-by-side recording showed buses jumping on the tile page
+that glide on ?tiles=0). Read-only. Does what the map page does with the bus tile files - every 10 s, read meta.json and
+the tiles for one map view, work out each bus's movement with the same replay maths - and checks whether each new poll
+puts every bus where the previous poll said it would be at that moment. A difference over 30 m is a jump on screen.
+Says which kind of movement each jumping bus had before and after (route line / own stretch of road / straight), and
+counts buses that vanish or appear in the middle of the view between polls.
+Run on the server:  sudo python3 <release>/v4/server/tpa-tilecheck [polls] [south west north east]
+(default: 12 polls, a Woolwich neighbourhood view like the owner's recording)."""
+import json
+import math
+import os
+import sys
+import time
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / 'engines' / 'bus'))
+import replay  # noqa: E402
+
+ROOT = Path(os.environ.get('TPA_TILECHECK_DIR', '/run/tpa-bus-tiles')) / 'bus'
+
+
+def metres(a, b):
+    return math.hypot((a[0] - b[0]) * 111195 * math.cos(math.radians(a[1])), (a[1] - b[1]) * 111195)
+
+
+def load(p):
+    try:
+        return json.loads(Path(p).read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def straight(p, now, delay):
+    """The page's straight replay (bus-replay.js straight, gliding)."""
+    shown, n = now - delay, len(p)
+    if shown >= p[-1][0]:
+        q = (p[-1][1], p[-1][2])
+        return {'points': [q], 'times': [now]}
+    i = 0
+    while i < n and p[i][0] <= shown:
+        i += 1
+    if i == 0:
+        start = (p[0][1], p[0][2])
+    else:
+        a, b = p[i - 1], p[i]
+        f = (shown - a[0]) / max(1e-9, b[0] - a[0])
+        start = (a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f)
+    pts, times = [start], [now]
+    for k in range(i, n):
+        pts.append((p[k][1], p[k][2]))
+        times.append(max(times[-1], p[k][0] + delay))
+    return {'points': pts, 'times': times}
+
+
+def at(tr, t):
+    T, P = tr['times'], tr['points']
+    if t <= T[0]:
+        return P[0]
+    for i in range(1, len(T)):
+        if T[i] >= t:
+            q = (t - T[i - 1]) / (T[i] - T[i - 1]) if T[i] > T[i - 1] else 1
+            return (P[i - 1][0] + (P[i][0] - P[i - 1][0]) * q, P[i - 1][1] + (P[i][1] - P[i - 1][1]) * q)
+    return P[-1]
+
+
+LINES = {}
+
+
+def line(build, sid):
+    key = (build, sid)
+    if key not in LINES:
+        safe = ''.join(c if c.isalnum() or c in '_.-' else '_' for c in sid)[:120]
+        d = load(ROOT / 'routes' / build / (safe + '.json'))
+        try:
+            LINES[key] = replay.Shape([tuple(q) for q in d['c']]) if d else None
+        except Exception:
+            LINES[key] = None
+    return LINES[key]
+
+
+def poll(box, now):
+    s, w, n, e = box
+    meta = load(ROOT / 'meta.json')
+    if not meta:
+        return None, 'no meta.json', {}
+    small = n - s <= meta['smallBelowSpan']
+    size, d = (meta['small'], 's') if small else (meta['big'], 'b')
+    items = {}
+    for r in range(math.floor(s / size[0]), math.floor(n / size[0]) + 1):
+        for c in range(math.floor(w / size[1]), math.floor(e / size[1]) + 1):
+            for it in load(ROOT / d / f'{r}_{c}.json') or []:
+                items.setdefault(it['i'], it)
+    delay, kl = meta.get('delay', 90), meta.get('keepLeft', 0)
+    recent = now - delay - 120
+    inside = lambda q: w <= q[1] <= e and s <= q[2] <= n
+    out = {}
+    for it in items.values():
+        p = it.get('p') or []
+        if not p or not (inside(p[-1]) or any(q[0] >= recent and inside(q) for q in p)):
+            continue
+        tr, kind = None, 'straight'
+        if small and it.get('s') and it.get('r'):
+            sh = line(meta.get('build', ''), it['s'])
+            if sh is None:
+                kind = 'straight (route line file missing)'
+            else:
+                tr, kind = replay.track(sh, [tuple(x) for x in it['r']], now, delay, kl), 'route line'
+        if tr is None and small and it.get('w') and it.get('r'):
+            try:
+                tr = replay.track(replay.Shape([tuple(q) for q in it['w']]), [tuple(x) for x in it['r']], now, delay, kl,
+                                  frozenset(it.get('jm') or ()))
+                kind = 'own road'
+            except Exception:
+                tr = None
+        if tr is None:
+            tr = straight(p, now, delay)
+            kind = 'step' if it.get('j') else kind
+        out[it['i']] = (tr, kind, it)
+    return meta, ('street' if small else 'city') + ' tiles', out
+
+
+def main():
+    a = sys.argv[1:]
+    polls = int(a[0]) if a and a[0].isdigit() else 12
+    box = tuple(float(x) for x in a[1:5]) if len(a) >= 5 else (51.465, 0.02, 51.515, 0.10)
+    print(f'Reading the bus tiles for {box} every 10 s, {polls} times (read-only)...')
+    prev, jumps, kinds, gone, came, compared, examples, ages, sizes = {}, 0, {}, 0, 0, 0, [], [], []
+    s, w, n, e = box
+    mid = (s + (n - s) * 0.2, w + (e - w) * 0.2, n - (n - s) * 0.2, e - (e - w) * 0.2)
+    for k in range(polls):
+        t0 = time.time()
+        meta, how, cur = poll(box, t0)
+        if meta is None:
+            print('  ', how)
+        else:
+            ages.append(t0 - meta['updatedAt'])
+            sizes.append(len(cur))
+        now = time.time()
+        for i, (tr, kind, it) in cur.items():
+            if i not in prev:
+                q = at(tr, now)
+                if prev and mid[0] <= q[1] <= mid[2] and mid[1] <= q[0] <= mid[3]:
+                    came += 1
+                    if len(examples) < 14:
+                        examples.append(f'  appeared mid-view: {it.get("l", "")[:34]:34} ({kind})')
+                continue
+            ptr, pkind, pit = prev[i]
+            d = metres(at(ptr, now), at(tr, now))
+            compared += 1
+            if d > 30:
+                jumps += 1
+                key = f'{pkind} -> {kind}'
+                kinds[key] = kinds.get(key, 0) + 1
+                if len(examples) < 14:
+                    newer = (it.get('o'), pit.get('o'))
+                    examples.append(f'  {time.strftime("%H:%M:%S")} {it.get("l", "")[:34]:34} {d:5.0f} m  {key}'
+                                    f'  (newest report {"changed" if newer[0] != newer[1] else "same"})')
+        if prev:
+            for i, (ptr, pkind, pit) in prev.items():
+                if i not in cur:
+                    q = at(ptr, now)
+                    if mid[0] <= q[1] <= mid[2] and mid[1] <= q[0] <= mid[3]:
+                        gone += 1
+                        if len(examples) < 14:
+                            examples.append(f'  vanished mid-view: {pit.get("l", "")[:34]:34} ({pkind})')
+        prev = cur
+        if k + 1 < polls:
+            time.sleep(max(0, 10 - (time.time() - t0)))
+    every = {}
+    for tr, kind, it in prev.values():
+        every[kind] = every.get(kind, 0) + 1
+    print(f'Using {how}; buses in view per poll: {min(sizes, default=0)}-{max(sizes, default=0)};'
+          f' tiles age when read: {min(ages, default=0):.0f}-{max(ages, default=0):.0f} s')
+    print('Movement kinds (last poll):', ', '.join(f'{k} {v}' for k, v in sorted(every.items())))
+    print(f'Buses compared poll-to-poll: {compared}; jumps over 30 m: {jumps}; vanished mid-view: {gone}; appeared mid-view: {came}')
+    if kinds:
+        print('Jumps by kind (before -> after):', ', '.join(f'{k} {v}' for k, v in sorted(kinds.items())))
+    for x in examples:
+        print(x)
+
+
+if __name__ == '__main__':
+    main()
