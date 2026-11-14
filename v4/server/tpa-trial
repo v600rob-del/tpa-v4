@@ -472,9 +472,11 @@ def memory_detail(s):
         out.append('   RAM disk: not found')
     s = s or {}
     kept, drawn = s.get('routeLinesKept'), s.get('drawnLines') or {}
-    written = ((s.get('publish') or {}).get('last') or {}).get('routeLines')
+    last = (s.get('publish') or {}).get('last') or {}
+    written = last.get('routeLines')
+    removed = '' if last.get('routeFilesRemoved') is None else f" (removed so far {last['routeFilesRemoved']})"
     out.append(f"   route lines held in the engine's memory: from the timetable {kept} (limit {LINES_KEEP}), drawn by TPA "
-               f"{drawn.get('linesKept')} (limit {DRAWN_KEEP}), waiting to be drawn {drawn.get('waiting')} | route-line files written {written}")
+               f"{drawn.get('linesKept')} (limit {DRAWN_KEEP}), waiting to be drawn {drawn.get('waiting')} | route-line files kept {written}{removed}")
     tt_avg, n1 = _average_points(route_files.get('timetable'))
     dr_avg, n2 = _average_points(route_files.get('drawn'))
     if n1 + n2 == 0:

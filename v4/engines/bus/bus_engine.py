@@ -41,6 +41,7 @@ import os
 import random
 import html
 import re
+import shutil
 import signal
 import ssl
 import statistics
@@ -59,7 +60,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.20.4'
+ENGINE_VERSION = '0.20.5'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1469,6 +1470,20 @@ ITEM_MEMO: dict = {}                  # bus key -> (signature, small json, big j
 PLACE_MEMO: dict = {}                 # (bus key, report time) -> (lon, lat) on the road (unmatched buses)
 TILE_LAST: dict = {}                  # (size, row, col) -> hash of the text last written
 ROUTES_WRITTEN: set = set()           # (build, line id) already written
+# 0.20.5 (14 Nov 2026 19:46 memory-detail reading: 461 of the RAM disk's 525 MB - which counts against this engine's memory
+# - were route files, one per line ever shown, never removed; Rob 19:58 "Yes, build it now"): route files are tidied
+# at most once a minute. The old timetable's files go once the new one has been in use for OLD_BUILD_GRACE (pages
+# switch at once via meta.json); a line no bus has used for ROUTE_FILE_IDLE goes (written again if a bus needs it);
+# at most ROUTE_FILES_KEEP are kept, least recently used first, never one used in the last ROUTE_FILE_MIN_IDLE
+# (pages only use tiles under a minute old, so no page can still be asking for it).
+ROUTE_USED: dict = {}                 # (build, line id) -> when a bus last used it in a round
+ROUTE_BUILDS: dict = {}               # timetable build -> when its route files were first used
+ROUTE_TIDY = {'at': 0.0, 'removed': 0}
+ROUTE_TIDY_EVERY = 60.0
+OLD_BUILD_GRACE = 600.0
+ROUTE_FILE_IDLE = max(600.0, float(os.environ.get('TPA_BUS_ROUTE_FILE_IDLE_SECONDS', '7200') or 7200))
+ROUTE_FILE_MIN_IDLE = 600.0
+ROUTE_FILES_KEEP = max(1000, int(os.environ.get('TPA_BUS_ROUTE_FILES_KEEP', '25000') or 25000))
 PUB_TRIED: dict = {}                  # bus key -> (report time, journey) last worked out
 # 0.19.0 (owner 13 Nov 22:45 - the buses we can't put on a timetabled route are the real "gremlins": diversions, buses on
 # their way to their first stop, companies with no timetable): they glide along the roads between their reports, as on
@@ -1804,6 +1819,9 @@ def publish_round() -> dict:
                                                  separators=(',', ':')))
             ROUTES_WRITTEN.add((build, sid))
             new_lines += 1
+        for sid in lines:
+            ROUTE_USED[(build, sid)] = now
+        route_tidy(root, build, now)
     meta = {'v': 1, 'updatedAt': round(now, 1), 'fetchedAt': round(fetched or 0, 1), 'health': h, 'notice': notice or '',
             'attribution': ATTRIBUTION + (' · roads: ' + ROADS['licence'] if ROADS['licence'] else '')
             + (' · bus routes: BODS timetables, Department for Transport (OGL)' if REPLAY_SECONDS and tt is not None else ''),
@@ -1815,10 +1833,54 @@ def publish_round() -> dict:
             'delaySeconds': delay_summary(delays),
             'companies': len(by_company), 'byCompany': company_table(by_company), 'tilesSmall': len(small), 'tilesBig': len(big),
             'tilesWritten': written, 'packedKbWritten': round(packed_bytes / 1024), 'largestKb': round(largest / 1024, 1),
-            'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN)}
+            'routeLinesNew': new_lines, 'routeLines': len(ROUTES_WRITTEN), 'routeFilesRemoved': ROUTE_TIDY['removed']}
 
 
 PUBLISH_SMALL_SPAN = 0.06             # views up to this tall (degrees of latitude) use the small tiles (0.19.3: was 0.15)
+
+
+def _route_file(root: Path, build: str, sid: str) -> Path:
+    return root / 'routes' / build / (re.sub(r'[^A-Za-z0-9_.-]', '_', sid)[:120] + '.json')
+
+
+def route_tidy(root: Path, build: str, now: float) -> int:
+    """0.20.5: remove route files no page can still need (see ROUTE_USED). Publishing thread only. Files removed."""
+    if not build or now - ROUTE_TIDY['at'] < ROUTE_TIDY_EVERY:
+        return 0
+    ROUTE_TIDY['at'] = now
+    removed = 0
+    since = ROUTE_BUILDS.setdefault(build, now)
+    if now - since >= OLD_BUILD_GRACE:
+        rroot = root / 'routes'
+        try:
+            old = [d for d in rroot.iterdir() if d.is_dir() and d.name != build]
+        except OSError:
+            old = []
+        for d in old:
+            try:
+                removed += sum(1 for f in d.iterdir() if f.name.endswith('.json'))
+            except OSError:
+                pass
+            shutil.rmtree(d, ignore_errors=True)
+        for k in [k for k in ROUTES_WRITTEN if k[0] != build]:
+            ROUTES_WRITTEN.discard(k)
+        for k in [k for k in ROUTE_USED if k[0] != build]:
+            del ROUTE_USED[k]
+        for b in [b for b in ROUTE_BUILDS if b != build]:
+            del ROUTE_BUILDS[b]
+    mine = [(ROUTE_USED.get(k, 0.0), k) for k in ROUTES_WRITTEN if k[0] == build]
+    gone = [k for t, k in mine if now - t > ROUTE_FILE_IDLE]
+    over = len(mine) - len(gone) - ROUTE_FILES_KEEP
+    if over > 0:
+        rest = sorted((t, k) for t, k in mine if ROUTE_FILE_MIN_IDLE < now - t <= ROUTE_FILE_IDLE)
+        gone += [k for _, k in rest[:over]]
+    for k in gone:
+        _tile_remove(_route_file(root, build, k[1]))
+        ROUTES_WRITTEN.discard(k)
+        ROUTE_USED.pop(k, None)
+        removed += 1
+    ROUTE_TIDY['removed'] += removed
+    return removed
 
 
 def publish_summary() -> dict:

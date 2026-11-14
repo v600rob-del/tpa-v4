@@ -184,16 +184,17 @@ declare -A BEFORE
 for e in "${ENGINES[@]}"; do BEFORE[$e]="$(sha256sum "/etc/systemd/system/tpa-$e.service" 2>/dev/null | cut -d' ' -f1 || true)"; done   # kit 4.14: a brand-new server has none yet
 BUS_ENV="Environment=TPA_BUS_MODE=bulk TPA_BUS_ALWAYS_ON=1 TPA_BUS_ROAD_MAP=download TPA_BUS_ROAD_SOURCE=osm TPA_BUS_TIMETABLE=download TPA_BUS_DATA_DIR=/var/lib/tpa/bus TPA_BUS_TILES_DIR=/run/tpa-bus-tiles"
 # kit 4.57 (Plan B): the bus engine writes its published tiles into memory (/run/tpa-bus-tiles), readable by Caddy
+# kit 4.58 (14 Nov 2026 19:23, Rob): bus engine memory limit 6G (was 3G) - the live server has had 6G since 19:23 (systemctl set-property)
 BUS_RUN=$'\nRuntimeDirectory=tpa-bus-tiles\nRuntimeDirectoryMode=0755'
 if [[ $ROLE == bus ]]; then
     unit bus "bus engine on its own Ampere server, for the main server only" TPA_BUS_ENGINE_PORT 8781 \
-        "$BUS_ENV TPA_BUS_BIND=$BUS_BIND TPA_BUS_ALLOW=$BUS_ALLOW$BUS_RUN" 3G bus.env v4/engines/bus/bus_engine.py
+        "$BUS_ENV TPA_BUS_BIND=$BUS_BIND TPA_BUS_ALLOW=$BUS_ALLOW$BUS_RUN" 6G bus.env v4/engines/bus/bus_engine.py
 else
 unit road "road traffic engine (TomTom)" TPA_ROAD_ENGINE_PORT 8782 \
     "Environment=TPA_ROAD_DATA_DIR=/var/lib/tpa/road" 200M road.env v4/engines/road/road_engine.py
 if [[ -n "${BUS_BIND:-}" ]]; then
 unit bus "bus engine (BODS, whole-country mode), also answering the standby server" TPA_BUS_ENGINE_PORT 8781 \
-    "$BUS_ENV TPA_BUS_BIND=$BUS_BIND TPA_BUS_ALLOW=$BUS_ALLOW$BUS_RUN" 3G bus.env v4/engines/bus/bus_engine.py
+    "$BUS_ENV TPA_BUS_BIND=$BUS_BIND TPA_BUS_ALLOW=$BUS_ALLOW$BUS_RUN" 6G bus.env v4/engines/bus/bus_engine.py
 else
 unit bus "bus engine (BODS, whole-country mode)" TPA_BUS_ENGINE_PORT 8781 \
     "$BUS_ENV$BUS_RUN" 500M bus.env v4/engines/bus/bus_engine.py
