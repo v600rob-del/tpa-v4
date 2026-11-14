@@ -162,12 +162,15 @@ def pct(sorted_vals, q):
     return sorted_vals[min(len(sorted_vals) - 1, int(q * len(sorted_vals)))] if sorted_vals else 0.0
 
 
+OUT: list = []                          # result lines so far (printed even if the check stops with an error)
+
+
 def main():
     road_py = sys.argv[1] if len(sys.argv) > 1 else ROAD_MAP_PY
     road = sys.argv[2] if len(sys.argv) > 2 else ROAD_FILE
     tiles = sys.argv[3] if len(sys.argv) > 3 else TILES
     started = time.monotonic()
-    out = []
+    out = OUT
     say('tpa-roadcheck: look-only, takes about 3 to 8 minutes. Progress shows below; the results come at the end.')
     spec = importlib.util.spec_from_file_location('tpa_roadcheck_road_map', road_py)
     rm_mod = importlib.util.module_from_spec(spec)
@@ -297,4 +300,16 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except Exception as exc:             # still give a clear block to copy back, with whatever was measured
+        import traceback
+        say('===== COPY BACK FROM HERE =====')
+        say(time.strftime('%a %d %b %H:%M:%S UTC', time.gmtime()) + ' | tpa-roadcheck (look-only)')
+        for line in OUT:
+            say(line)
+        say('THE CHECK STOPPED WITH AN ERROR (nothing was changed): ' + type(exc).__name__ + ': ' + str(exc)[:200])
+        for line in traceback.format_exc().strip().splitlines()[-6:]:
+            say('   ' + line)
+        say('===== COPY BACK TO HERE =====')
+        sys.exit(1)
