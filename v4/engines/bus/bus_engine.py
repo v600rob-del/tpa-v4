@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.20.0'
+ENGINE_VERSION = '0.20.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -505,6 +505,7 @@ HISTORY_KEEP = 24              # 0.20.0: was 8 - a bus reporting every 10 s need
 # round, so a bus only ever runs a touch slower or faster - never lurches.
 DELAY_MIN, DELAY_MAX = REPLAY_SECONDS, 240
 DELAY_SAMPLES = 8
+DELAY_MARGIN = 25             # the tiles: written every 10 s, read every 10 s, plus a little
 LATE: dict = {}               # bus key -> how late its recent reports arrived (s)
 DELAY: dict = {}              # bus key -> the delay it is shown with now (s)
 
@@ -535,7 +536,7 @@ def delay_target(key: str) -> float:
     gaps = [b - a for a, b in zip(times, times[1:]) if 0 < b - a <= 600]
     if not late or not gaps:
         return DELAY_MIN
-    want = _high(late) + _high(gaps) + 20
+    want = _high(late) + _high(gaps) + DELAY_MARGIN
     return float(min(DELAY_MAX, max(DELAY_MIN, math.ceil(want / 5) * 5)))
 
 
@@ -854,7 +855,10 @@ def _fetch_once(area) -> None:
         with LOCK:
             old = STATE['vehicles']
         add_motion(vehicles, old)
-        note_lateness(vehicles, old, started)
+        # 0.20.1 (owner 00:50 check: buses shown ~120 s behind, their reports ~98 s old when read - still catching
+        # up): lateness counted from when the reports are ready for the map (after the download and reading, which
+        # take a while), not from when the download started.
+        note_lateness(vehicles, old, time.time())
         measure_guesses(vehicles, old)
         with LOCK:
             STATE['busesInFile'] = in_file
