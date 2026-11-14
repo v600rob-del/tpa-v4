@@ -59,7 +59,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.20.1'
+ENGINE_VERSION = '0.20.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -508,6 +508,7 @@ DELAY_SAMPLES = 8
 DELAY_MARGIN = 25             # the tiles: written every 10 s, read every 10 s, plus a little
 LATE: dict = {}               # bus key -> how late its recent reports arrived (s)
 DELAY: dict = {}              # bus key -> the delay it is shown with now (s)
+DELAY_PROVISIONAL: set = set()   # 0.20.2: buses shown at the minimum only because nothing is known yet
 
 
 def note_lateness(vehicles: list, old: list, fetched_at: float) -> None:
@@ -528,23 +529,35 @@ def _high(xs):
     return xs[int(0.8 * (len(xs) - 1))] if xs else 0.0
 
 
-def delay_target(key: str) -> float:
+def delay_target(key: str):
+    """The delay this bus needs, or None while there is nothing to go on yet (no lateness or report gaps seen)."""
     if not REPLAY_SECONDS:
         return 0
     late = LATE.get(key) or ()
     times = [h[0] for h in (HISTORY.get(key) or ())][-(DELAY_SAMPLES + 1):]
     gaps = [b - a for a, b in zip(times, times[1:]) if 0 < b - a <= 600]
     if not late or not gaps:
-        return DELAY_MIN
+        return None
     want = _high(late) + _high(gaps) + DELAY_MARGIN
     return float(min(DELAY_MAX, max(DELAY_MIN, math.ceil(want / 5) * 5)))
 
 
 def step_delay(key: str) -> int:
     """Move this bus's delay towards its target (once per publish round) and return it."""
+    # 0.20.2 (owner 01:04 check: delays still ~120 s, five minutes after a restart): a bus with nothing to go on yet
+    # is shown at DELAY_MIN *provisionally*, and takes its real delay as soon as it has one (once), then changes
+    # gently. Before, every bus started at the minimum after a restart and could only climb 2 s per round.
     tgt = delay_target(key)
     cur = DELAY.get(key)
-    cur = tgt if cur is None else cur + max(-1.0, min(2.0, tgt - cur))
+    if tgt is None:
+        DELAY_PROVISIONAL.add(key)
+        if cur is None:
+            cur = DELAY_MIN
+    elif cur is None or key in DELAY_PROVISIONAL:
+        cur = tgt
+        DELAY_PROVISIONAL.discard(key)
+    else:
+        cur += max(-1.0, min(3.0, tgt - cur))
     DELAY[key] = cur
     return int(round(cur))
 
@@ -737,8 +750,9 @@ def save_memory(force: bool = False) -> bool:
         vehicles = [v for v in STATE['vehicles'] if now - v['recorded'] <= DROP_AFTER]
         live = {v['key'] for v in vehicles}
         history = {k: [list(r) for r in h] for k, h in HISTORY.items() if k in live}
+        late = {k: [round(x, 1) for x in q] for k, q in LATE.items() if k in live}   # 0.20.2: kept over a restart
         body = {'savedAt': now, 'engineVersion': ENGINE_VERSION, 'mode': MODE, 'fetchedAt': STATE['fetchedAt'],
-                'coverage': STATE['coverage'], 'vehicles': vehicles, 'history': history}
+                'coverage': STATE['coverage'], 'vehicles': vehicles, 'history': history, 'late': late}
     SAVED['at'] = now
     try:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -772,6 +786,10 @@ def load_memory() -> int:
         for k, h in (saved.get('history') or {}).items():
             if k in live and isinstance(h, list):
                 HISTORY[k] = [tuple(r) for r in h if isinstance(r, list) and len(r) == 3][-HISTORY_KEEP:]
+        LATE.clear()
+        for k, q in (saved.get('late') or {}).items():
+            if k in live and isinstance(q, list):
+                LATE[k] = [float(x) for x in q if isinstance(x, (int, float)) and 0 <= x <= 600][-DELAY_SAMPLES:]
         STATE['busesWithSpeed'] = sum(1 for v in keep if v.get('speed'))
     print(f'Bus memory reloaded: {len(keep)} buses from {round(now - saved.get("savedAt", now))} s ago', flush=True)
     return len(keep)
@@ -872,6 +890,7 @@ def _fetch_once(area) -> None:
             for memo in (LATE, DELAY):
                 for k in [k for k in memo if k not in live]:
                     del memo[k]
+            DELAY_PROVISIONAL.intersection_update(live)
             STATE['reportAgeMedian'] = round(ages[len(ages) // 2]) if ages else None
             STATE['busesWithSpeed'] = sum(1 for v in vehicles if v.get('speed'))
             STATE.update(vehicles=vehicles, fetchedAt=started, coverage=coverage, lastError='',

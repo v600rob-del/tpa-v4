@@ -40,7 +40,7 @@ class Delay(unittest.TestCase):
         self.assertEqual(seen, [first - 1 - k for k in range(5)])   # a second per round, no lurch
         self.reports('L', gap=100, late=120)
         up = self.m.step_delay('L')
-        self.assertEqual(up, seen[-1] + 2)
+        self.assertEqual(up, seen[-1] + 3)
 
     def test_lateness_is_noted_only_for_new_reports(self):
         old = [{'key': 'A', 'recorded': 100.0}]
@@ -61,6 +61,17 @@ class Delay(unittest.TestCase):
         kept = self.m.keep_recent(slow, now)
         self.assertGreaterEqual(len(kept), self.m.PUBLISH_KEEP)
         self.assertLessEqual(kept[0][0], now - self.m.DELAY_MAX - 60)
+
+    def test_nothing_known_yet_is_provisional(self):
+        """0.20.2: after a restart a bus waits at the minimum only until its lateness is known, then takes its delay."""
+        self.m.HISTORY['N'] = [(1_000_000.0, 51.5, 0.0)]
+        self.assertIsNone(self.m.delay_target('N'))
+        self.assertEqual(self.m.step_delay('N'), self.m.DELAY_MIN)
+        self.reports('N', gap=58, late=79)
+        took = self.m.step_delay('N')
+        self.assertEqual(took, self.m.delay_target('N'))                 # straight to it, once
+        self.reports('N', gap=15, late=10)
+        self.assertEqual(self.m.step_delay('N'), took - 1)                # then gently
 
     def test_summary(self):
         s = self.m.delay_summary([90, 90, 90, 180, 200])
