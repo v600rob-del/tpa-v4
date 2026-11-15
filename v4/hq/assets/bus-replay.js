@@ -147,6 +147,52 @@
     for(let k=1;k<times.length;k++)times[k]=Math.max(times[k],times[k-1]);
     return {position:pts[0],points:pts,times,marks,how,waiting:false};
   }
-  const api={Shape,track,straight,keepLeft,forecastTrack,forecastMarks,alongAt};
+  // ---- HQ 4.62.0 (Rob 15 Nov 2026 01:48: live test of the motion study's "fresh" candidates; test addresses only).
+  // The exact rules of v4/tools/motion_study.py (simulate, 'fresh'): a bus on its route line is shown at its newest report
+  // carried on at a share of its own recent speed (reports within 2 min, at most 15 m/s), for at most maxS seconds and
+  // maxM metres, then held. Each second: more than 150 m from that target -> put there (a jump: the page fades it);
+  // behind -> catches up at most 50% faster than its pace (at least +2 m/s); more than 30 m ahead -> waits, and after
+  // 20 s is put back (a fade); a few metres ahead -> stays put. Never drawn going backwards otherwise.
+  // C4: 60% of its speed, 4 min; C3: 75%, 3 min (no distance limit in either: 2,000 m).
+  const FRESH={c4:[0.6,240,2000],c3:[0.75,180,2000]},F_WINDOW=120,F_CAP=15,F_JUMP=150,F_HOLD=20,F_CATCH=0.5,F_AHEAD=30,F_HORIZON=25;
+  function freshTarget(placed,tau,careful,maxS,maxM){
+    const [T,m]=placed[placed.length-1];let v=0;
+    const back=placed.filter(k=>T-k[0]<=F_WINDOW&&k[0]<T);
+    if(back.length&&T>back[0][0])v=Math.max(0,Math.min(F_CAP,(m-back[0][1])/(T-back[0][0])));
+    return [m+Math.min(maxM,careful*v*Math.max(0,Math.min(tau-T,maxS))),v];
+  }
+  // One frame: positions from `now` for F_HORIZON s (one a second, as the study), starting from where the bus was drawn a
+  // second ago (prev = this bus's last frame on the same line: {marks, aheadSince}). Returns the page's track (points
+  // through every corner, jumps as two points 0.1 s apart so the page fades them) and the state for the next frame.
+  function freshTrack(shape,placed,now,keepLeftM,prev,which){
+    const cfg=FRESH[which];if(!cfg||!Array.isArray(placed)||!placed.length)return null;
+    const [careful,maxS,maxM]=cfg;
+    let cur=prev&&Array.isArray(prev.marks)&&prev.marks.length?alongAt(prev.marks,now-1):null;
+    let ahead=null;                                   // waiting-ahead clock as it stood a second ago (last frame's record)
+    if(prev&&Array.isArray(prev.aheads))for(const [t,a] of prev.aheads){if(t<=now-1)ahead=a;else break;}
+    const marks=[],aheads=[],how={};let first=null;
+    for(let k=0;k<=F_HORIZON;k++){
+      const tau=now+k,[target,v]=freshTarget(placed,tau,careful,maxS,maxM),was=cur;let what;
+      if(cur===null||Math.abs(target-cur)>F_JUMP){cur=target;ahead=null;what=was===null?'first sight':'jump';}
+      else if(target>cur){const pace=Math.max(v*careful,0);cur=Math.min(target,cur+Math.max(pace*(1+F_CATCH),pace+2));ahead=null;what='moving';}
+      else if(target<cur-F_AHEAD){if(ahead===null){ahead=tau;what='waiting';}else if(tau-ahead>=F_HOLD){cur=target;ahead=null;what='put back';}else what='waiting';}
+      else{ahead=null;what='held';}
+      if(k===0)first=what;
+      if(was!==null&&k>0&&Math.abs(cur-was)>F_AHEAD)marks.push([tau-0.1,was]);     // a jump inside the frame: drawn as a fade
+      marks.push([tau,cur]);aheads.push([tau,ahead]);how[what]=(how[what]||0)+1;
+    }
+    let out=[];
+    for(let z=0;z+1<marks.length;z++){const [ta,ma]=marks[z],[tb,mb]=marks[z+1];
+      if(!out.length)out.push([ta,ma]);
+      if(mb>ma&&tb-ta>0.15)for(const m of shape.verticesBetween(ma,mb))out.push([ta+(tb-ta)*(m-ma)/(mb-ma),m]);
+      out.push([tb,mb]);}
+    if(out.length>MAX_POINTS)out=out.slice(0,MAX_POINTS);
+    let pts=out.map(x=>shape.pointAt(x[1]));
+    pts=keepLeft(pts,keepLeftM||0,pts[0][1]);
+    const times=out.map(x=>Math.round(x[0]*10)/10);
+    for(let k=1;k<times.length;k++)times[k]=Math.max(times[k],times[k-1]);
+    return {position:pts[0],points:pts,times,marks,aheads,first,how};
+  }
+  const api={Shape,track,straight,keepLeft,forecastTrack,forecastMarks,alongAt,freshTrack,FRESH};
   if(typeof module==='object'&&module.exports)module.exports=api;else root.TPA_BUS_REPLAY=api;
 })(typeof window!=='undefined'?window:globalThis);

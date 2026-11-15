@@ -724,6 +724,7 @@ function infoText(e,est){
   if(e.component==='stations')return 'Railway station'+(e.badge?' · code '+e.badge:'');   // 4.52.0
   if(e.component==='stops')return 'Bus stop'+(e.badge?' '+e.badge:'')+' · live times where buses are seen';   // 4.53.0
   if(e.component==='busstations')return ({coach:'Coach station',interchange:'Interchange'}[e.variant]||'Bus station')+' · live times where buses are seen';   // 4.54.0
+  if(e.motion&&e.motion.mode==='timed'&&e.motion.fresh)return 'About here now · carried on from its last report at '+seen+' (estimate)'+(e.quality==='stale'?' · may have moved':'');   // 4.62.0 test modes
   if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'About here now · worked out from its timetable and its last report at '+seen+(e.quality==='stale'?' · may have moved':'');   // 4.61.0
   if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
@@ -1383,7 +1384,7 @@ function checkMotion(m,p){
     const delay=validNum(m.delaySeconds)&&m.delaySeconds>=0&&m.delaySeconds<=600?Math.round(m.delaySeconds):0;
     const jumps=[],kk=Math.cos(p.lat*Math.PI/180);
     for(let i=1;i<pts.length;i++)if(times[i]-times[i-1]<=200&&Math.hypot((pts[i][0]-pts[i-1][0])*kk,pts[i][1]-pts[i-1][1])*111195>30)jumps.push(times[i]);
-    return {mode:'timed',pts,times,delay,jumps,forecast:m.forecast===true};
+    return {mode:'timed',pts,times,delay,jumps,forecast:m.forecast===true,fresh:m.fresh===true};
   }
   return null;
 }
@@ -1415,6 +1416,19 @@ const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')!=='0',used
 // (bus-replay.js forecastTrack). Counts of how each new frame met the bus: window.TPA_BUS_FORECAST().
 const BUS_FORECAST={on:new URLSearchParams(location.search).get('forecast')==='1',prev:new Map(),how:{}};
 window.TPA_BUS_FORECAST=()=>({on:BUS_FORECAST.on,kept:BUS_FORECAST.prev.size,how:{...BUS_FORECAST.how}});
+// 4.62.0 (Rob 15 Nov 2026 01:48: live test of the motion study's candidates - TEST ADDRESSES ONLY): ?motion=c4 or
+// ?motion=c3 shows each bus on its route line at its newest report carried on carefully (bus-replay.js freshTrack, the
+// study's exact rules); ?motion=replay is today's replay with the same measuring switched on. No ?motion = today's page,
+// unchanged (nothing below runs). Buses driven along roads, stepping buses and the zoomed-out view keep today's replay
+// in every mode. Measuring: window.TPA_BUS_MOTION() (counts, time spent building tracks), TPA_BUS_MOTION_NOW() (where each
+// route bus is drawn now, in metres along its line).
+const BUS_MOTION=(()=>{const q=new URLSearchParams(location.search).get('motion');
+  return {mode:['c4','c3','replay'].includes(q)?q:null,prev:new Map(),now:new Map(),frames:0,ms:0,points:0,how:{},buses:{}};})();
+window.TPA_BUS_MOTION=()=>({mode:BUS_MOTION.mode,frames:BUS_MOTION.frames,buildMs:Math.round(BUS_MOTION.ms*10)/10,
+  msPerFrame:BUS_MOTION.frames?Math.round(BUS_MOTION.ms/BUS_MOTION.frames*100)/100:null,points:BUS_MOTION.points,
+  how:JSON.parse(JSON.stringify(BUS_MOTION.how)),buses:{...BUS_MOTION.buses}});
+window.TPA_BUS_MOTION_NOW=()=>{const R=window.TPA_BUS_REPLAY,t=serverNow()/1000,out=[];
+  for(const [id,b] of BUS_MOTION.now)out.push([id,b.london,b.kind,b.marks?R.alongAt(b.marks,t):(b.r?R.alongAt(b.r,t-b.d):null),b.s,b.d,b.marks?0:b.d]);return out;};
 async function tileJSON(url,timeoutMs,missingOk){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{const r=await fetch(url,{signal:ctl.signal});
@@ -1479,9 +1493,15 @@ async function busTileFrame(){
   const lines=new Map();
   if(small&&meta.build){const want=[...new Set(pick.filter(it=>typeof it.s==='string'&&Array.isArray(it.r)).map(it=>it.s))];
     await Promise.race([Promise.all(want.map(sid=>busLine(meta.build,sid).then(sh=>lines.set(sid,sh)))),new Promise(ok=>setTimeout(ok,2500))]);}
+  const t0=BUS_MOTION.mode?performance.now():0;if(BUS_MOTION.mode)BUS_MOTION.now.clear();
   for(const it of pick){
-    let tr=null,fc=false;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0,delay=dOf(it);
-    if(BUS_FORECAST.on&&sh&&Array.isArray(it.f)&&typeof R.forecastTrack==='function'){
+    let tr=null,fc=false,fr=false;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0,delay=dOf(it);
+    if((BUS_MOTION.mode==='c4'||BUS_MOTION.mode==='c3')&&sh&&Array.isArray(it.r)&&typeof R.freshTrack==='function'){
+      const pv=BUS_MOTION.prev.get(it.i),ft=R.freshTrack(sh,it.r,now,kl,pv&&pv.s===it.s?pv:null,BUS_MOTION.mode);
+      if(ft){tr=ft;fr=true;BUS_MOTION.prev.delete(it.i);BUS_MOTION.prev.set(it.i,{s:it.s,marks:ft.marks,aheads:ft.aheads});
+        if(BUS_MOTION.prev.size>3000)BUS_MOTION.prev.delete(BUS_MOTION.prev.keys().next().value);
+        const g=it.i.startsWith('bus:TFLO:')?'london':'elsewhere',H=BUS_MOTION.how[g]||(BUS_MOTION.how[g]={});H[ft.first]=(H[ft.first]||0)+1;}}
+    if(!BUS_MOTION.mode&&BUS_FORECAST.on&&sh&&Array.isArray(it.f)&&typeof R.forecastTrack==='function'){
       const pv=BUS_FORECAST.prev.get(it.i),ft=R.forecastTrack(sh,it.f,now,kl,pv&&pv.s===it.s?pv.marks:null);
       if(ft){tr=ft;fc=true;BUS_FORECAST.prev.delete(it.i);BUS_FORECAST.prev.set(it.i,{s:it.s,marks:ft.marks});
         BUS_FORECAST.how[ft.how]=(BUS_FORECAST.how[ft.how]||0)+1;
@@ -1491,10 +1511,14 @@ async function busTileFrame(){
     if(!tr&&small&&Array.isArray(it.w)&&it.w.length>=2&&Array.isArray(it.r)){try{tr=R.track(roadShape(it),it.r,now,delay,kl,it.jm);}catch(_){tr=null;}}
     if(!tr)tr=R.straight(it.p,now,delay,it.j===1);
     if(!tr)continue;
+    if(BUS_MOTION.mode){const london=it.i.startsWith('bus:TFLO:'),kind=sh&&Array.isArray(it.r)?'route':(Array.isArray(it.w)?'road':'step');
+      BUS_MOTION.now.set(it.i,{london,kind,marks:fr?tr.marks:null,r:!fr&&kind==='route'?it.r:null,d:delay,s:it.s||''});
+      const k=(london?'london':'elsewhere')+' '+kind+(fr?' fresh':' replay');BUS_MOTION.buses[k]=(BUS_MOTION.buses[k]||0)+1;BUS_MOTION.points+=tr.points.length;}
     const r6=v=>Math.round(v*1e6)/1e6,pos=tr.position;
     frame.entities.push({id:it.i,label:String(it.l||'Bus').slice(0,160),badge:it.b||null,
       position:{lon:r6(pos[0]),lat:r6(pos[1]),headingDeg:null},quality:now-it.o>300?'stale':'observed',observedAt:iso(it.o),
-      motion:{mode:'timed',points:tr.points.map(q=>[r6(q[0]),r6(q[1])]),times:tr.times,delaySeconds:fc?0:delay,forecast:fc}});}
+      motion:{mode:'timed',points:tr.points.map(q=>[r6(q[0]),r6(q[1])]),times:tr.times,delaySeconds:fc||fr?0:delay,forecast:fc,fresh:fr}});}
+  if(BUS_MOTION.mode){BUS_MOTION.frames++;BUS_MOTION.ms+=performance.now()-t0;}
   return frame;
 }
 window.TPA_BUS_TILES=()=>({on:BUS_TILES.on,used:BUS_TILES.used,lines:BUS_TILES.lines.size});
