@@ -1456,6 +1456,10 @@ function n1Frame(now,items,lines){
   const E=BUS_N1.engine;
   if(BUS_N1.tState===null||now-BUS_N1.tState>60)BUS_N1.tState=Math.floor(now);
   while(BUS_N1.tState+1<=now){BUS_N1.tState+=1;E.step(BUS_N1.tState,1);}
+  // 4.63.1 (live test 15 Nov 16:50: N1's only backward nudges were at the 10-second reads, 2 in 266 there vs 0 in 9,660
+  // elsewhere): bring the icons right up to NOW before the new read, so the new track starts exactly where the old one
+  // has the bus at this moment (before, it restarted from up to 1 s earlier and could pull a slowing bus back a few metres)
+  if(now-BUS_N1.tState>0.001){E.step(now,now-BUS_N1.tState);BUS_N1.tState=now;}
   E.frame(now,items,sid=>n1Line(sid,lines.get(sid)));
   return E.plan(BUS_N1.tState,25);
 }
