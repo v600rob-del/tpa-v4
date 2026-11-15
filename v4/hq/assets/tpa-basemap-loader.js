@@ -26,6 +26,16 @@ function calmMap(gl){
   }catch(e){report('map-calm-error','calm',String(e&&e.message||e));}
 }
 Object.defineProperty(window,'TPA_CALM_MAP',{value:calmMap,writable:false,configurable:false});
+// 4.64.1 (Rob 15 Nov 2026 22:04-22:09, "as if a sheet is over the top of the map"): if the window changes size while the
+// street map is starting, MapLibre can miss it and keep drawing on a smaller canvas, so part of the map shows only the
+// plain background. Any time the canvas and its box disagree, the street map is told its real size again.
+function fitCanvas(gl){
+  try{const c=gl.getCanvas?.(),k=gl.getContainer?.();if(!c||!k||!k.clientWidth||!k.clientHeight)return false;
+    if(Math.abs(c.clientWidth-k.clientWidth)<=1&&Math.abs(c.clientHeight-k.clientHeight)<=1)return false;
+    gl.resize();report('map-canvas-refit','canvas-size',c.clientWidth+'x'+c.clientHeight+' -> '+k.clientWidth+'x'+k.clientHeight);return true;
+  }catch(e){return false;}
+}
+Object.defineProperty(window,'TPA_FIT_MAP',{value:fitCanvas,writable:false,configurable:false});
 const ready=Promise.all([loaded(leaflet,()=>!!window.L),css,lib]).then(()=>script(conf.dataset.bridge)).then(()=>script(conf.dataset.vector));
 ready.catch(e=>{report('library-resource-error','vendor-load',e.message);});
 Object.defineProperty(window,'TPA_BASEMAP',{value:Object.freeze({timings:()=>({...timings}),attach(map,opts){
@@ -41,6 +51,9 @@ gl.on('style.load',()=>calmMap(gl));if(gl.isStyleLoaded?.())calmMap(gl);   // 4.
 const finish=()=>{timings.basemapLoaded=performance.now();if(status)status.hidden=true;window.TPA_HQ_VECTOR_READY?.();report('map-loaded','liberty-style','Vector style loaded');};
 if(gl.loaded())finish();else gl.once('load',finish);
 if(typeof gl.on==='function')gl.on('idle',()=>window.TPA_HQ_MAP_IDLE?.());
+// 4.64.1: check the street map's canvas after it loads, whenever the map settles or the window changes, and every 2 s
+{const fit=()=>fitCanvas(gl);gl.once('load',fit);if(typeof map.on==='function')map.on('resize moveend zoomend',fit);
+ window.addEventListener('resize',()=>setTimeout(fit,300));setInterval(fit,2000);}
 let loadedOnce=false,switched=false;gl.once('load',()=>{loadedOnce=true;});
 gl.on('error',e=>{
 const m=String(e?.error?.message||e?.message||'Unknown MapLibre error');
