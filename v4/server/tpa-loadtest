@@ -38,11 +38,16 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.14.1'
+VERSION = '4.15.0'
 BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
 TRAFFIC = False
+# 4.15.0 (Rob 15 Nov 23:44: "how many users we can now cope with"): since HQ 4.56 (Plan B) the page no longer asks the
+# server for buses; it reads ready-made files (/tiles/bus/meta.json, then the tiles covering the screen, plus each route
+# line once), which Caddy hands out, and moves the buses itself (N1 since HQ 4.64). The pretend viewers now do exactly
+# that. --bus-api brings back the old per-viewer bus answer, for comparison with earlier runs.
+BUS_API = False
 DEFAULT_STEPS = [10, 25, 50, 100, 250, 500, 1000]
 CITIES = [('York', 53.959, -1.082), ('Hull', 53.744, -0.333), ('Leeds', 53.797, -1.547), ('Manchester', 53.479, -2.244),
           ('London', 51.507, -0.128), ('Birmingham', 52.480, -1.899), ('Nottingham', 52.954, -1.150), ('Newcastle', 54.973, -1.613),
@@ -146,6 +151,53 @@ def bbox(lat, lon, z, w=1440, h=900, pad=0.2):
     return f'west={lon - dlon:.4f}&south={lat - dlat:.4f}&east={lon + dlon:.4f}&north={lat + dlat:.4f}'
 
 
+def view_box(lat, lon, z, w=1440, h=900):
+    dpp = 360 / (256 * 2 ** z)
+    dlon, dlat = w * dpp / 2, h * dpp * math.cos(math.radians(lat)) / 2
+    return lon - dlon, lat - dlat, lon + dlon, lat + dlat
+
+
+async def bus_tiles(conn, lat, lon, z, stats, lines_seen):
+    """One bus read as the page does it (hq.js busTileFrame): meta, the tiles covering the screen, new route lines.
+    Returns seconds until the next read."""
+    slot = int(time.time() // 10)
+    body = await fetch(conn, f'/tiles/bus/meta.json?r={slot}', 'bus', stats)
+    try:
+        meta = json.loads(body) if body else None
+    except Exception:
+        meta = None
+    if not isinstance(meta, dict) or not isinstance(meta.get('small'), list) or not isinstance(meta.get('big'), list):
+        return 10.0
+    w, s, e, n = view_box(lat, lon, z)
+    if n - s > meta.get('maxSpan', 99):
+        return 10.0                                   # zoomed too far out: the page shows no buses
+    small = n - s <= meta.get('smallBelowSpan', 0)
+    size, d = (meta['small'], 's') if small else (meta['big'], 'b')
+    r0, r1, c0, c1 = math.floor(s / size[0]), math.floor(n / size[0]), math.floor(w / size[1]), math.floor(e / size[1])
+    if (r1 - r0 + 1) * (c1 - c0 + 1) > 80:
+        return 10.0
+    sids = set()
+    for r in range(r0, r1 + 1):
+        for c in range(c0, c1 + 1):
+            tb = await fetch(conn, f'/tiles/bus/{d}/{r}_{c}.json?r={slot}', 'bus', stats)
+            if small and tb:
+                try:
+                    for it in json.loads(tb):
+                        if isinstance(it, dict) and isinstance(it.get('s'), str) and isinstance(it.get('r'), list):
+                            sids.add(it['s'])
+                except Exception:
+                    pass
+    build = meta.get('build')
+    for sid in sorted(sids - lines_seen)[:40]:        # each route line once per viewer (the browser keeps it a week)
+        lines_seen.add(sid)
+        safe = urllib.parse.quote(''.join(ch if ch.isalnum() or ch in '_.-' else '_' for ch in sid)[:120])
+        await fetch(conn, f'/tiles/bus/routes/{urllib.parse.quote(str(build))}/{safe}.json', 'bus', stats)
+    try:
+        return max(5.0, min(60.0, float(meta.get('every') or 10)))
+    except Exception:
+        return 10.0
+
+
 def tiles_for(lat, lon, z):
     n = 2 ** z
     x = int((lon + 180) / 360 * n)
@@ -162,6 +214,7 @@ async def viewer(i, base, stats, stop, rnd, layers):
     due = {l: now + rnd.uniform(0, 3) for l in layers}       # a page opens: asks straight away
     pan_at = now + rnd.uniform(20, 40)
     first_pictures = TRAFFIC and 'road' in layers_all(layers)      # a page opening shows the traffic straight away
+    lines_seen = set()
     try:
         if first_pictures:
             for tz, tx, ty in tiles_for(lat, lon, min(z, 15)):
@@ -186,6 +239,9 @@ async def viewer(i, base, stats, stop, rnd, layers):
                     break
                 except asyncio.TimeoutError:
                     continue
+            if layer == 'bus' and not BUS_API:                # 4.15.0: as the page reads buses now
+                due[layer] = time.monotonic() + await bus_tiles(conn, lat, lon, z, stats, lines_seen)
+                continue
             body = await fetch(conn, f'/api/v4/components/{layer}/snapshot?{bbox(lat, lon, z)}', layer, stats)
             poll = 15.0
             if body:
@@ -388,7 +444,8 @@ async def main_async(args, base, layers):
         print('Measuring the server with nobody watching (30 s)...', flush=True)
         b0 = server_stats(True); await asyncio.sleep(30); idle_use = server_use(b0, server_stats(True))
     print(BANNER_FROM)                   # 4.14.1 (owner 13 Nov 13:09: "could do with the cut from and to part back")
-    print(f"TPA load test {VERSION} · {args.host or args.url} · steps {', '.join(map(str, args.steps))} · {args.seconds:.0f} s each")
+    print(f"TPA load test {VERSION} · {args.host or args.url} · steps {', '.join(map(str, args.steps))} · {args.seconds:.0f} s each"
+          f" · buses {'the old way (--bus-api)' if BUS_API else 'as the page reads them (bus files)'}")
     print(f"{'viewers':>8} {'req/s':>7} {'typical':>8} {'1 in 20':>8} {'failed':>7}  {'bus':>6} {'rail':>6} {'air':>6} {'traffic':>7}  server")
     for n in args.steps:
         before = server_stats(args.server_stats)
@@ -435,9 +492,12 @@ def main():
     p.add_argument('--yes', action='store_true')
     p.add_argument('--traffic', action='store_true',
                    help='also fetch traffic pictures (uses the TomTom monthly allowance: 12,000 pictures)')
+    p.add_argument('--bus-api', action='store_true',
+                   help='buses the old way (each viewer asks the server), as before HQ 4.56 - for comparison only')
     args = p.parse_args()
-    global TRAFFIC, SERVER
+    global TRAFFIC, SERVER, BUS_API
     TRAFFIC = args.traffic
+    BUS_API = args.bus_api
     if args.server_stats and not args.url:
         SERVER = server_for(args.host) or SERVER
         print(f'Server figures from: {SERVER.split("@")[1]} (where {args.host} points)')
