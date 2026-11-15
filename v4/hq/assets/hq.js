@@ -1429,6 +1429,54 @@ window.TPA_BUS_MOTION=()=>({mode:BUS_MOTION.mode,frames:BUS_MOTION.frames,buildM
   how:JSON.parse(JSON.stringify(BUS_MOTION.how)),buses:{...BUS_MOTION.buses}});
 window.TPA_BUS_MOTION_NOW=()=>{const R=window.TPA_BUS_REPLAY,t=serverNow()/1000,out=[];
   for(const [id,b] of BUS_MOTION.now)out.push([id,b.london,b.kind,b.marks?R.alongAt(b.marks,t):(b.r?R.alongAt(b.r,t-b.d):null),b.s,b.d,b.marks?0:b.d]);return out;};
+// 4.63.0 (Rob 15 Nov 2026 14:52: "an isolated, reversible browser test mode for N1 on the test site only ... simultaneous
+// live comparisons of N1, C4 and the original replay, using the same incoming data and matching vehicles") - TEST
+// ADDRESSES ONLY. ?motion=n1 draws every bus with the clean-sheet engine N1 (assets/bus-fresh.js, loaded only here).
+// ?motion=compare works out replay, C4 and N1 for every bus from the SAME tile read and shows one of them
+// (&show=n1 | c4 | replay, default n1); the other two are kept for measuring. No ?motion, or any other value: none of
+// this runs (BUS_N1.on is false) and the page is exactly 4.62.0. Zoomed out (city tiles) every mode keeps today's replay.
+const BUS_N1=(()=>{const q=new URLSearchParams(location.search),m=q.get('motion'),sh=q.get('show');
+  return {on:m==='n1'||m==='compare',compare:m==='compare',show:m==='compare'?(['n1','c4','replay'].includes(sh)?sh:'n1'):'n1',
+    engine:null,tState:null,lines:new Map(),c4prev:new Map(),now:new Map(),items:[],frames:0,ms:{replay:0,c4:0,n1:0},loading:false};})();
+function n1Ready(){
+  if(!BUS_N1.on)return false;
+  if(window.TPA_FRESH&&!BUS_N1.engine)BUS_N1.engine=new window.TPA_FRESH.FreshEngine();
+  if(BUS_N1.engine)return true;
+  if(!BUS_N1.loading){BUS_N1.loading=true;const s=document.createElement('script');s.src='/assets/bus-fresh.js';s.defer=true;document.head.append(s);}
+  return false;
+}
+function n1Line(sid,sh){                          // N1's own line type, made once from the same route line the page has
+  if(BUS_N1.lines.has(sid))return BUS_N1.lines.get(sid);
+  let L=null;try{if(sh)L=new window.TPA_FRESH.Line(sh.lon.map((x,i)=>[x,sh.lat[i]]));}catch(_){L=null;}
+  BUS_N1.lines.set(sid,L);if(BUS_N1.lines.size>3000)BUS_N1.lines.delete(BUS_N1.lines.keys().next().value);return L;
+}
+// One tile read: bring N1's icons up to now (one step a second, with what it already knew), give it the new read, then
+// plan the next 25 s for the page without changing its state. Returns {id: [[t, lon, lat, jump, how, onLineAhead], ...]}.
+function n1Frame(now,items,lines){
+  const E=BUS_N1.engine;
+  if(BUS_N1.tState===null||now-BUS_N1.tState>60)BUS_N1.tState=Math.floor(now);
+  while(BUS_N1.tState+1<=now){BUS_N1.tState+=1;E.step(BUS_N1.tState,1);}
+  E.frame(now,items,sid=>n1Line(sid,lines.get(sid)));
+  return E.plan(BUS_N1.tState,25);
+}
+function n1Track(plan,kl){                         // the page's "timed" track; a fade is two points 0.1 s apart
+  if(!Array.isArray(plan)||!plan.length)return null;
+  const pts=[],times=[];
+  for(let k=0;k<plan.length;k++){const q=plan[k];
+    if(q[3]&&k>0){pts.push(pts[pts.length-1]);times.push(Math.round((q[0]-0.1)*10)/10);}
+    pts.push([q[1],q[2]]);times.push(Math.round(q[0]*10)/10);}
+  for(let k=1;k<times.length;k++)times[k]=Math.max(times[k],times[k-1]);
+  const R=window.TPA_BUS_REPLAY,p2=R.keepLeft(pts,kl||0,pts[0][1]);
+  return {position:p2[0],points:p2,times,predictive:!!plan[0][5],how:plan[0][4]};
+}
+function trackAt(tr,t){const T=tr.times,P=tr.points;if(t<=T[0])return P[0];let i=1;while(i<T.length&&T[i]<t)i++;
+  if(i>=T.length)return P[P.length-1];const q=T[i]>T[i-1]?(t-T[i-1])/(T[i]-T[i-1]):1,a=P[i-1],b=P[i];return [a[0]+(b[0]-a[0])*q,a[1]+(b[1]-a[1])*q];}
+window.TPA_BUS_COMPARE=()=>({on:BUS_N1.on,compare:BUS_N1.compare,show:BUS_N1.show,loaded:!!BUS_N1.engine,frames:BUS_N1.frames,
+  msPerFrame:Object.fromEntries(Object.entries(BUS_N1.ms).map(([k,v])=>[k,BUS_N1.frames?Math.round(v/BUS_N1.frames*100)/100:null])),
+  buses:BUS_N1.now.size,n1:BUS_N1.engine?{buses:BUS_N1.engine.buses.size,learned:BUS_N1.engine.learn.n,stats:BUS_N1.engine.stats}:null});
+// where each engine draws each bus at server time t (seconds), and what the last tile read said (for measuring only)
+window.TPA_BUS_COMPARE_AT=t=>{const out=[];for(const [id,b] of BUS_N1.now)out.push([id,b.london,b.kind,b.s,trackAt(b.replay,t),b.c4?trackAt(b.c4,t):null,b.n1?trackAt(b.n1,t):null,b.how,b.d]);return out;};
+window.TPA_BUS_COMPARE_ITEMS=()=>BUS_N1.items.map(it=>[it.i,it.p,it.s||'',Array.isArray(it.r)?it.r:null]);
 async function tileJSON(url,timeoutMs,missingOk){
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),timeoutMs);
   try{const r=await fetch(url,{signal:ctl.signal});
@@ -1494,7 +1542,11 @@ async function busTileFrame(){
   if(small&&meta.build){const want=[...new Set(pick.filter(it=>typeof it.s==='string'&&Array.isArray(it.r)).map(it=>it.s))];
     await Promise.race([Promise.all(want.map(sid=>busLine(meta.build,sid).then(sh=>lines.set(sid,sh)))),new Promise(ok=>setTimeout(ok,2500))]);}
   const t0=BUS_MOTION.mode?performance.now():0;if(BUS_MOTION.mode)BUS_MOTION.now.clear();
+  let n1Plan=null;                                   // 4.63.0 test addresses only (BUS_N1.on false on every other address)
+  if(BUS_N1.on&&small&&n1Ready()){const a=performance.now();try{n1Plan=n1Frame(now,pick,lines);}catch(err){n1Plan=null;console.warn('N1',err);}
+    BUS_N1.ms.n1+=performance.now()-a;BUS_N1.frames++;if(BUS_N1.compare){BUS_N1.now.clear();BUS_N1.items=pick;}}
   for(const it of pick){
+    const tA=n1Plan?performance.now():0;
     let tr=null,fc=false,fr=false;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0,delay=dOf(it);
     if((BUS_MOTION.mode==='c4'||BUS_MOTION.mode==='c3')&&sh&&Array.isArray(it.r)&&typeof R.freshTrack==='function'){
       const pv=BUS_MOTION.prev.get(it.i),ft=R.freshTrack(sh,it.r,now,kl,pv&&pv.s===it.s?pv:null,BUS_MOTION.mode);
@@ -1511,6 +1563,20 @@ async function busTileFrame(){
     if(!tr&&small&&Array.isArray(it.w)&&it.w.length>=2&&Array.isArray(it.r)){try{tr=R.track(roadShape(it),it.r,now,delay,kl,it.jm);}catch(_){tr=null;}}
     if(!tr)tr=R.straight(it.p,now,delay,it.j===1);
     if(!tr)continue;
+    if(n1Plan){                                      // 4.63.0: N1 (and, comparing, C4) from the same read
+      BUS_N1.ms.replay+=performance.now()-tA;
+      const kl0=validNum(meta.keepLeft)?meta.keepLeft:0;let c4=null;
+      if(BUS_N1.compare&&sh&&Array.isArray(it.r)){const b=performance.now();
+        const pv=BUS_N1.c4prev.get(it.i);c4=R.freshTrack(sh,it.r,now,kl0,pv&&pv.s===it.s?pv:null,'c4');
+        if(c4){BUS_N1.c4prev.delete(it.i);BUS_N1.c4prev.set(it.i,{s:it.s,marks:c4.marks,aheads:c4.aheads});
+          if(BUS_N1.c4prev.size>3000)BUS_N1.c4prev.delete(BUS_N1.c4prev.keys().next().value);}
+        BUS_N1.ms.c4+=performance.now()-b;}
+      const b=performance.now(),n1=n1Track(n1Plan[it.i],kl0);BUS_N1.ms.n1+=performance.now()-b;
+      if(BUS_N1.compare)BUS_N1.now.set(it.i,{london:it.i.startsWith('bus:TFLO:'),kind:sh&&Array.isArray(it.r)?'route':(Array.isArray(it.w)?'road':'step'),
+        s:it.s||'',replay:tr,c4,n1,how:n1?n1.how:null,d:delay});
+      if(BUS_N1.show==='n1'&&n1){tr=n1;fr=n1.predictive;}
+      else if(BUS_N1.show==='c4'&&c4){tr=c4;fr=true;}
+    }
     if(BUS_MOTION.mode){const london=it.i.startsWith('bus:TFLO:'),kind=sh&&Array.isArray(it.r)?'route':(Array.isArray(it.w)?'road':'step');
       BUS_MOTION.now.set(it.i,{london,kind,marks:fr?tr.marks:null,r:!fr&&kind==='route'?it.r:null,d:delay,s:it.s||''});
       const k=(london?'london':'elsewhere')+' '+kind+(fr?' fresh':' replay');BUS_MOTION.buses[k]=(BUS_MOTION.buses[k]||0)+1;BUS_MOTION.points+=tr.points.length;}
