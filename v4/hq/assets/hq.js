@@ -1013,10 +1013,25 @@ function startFollow(e){
 // 4.18.2: coming back to the tab while following, the map goes straight to where the vehicle is now (it kept going)
 document.addEventListener('visibilitychange',()=>{
   if(document.visibilityState!=='visible'||!follow||!follow.e||!map)return;
-  const p=estimate(follow.e,serverNow());if(!p)return;
+  const p=estimate(currentEntity({component:follow.comp,id:follow.id})||follow.e,serverNow());if(!p)return;   // 4.64.2: its newest data
   map.setView([p.lat,p.lon],map.getZoom(),{animate:false});follow.from=follow.to=null;follow.started=performance.now();
   refetchLiveView();paint();
 });
+// 4.64.2 (Rob 15 Nov 22:56: followed Bus 43, "went to make a brew. When i came back, there it wasn't"): Follow Me moved the
+// camera only when the page drew a frame. With the screen asleep or the window covered no frames are drawn, but the bus data
+// kept coming: the bus drove out of the view, dropped out of the data and Follow Me ended. While nothing is being drawn the
+// map is now moved to the followed vehicle every 2 s by a timer, so it stays in view and in the data; drawn again, it is
+// already there and followFrame carries on smoothly.
+function followKeepUp(){
+  if(!follow||!map||zoomAnim||performance.now()-lastRaf<1500)return;   // being drawn: followFrame does it
+  const e=currentEntity({component:follow.comp,id:follow.id})||follow.e;if(!e)return;
+  const p=estimate(e,serverNow());if(!p)return;
+  followPanning=true;try{map.setView([p.lat,p.lon],map.getZoom(),{animate:false});}finally{followPanning=false;}
+  follow.from=follow.to=null;follow.started=performance.now();follow.keptUp=(follow.keptUp||0)+1;
+  if(performance.now()-follow.lastAsk>1000){follow.lastAsk=performance.now();refetchLiveView();}
+}
+setInterval(followKeepUp,2000);
+window.TPA_HQ_FOLLOW=()=>({on:!!follow,id:follow?.id||null,keptUp:follow?.keptUp||0});
 function stopFollow(){
   if(!follow)return;follow=null;settleMap();
   if(map){map.options.scrollWheelZoom=true;map.options.touchZoom=true;map.options.doubleClickZoom=true;}
@@ -1549,7 +1564,7 @@ async function busTileFrame(){
   const cy=(s+n)/2,cx=(w+e)/2,chosen=[];
   for(const it of items.values()){const p=Array.isArray(it.p)?it.p:[];if(!p.length)continue;const last=p[p.length-1];
     const recent=now-dOf(it)-120;
-    if(!(inView(last)||p.some(q=>q[0]>=recent&&inView(q))))continue;
+    if(!(inView(last)||p.some(q=>q[0]>=recent&&inView(q))||(follow&&follow.comp==='bus'&&it.i===follow.id)))continue;   // 4.64.2: never drop the followed bus
     chosen.push([(last[2]-cy)**2+(last[1]-cx)**2,it]);}
   chosen.sort((a,b)=>a[0]-b[0]);
   const max=Number.isInteger(meta.maxPerView)?meta.maxPerView:400;
