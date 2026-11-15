@@ -44,7 +44,9 @@ const P0={
   stepGlideMax:80,              // no road known: glide straight only between reports this close
   borrowTol:30, borrowMinMove:30, borrowKeepTol:45,
   continuityM:25,
-  focusCatchS:6,                // HQ 4.63.2: the followed bus (Follow Me) never fades - it closes a big gap a sixth a second
+  focusCatchS:6,                // HQ 4.63.2: the followed bus (Follow Me) never fades - it closes a big gap instead
+  focusVmax:20,                 // 4.63.3 (Rob 15 Nov 20:30: catching up "looks like a formula one car"): never faster than 20 m/s
+                                // (45 mph, N1's top speed for any bus), picking up speed like a bus (accUp)
 };
 // ---------- geometry: a line [[lon,lat],...] with distances (metres) along it
 class Line{
@@ -243,7 +245,9 @@ class FreshEngine{
     }
   }
   // HQ 4.63.2: the followed bus, far behind, closes the gap smoothly (forwards only, never a fade)
-  focusStep(d,gap,base,dt){const move=Math.max(d.v*dt,Math.max(0,gap)*Math.min(1,dt/this.P.focusCatchS));d.m+=Math.min(move,Math.max(0,gap));d.v=Math.max(base,Math.min(move/Math.max(dt,0.001),this.P.vmaxAbs));
+  focusStep(d,gap,base,dt){const P=this.P,g=Math.max(0,gap);
+    const want=Math.min(P.focusVmax,Math.max(base,base+g/P.focusCatchS)),dv=want-d.v;
+    d.v+=Math.max(-P.accDown*dt,Math.min(P.accUp*dt,dv));d.v=Math.max(0,Math.min(P.focusVmax,d.v));d.m+=Math.min(d.v*dt,g);
     if(!this.planning)this.stats.focusSaves++;}
   // HQ 4.63.0: positions for the next H seconds from t0 (one a second) WITHOUT changing the engine's state, so the page
   // can be given a track to follow until the next tile read. {id: [[t, lon, lat, jump, how, predictive], ...]}
