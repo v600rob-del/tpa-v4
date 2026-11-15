@@ -729,6 +729,7 @@ function infoText(e,est){
   if(e.component==='busstations')return ({coach:'Coach station',interchange:'Interchange'}[e.variant]||'Bus station')+' · live times where buses are seen';   // 4.54.0
   if(e.motion&&e.motion.mode==='timed'&&e.motion.fresh)return 'About here now · carried on from its last report at '+seen+' (estimate)'+(e.quality==='stale'?' · may have moved':'');   // 4.62.0 test modes
   if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'About here now · worked out from its timetable and its last report at '+seen+(e.quality==='stale'?' · may have moved':'');   // 4.61.0
+  if(e.motion&&e.motion.mode==='timed'&&!e.motion.delay)return 'Following its reported journey · last reported '+seen+(e.quality==='stale'?' · may have moved':'');   // 4.64.0 (N1, no line ahead)
   if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
   if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
@@ -1439,9 +1440,13 @@ window.TPA_BUS_MOTION_NOW=()=>{const R=window.TPA_BUS_REPLAY,t=serverNow()/1000,
 // ?motion=compare works out replay, C4 and N1 for every bus from the SAME tile read and shows one of them
 // (&show=n1 | c4 | replay, default n1); the other two are kept for measuring. No ?motion, or any other value: none of
 // this runs (BUS_N1.on is false) and the page is exactly 4.62.0. Zoomed out (city tiles) every mode keeps today's replay.
+// 4.64.0 (Rob 15 Nov 2026 21:07: "lets get n1 moving. It has proved its worthiness"): N1 is now how buses move on the
+// NORMAL address too. Today's replay stays one address away: ?motion=replay (and the other test modes ?motion=c4 / c3 and
+// ?forecast=1 keep their own engines). Zoomed out (city tiles) every address still keeps the replay.
 const BUS_N1=(()=>{const q=new URLSearchParams(location.search),m=q.get('motion'),sh=q.get('show');
-  return {on:m==='n1'||m==='compare',compare:m==='compare',show:m==='compare'?(['n1','c4','replay'].includes(sh)?sh:'n1'):'n1',
+  return {on:!['c4','c3','replay'].includes(m)&&q.get('forecast')!=='1',compare:m==='compare',show:m==='compare'?(['n1','c4','replay'].includes(sh)?sh:'n1'):'n1',
     engine:null,tState:null,focus:null,lines:new Map(),c4prev:new Map(),now:new Map(),items:[],frames:0,ms:{replay:0,c4:0,n1:0},loading:false};})();
+setTimeout(()=>{if(BUS_N1.on)n1Ready();},0);   // 4.64.0: start fetching N1 at once, so the first bus read already uses it
 function n1Ready(){
   if(!BUS_N1.on)return false;
   if(window.TPA_FRESH&&!BUS_N1.engine)BUS_N1.engine=new window.TPA_FRESH.FreshEngine();
@@ -1452,7 +1457,8 @@ function n1Ready(){
 function n1Line(sid,sh){                          // N1's own line type, made once from the same route line the page has
   if(BUS_N1.lines.has(sid))return BUS_N1.lines.get(sid);
   let L=null;try{if(sh)L=new window.TPA_FRESH.Line(sh.lon.map((x,i)=>[x,sh.lat[i]]));}catch(_){L=null;}
-  BUS_N1.lines.set(sid,L);if(BUS_N1.lines.size>3000)BUS_N1.lines.delete(BUS_N1.lines.keys().next().value);return L;
+  if(L){BUS_N1.lines.set(sid,L);if(BUS_N1.lines.size>3000)BUS_N1.lines.delete(BUS_N1.lines.keys().next().value);}   // 4.64.0: "no line yet" is not remembered
+  return L;
 }
 // One tile read: bring N1's icons up to now (one step a second, with what it already knew), give it the new read, then
 // plan the next 25 s for the page without changing its state. Returns {id: [[t, lon, lat, jump, how, onLineAhead], ...]}.
@@ -1559,7 +1565,7 @@ async function busTileFrame(){
     BUS_N1.ms.n1+=performance.now()-a;BUS_N1.frames++;if(BUS_N1.compare){BUS_N1.now.clear();BUS_N1.items=pick;}}
   for(const it of pick){
     const tA=n1Plan?performance.now():0;
-    let tr=null,fc=false,fr=false;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0,delay=dOf(it);
+    let tr=null,fc=false,fr=false,n1d=false;const sh=small&&it.s?lines.get(it.s):null,kl=validNum(meta.keepLeft)?meta.keepLeft:0,delay=dOf(it);
     if((BUS_MOTION.mode==='c4'||BUS_MOTION.mode==='c3')&&sh&&Array.isArray(it.r)&&typeof R.freshTrack==='function'){
       const pv=BUS_MOTION.prev.get(it.i),ft=R.freshTrack(sh,it.r,now,kl,pv&&pv.s===it.s?pv:null,BUS_MOTION.mode);
       if(ft){tr=ft;fr=true;BUS_MOTION.prev.delete(it.i);BUS_MOTION.prev.set(it.i,{s:it.s,marks:ft.marks,aheads:ft.aheads});
@@ -1586,7 +1592,7 @@ async function busTileFrame(){
       const b=performance.now(),n1=n1Track(n1Plan[it.i],kl0,it.i===BUS_N1.focus);BUS_N1.ms.n1+=performance.now()-b;
       if(BUS_N1.compare)BUS_N1.now.set(it.i,{london:it.i.startsWith('bus:TFLO:'),kind:sh&&Array.isArray(it.r)?'route':(Array.isArray(it.w)?'road':'step'),
         s:it.s||'',replay:tr,c4,n1,how:n1?n1.how:null,d:delay});
-      if(BUS_N1.show==='n1'&&n1){tr=n1;fr=n1.predictive;}
+      if(BUS_N1.show==='n1'&&n1){tr=n1;fr=n1.predictive;n1d=true;}
       else if(BUS_N1.show==='c4'&&c4){tr=c4;fr=true;}
     }
     if(BUS_MOTION.mode){const london=it.i.startsWith('bus:TFLO:'),kind=sh&&Array.isArray(it.r)?'route':(Array.isArray(it.w)?'road':'step');
@@ -1595,7 +1601,7 @@ async function busTileFrame(){
     const r6=v=>Math.round(v*1e6)/1e6,pos=tr.position;
     frame.entities.push({id:it.i,label:String(it.l||'Bus').slice(0,160),badge:it.b||null,
       position:{lon:r6(pos[0]),lat:r6(pos[1]),headingDeg:null},quality:now-it.o>300?'stale':'observed',observedAt:iso(it.o),
-      motion:{mode:'timed',points:tr.points.map(q=>[r6(q[0]),r6(q[1])]),times:tr.times,delaySeconds:fc||fr?0:delay,forecast:fc,fresh:fr}});}
+      motion:{mode:'timed',points:tr.points.map(q=>[r6(q[0]),r6(q[1])]),times:tr.times,delaySeconds:fc||fr||n1d?0:delay,forecast:fc,fresh:fr}});}
   if(BUS_MOTION.mode){BUS_MOTION.frames++;BUS_MOTION.ms+=performance.now()-t0;}
   return frame;
 }
