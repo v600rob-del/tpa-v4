@@ -689,7 +689,10 @@ function noteNewFrame(f,now,fresh){
      if(corrections.size>5000)corrections.clear();corrections.set(e.id,(corrections.get(e.id)||0)+1);}
     // 4.2.1: a replayed ("timed") vehicle is never slid across a big gap: its track is where it really went,
     // so a big difference means it was seen somewhere else (a jump) - fade it in there.
-    if(e.motion&&e.motion.mode==='timed'){const [tx,ty]=metresXY(was,next);if(Math.hypot(tx,ty)>30&&!REDUCED)blends.set(k,{hop:true,jump:true,t0:now});else blends.delete(k);continue;}   // 4.13.2: the same track again: no correction (it slowed every bus down at each new answer)
+    if(e.motion&&e.motion.mode==='timed'){const [tx,ty]=metresXY(was,next);
+      // 4.63.2: N1 test addresses only - the followed bus is eased across (camera with it), never faded
+      if(Math.hypot(tx,ty)>30&&!REDUCED&&BUS_N1.on&&BUS_N1.show==='n1'&&follow?.key===k){blends.set(k,{dlon:was.lon-next.lon,dlat:was.lat-next.lat,t0:now,dur:BLEND_MS});continue;}
+      if(Math.hypot(tx,ty)>30&&!REDUCED)blends.set(k,{hop:true,jump:true,t0:now});else blends.delete(k);continue;}   // 4.13.2: the same track again: no correction (it slowed every bus down at each new answer)
     const ahead=estimate(e,now+1000),[mx,my]=ahead?metresXY(next,ahead):[0,0],speed=Math.hypot(mx,my);
     const [gx,gy]=metresXY(was,next),gap=Math.hypot(gx,gy);
     // 4.19.0 (owner 14:09, 1P77 into Manchester Victoria: "zoomed across the map ... not on visible train lines"): a train is
@@ -1004,6 +1007,7 @@ function startFollow(e){
   if(m){follow.from=follow.to=[+m[1],+m[2]];}
   map.options.scrollWheelZoom='center';map.options.touchZoom='center';map.options.doubleClickZoom='center';
   updateFollowUI();paint();
+  if(BUS_N1.on&&e.component==='bus')getComponent('bus');   // 4.63.2: N1 knows at once which bus is followed (never faded)
 }
 // 4.18.2: coming back to the tab while following, the map goes straight to where the vehicle is now (it kept going)
 document.addEventListener('visibilitychange',()=>{
@@ -1437,7 +1441,7 @@ window.TPA_BUS_MOTION_NOW=()=>{const R=window.TPA_BUS_REPLAY,t=serverNow()/1000,
 // this runs (BUS_N1.on is false) and the page is exactly 4.62.0. Zoomed out (city tiles) every mode keeps today's replay.
 const BUS_N1=(()=>{const q=new URLSearchParams(location.search),m=q.get('motion'),sh=q.get('show');
   return {on:m==='n1'||m==='compare',compare:m==='compare',show:m==='compare'?(['n1','c4','replay'].includes(sh)?sh:'n1'):'n1',
-    engine:null,tState:null,lines:new Map(),c4prev:new Map(),now:new Map(),items:[],frames:0,ms:{replay:0,c4:0,n1:0},loading:false};})();
+    engine:null,tState:null,focus:null,lines:new Map(),c4prev:new Map(),now:new Map(),items:[],frames:0,ms:{replay:0,c4:0,n1:0},loading:false};})();
 function n1Ready(){
   if(!BUS_N1.on)return false;
   if(window.TPA_FRESH&&!BUS_N1.engine)BUS_N1.engine=new window.TPA_FRESH.FreshEngine();
@@ -1460,14 +1464,18 @@ function n1Frame(now,items,lines){
   // elsewhere): bring the icons right up to NOW before the new read, so the new track starts exactly where the old one
   // has the bus at this moment (before, it restarted from up to 1 s earlier and could pull a slowing bus back a few metres)
   if(now-BUS_N1.tState>0.001){E.step(now,now-BUS_N1.tState);BUS_N1.tState=now;}
+  // 4.63.2 (Rob 15 Nov 18:00, Follow Me in Hull: the bus "briefly vanishes or slips out of view" just after some reads - N1
+  // faded it across a gap and the camera jumped with it): the followed bus is never faded; N1 glides it instead. Set after
+  // the catch-up steps above, so they still replay exactly the track already on screen.
+  E.focus=BUS_N1.focus=follow&&follow.comp==='bus'?follow.id:null;
   E.frame(now,items,sid=>n1Line(sid,lines.get(sid)));
   return E.plan(BUS_N1.tState,25);
 }
-function n1Track(plan,kl){                         // the page's "timed" track; a fade is two points 0.1 s apart
+function n1Track(plan,kl,noFade){                  // the page's "timed" track; a fade is two points 0.1 s apart (4.63.2: never for the followed bus)
   if(!Array.isArray(plan)||!plan.length)return null;
   const pts=[],times=[];
   for(let k=0;k<plan.length;k++){const q=plan[k];
-    if(q[3]&&k>0){pts.push(pts[pts.length-1]);times.push(Math.round((q[0]-0.1)*10)/10);}
+    if(q[3]&&k>0&&!noFade){pts.push(pts[pts.length-1]);times.push(Math.round((q[0]-0.1)*10)/10);}
     pts.push([q[1],q[2]]);times.push(Math.round(q[0]*10)/10);}
   for(let k=1;k<times.length;k++)times[k]=Math.max(times[k],times[k-1]);
   const R=window.TPA_BUS_REPLAY,p2=R.keepLeft(pts,kl||0,pts[0][1]);
@@ -1475,7 +1483,7 @@ function n1Track(plan,kl){                         // the page's "timed" track; 
 }
 function trackAt(tr,t){const T=tr.times,P=tr.points;if(t<=T[0])return P[0];let i=1;while(i<T.length&&T[i]<t)i++;
   if(i>=T.length)return P[P.length-1];const q=T[i]>T[i-1]?(t-T[i-1])/(T[i]-T[i-1]):1,a=P[i-1],b=P[i];return [a[0]+(b[0]-a[0])*q,a[1]+(b[1]-a[1])*q];}
-window.TPA_BUS_COMPARE=()=>({on:BUS_N1.on,compare:BUS_N1.compare,show:BUS_N1.show,loaded:!!BUS_N1.engine,frames:BUS_N1.frames,
+window.TPA_BUS_COMPARE=()=>({on:BUS_N1.on,compare:BUS_N1.compare,show:BUS_N1.show,loaded:!!BUS_N1.engine,frames:BUS_N1.frames,focus:BUS_N1.focus||null,
   msPerFrame:Object.fromEntries(Object.entries(BUS_N1.ms).map(([k,v])=>[k,BUS_N1.frames?Math.round(v/BUS_N1.frames*100)/100:null])),
   buses:BUS_N1.now.size,n1:BUS_N1.engine?{buses:BUS_N1.engine.buses.size,learned:BUS_N1.engine.learn.n,stats:BUS_N1.engine.stats}:null});
 // where each engine draws each bus at server time t (seconds), and what the last tile read said (for measuring only)
@@ -1575,7 +1583,7 @@ async function busTileFrame(){
         if(c4){BUS_N1.c4prev.delete(it.i);BUS_N1.c4prev.set(it.i,{s:it.s,marks:c4.marks,aheads:c4.aheads});
           if(BUS_N1.c4prev.size>3000)BUS_N1.c4prev.delete(BUS_N1.c4prev.keys().next().value);}
         BUS_N1.ms.c4+=performance.now()-b;}
-      const b=performance.now(),n1=n1Track(n1Plan[it.i],kl0);BUS_N1.ms.n1+=performance.now()-b;
+      const b=performance.now(),n1=n1Track(n1Plan[it.i],kl0,it.i===BUS_N1.focus);BUS_N1.ms.n1+=performance.now()-b;
       if(BUS_N1.compare)BUS_N1.now.set(it.i,{london:it.i.startsWith('bus:TFLO:'),kind:sh&&Array.isArray(it.r)?'route':(Array.isArray(it.w)?'road':'step'),
         s:it.s||'',replay:tr,c4,n1,how:n1?n1.how:null,d:delay});
       if(BUS_N1.show==='n1'&&n1){tr=n1;fr=n1.predictive;}

@@ -44,6 +44,7 @@ const P0={
   stepGlideMax:80,              // no road known: glide straight only between reports this close
   borrowTol:30, borrowMinMove:30, borrowKeepTol:45,
   continuityM:25,
+  focusCatchS:6,                // HQ 4.63.2: the followed bus (Follow Me) never fades - it closes a big gap a sixth a second
 };
 // ---------- geometry: a line [[lon,lat],...] with distances (metres) along it
 class Line{
@@ -98,7 +99,7 @@ class Learner{
 // ---------- the engine
 class FreshEngine{
   constructor(opts){this.P=Object.assign({},P0,opts||{});this.buses=new Map();this.lib=new Map();this.learn=new Learner(this.P);
-    this.stats={borrowTried:0,borrowOk:0,hops:{},frames:0};}
+    this.stats={borrowTried:0,borrowOk:0,hops:{},frames:0,focusSaves:0};this.focus=null;}
   // One page read: the tile items (exactly what the page gets) and a function giving a route line (Line) by its id.
   frame(now,items,lineOf){
     const P=this.P,seen=new Set();this.stats.frames++;
@@ -205,13 +206,15 @@ class FreshEngine{
       B.d=d;d.jump=false;
       let goal=tg.m;
       // a stretch it can't be drawn along: go up to its start, then fade across
-      for(const [a,b] of path.hops){if(d.m<=a+0.5&&goal>a){if(d.m>=a-0.5&&goal>=b){d.m=b;d.jump=true;why='no way between reports';}else goal=Math.min(goal,a);break;}}
+      const F=B.id===this.focus;            // HQ 4.63.2 (Rob 15 Nov 18:00, Follow Me in Hull): the followed bus is never faded
+      if(!F)for(const [a,b] of path.hops){if(d.m<=a+0.5&&goal>a){if(d.m>=a-0.5&&goal>=b){d.m=b;d.jump=true;why='no way between reports';}else goal=Math.min(goal,a);break;}}
       const gap=goal-d.m;
       if(!d.jump){
         if(path.predictive){
           const base=tg.v,vmax=Math.min(P.vmaxAbs,Math.max(base*P.vmaxShare,base+P.vmaxAdd));
-          if(gap>P.jumpGap||(gap>60&&gap/Math.max(0.5,vmax-base)>P.catchMaxS)){d.m=goal;d.v=base;d.jump=true;d.aheadSince=null;why='too far behind';}
-          else if(gap<-P.aheadFadeM&&d.aheadSince!==null&&t-d.aheadSince>=P.aheadFadeS){d.m=goal;d.v=base;d.jump=true;d.aheadSince=null;why='ahead too long';}
+          if(F&&(gap>P.jumpGap||(gap>60&&gap/Math.max(0.5,vmax-base)>P.catchMaxS))){this.focusStep(d,gap,base,dt);}
+          else if(gap>P.jumpGap||(gap>60&&gap/Math.max(0.5,vmax-base)>P.catchMaxS)){d.m=goal;d.v=base;d.jump=true;d.aheadSince=null;why='too far behind';}
+          else if(!F&&gap<-P.aheadFadeM&&d.aheadSince!==null&&t-d.aheadSince>=P.aheadFadeS){d.m=goal;d.v=base;d.jump=true;d.aheadSince=null;why='ahead too long';}   // (followed: waits)
           else{
             if(gap<-P.aheadFadeM){if(d.aheadSince===null)d.aheadSince=t;}else d.aheadSince=null;
             let want=Math.max(0,Math.min(vmax,base+gap/P.TC));
@@ -220,7 +223,8 @@ class FreshEngine{
           }
         }else{
           // no path ahead: travel to the newest report at the bus's own pace (faster if far behind), never past it
-          if(gap>P.jumpGap){d.m=goal;d.v=0;d.jump=true;why='too far behind';}
+          if(F&&gap>P.jumpGap)this.focusStep(d,gap,0,dt);
+          else if(gap>P.jumpGap){d.m=goal;d.v=0;d.jump=true;why='too far behind';}
           else{const left=tg.arriveBy-t,fast=Math.min(P.vmaxAbs,Math.max(tg.glideV*P.vmaxShare,tg.glideV+P.vmaxAdd,gap/P.glideTC));
             const want=gap<=0.5?0:(left>2?Math.min(fast,gap/left):fast);
             const dv=want-d.v;d.v+=Math.max(-P.accDown*dt,Math.min(P.accUp*dt,dv));d.v=Math.max(0,d.v);
@@ -238,6 +242,9 @@ class FreshEngine{
       if(tg.how.startsWith('held'))d.how=tg.how;
     }
   }
+  // HQ 4.63.2: the followed bus, far behind, closes the gap smoothly (forwards only, never a fade)
+  focusStep(d,gap,base,dt){const move=Math.max(d.v*dt,Math.max(0,gap)*Math.min(1,dt/this.P.focusCatchS));d.m+=Math.min(move,Math.max(0,gap));d.v=Math.max(base,Math.min(move/Math.max(dt,0.001),this.P.vmaxAbs));
+    if(!this.planning)this.stats.focusSaves++;}
   // HQ 4.63.0: positions for the next H seconds from t0 (one a second) WITHOUT changing the engine's state, so the page
   // can be given a track to follow until the next tile read. {id: [[t, lon, lat, jump, how, predictive], ...]}
   plan(t0,H){
