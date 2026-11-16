@@ -201,6 +201,7 @@ unit bus "bus engine (BODS, whole-country mode)" TPA_BUS_ENGINE_PORT 8781 \
 fi
 unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
     "Environment=TPA_AIR_ALWAYS_ON=1" 150M air.env v4/engines/air/air_engine.py   # air.env: FlyItalyADSB key (11 Nov)
+# kit 4.67 (Rob 16 Nov 2026 09:49, load test: the web front door reached 77% of 150 MB at 1,500 viewers): tpa-web 512 MB.
 # kit 4.66 (rail 1.6.0, Rob 16 Nov 2026 07:25 "let's proceed"): the train engine writes ready-made train files into memory
 # (/run/tpa-rail-tiles), readable by Caddy, like the bus tiles - so trains no longer cost the engine work per viewer
 RAIL_RUN=$'\nRuntimeDirectory=tpa-rail-tiles\nRuntimeDirectoryMode=0755'
@@ -233,7 +234,7 @@ Environment=XDG_DATA_HOME=/var/lib/caddy XDG_CONFIG_HOME=/var/lib/caddy
 ExecStart=/usr/local/bin/caddy run --config /etc/tpa-web/Caddyfile --adapter caddyfile
 Restart=always
 RestartSec=5
-MemoryMax=150M
+MemoryMax=512M
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
