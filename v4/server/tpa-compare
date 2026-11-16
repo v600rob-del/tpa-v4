@@ -37,7 +37,7 @@ HISTORY = Path(os.environ.get('TPA_COMPARE_HISTORY', '~/tpa-compare-history.json
 OFF_FILE = '/var/lib/tpa/bus/prepare-test-off'
 BUS_ADDR = ('B=$(sudo -n sed -n "s/^TPA_REMOTE_BUS=//p" /etc/tpa/remote.env 2>/dev/null); '
             'R=${B:+remote}; [ -n "$B" ] || B=$(sudo -n cat /etc/tpa/bus-bind 2>/dev/null); B=${B:-127.0.0.1}; ')
-ROW = re.compile(r'^\s*(\d+)\s+([\d.]+)\s+(\S+)\s+(\S+)\s+([\d.]+)%\s+(\S+)')
+ROW = re.compile(r'^\s*(\d+)\s+(?:\d+%\s+)?([\d.]+)\s+(\S+)\s+(\S+)\s+([\d.]+)%\s+(\S+)')   # tpa-loadtest 4.17.0 adds 'served'
 
 
 def load_loadtest(path):

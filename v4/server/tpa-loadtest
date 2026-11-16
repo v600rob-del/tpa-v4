@@ -14,9 +14,12 @@ often as those layers say (every 5-60 s), accepts gzip like a browser (4.14.0), 
 nothing on the server is changed. Between steps it reads the server's memory and processor use over SSH
 (systemctl show - no admin rights needed).
 
-Stops at the first step where: the typical (median) answer takes over 2 s, 1 in 20 answers takes over 5 s,
-more than 2% of requests fail, or a part of the server is above 90% of its memory limit. A step is also cut
-short if, in any 10 seconds, more than 20% of requests fail.
+4.17.0 - the TPA standard (agreed with Rob, 16 Nov 2026): a step passes only if at least 99% of its viewers got a
+fresh update of every layer at least every 12 s for the whole step, 19 in 20 reads were complete within 2 s, and
+fewer than 1 in 100 requests failed (and no part of the server is above 90% of its memory limit). A step is also
+cut short if, in any 10 seconds, more than 20% of requests fail. If Cloud Shell itself falls behind (the 'tester'
+column, over 0.5 s), the step measured the tester, not the server, and the run stops there. The result says how
+many people were PROVEN to get the TPA standard, and what that means in visitors a day.
 
 Options: --steps 10,25,50 --seconds 90 --host test.tpalive.co.uk --no-server-stats --yes
 (--url http://127.0.0.1:8778 and TPA_LOADTEST_PASSWORD are for the builders' own tests.)
@@ -38,7 +41,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.16.0'
+VERSION = '4.17.0'
 BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
@@ -72,7 +75,16 @@ def server_for(host, resolve=None):
         return None
     return 'ubuntu@' + ip if re.fullmatch(r'\d{1,3}(\.\d{1,3}){3}', ip or '') else None
 KEY = os.path.expanduser('~/.ssh/tpa_v4_server')
-LIMITS = {'p50': 2.0, 'p95': 5.0, 'fail': 0.02, 'mem': 0.90}
+# 4.17.0 (Rob 16 Nov 2026 10:34-10:37: "When I want to see figures for how many users we can cope with it needs to
+# actually mean that" ... "waiting a couple or so seconds would be fine"; agreed rules, "the TPA standard"):
+#   1. every viewer gets a fresh update of every layer at least every 12 s (the page's 10 s, plus 2 s grace);
+#   2. 19 in 20 reads (a whole update, or a new area after panning) are complete within 2 s;
+#   3. fewer than 1 in 100 requests fail.
+# A step passes only if at least 99% of its viewers got rule 1 for the whole step. Each viewer now reads its layers
+# side by side and the squares of a read at the same time (as a browser does), over CONNS_PER_VIEWER connections.
+# The tester itself is watched: if Cloud Shell falls behind (TESTER_LAG), the step says nothing about the server.
+LIMITS = {'served': 0.99, 'p95': 2.0, 'fail': 0.01, 'mem': 0.90, 'grace': 2.0, 'lag': 0.5}
+CONNS_PER_VIEWER = 2
 
 
 class Conn:
@@ -139,6 +151,10 @@ class Conn:
 class Stats:
     def __init__(self):
         self.rows = []          # (time, layer, seconds, ok)
+        self.reads = []         # 4.17.0: (viewer, layer, started, finished, complete, pace in seconds)
+
+    def read(self, viewer, layer, t0, t1, ok, poll):
+        self.reads.append((viewer, layer, t0, t1, ok, poll))
 
     def add(self, layer, seconds, ok):
         self.rows.append((time.monotonic(), layer, seconds, ok))
@@ -160,45 +176,69 @@ def view_box(lat, lon, z, w=1440, h=900):
     return lon - dlon, lat - dlat, lon + dlon, lat + dlat
 
 
-async def bus_tiles(conn, lat, lon, z, stats, lines_seen):
-    """One bus read as the page does it (hq.js busTileFrame): meta, the tiles covering the screen, new route lines.
-    Returns seconds until the next read."""
+class Pool:
+    """4.17.0: a viewer's few keep-alive connections; requests share them, several at once (as a browser does)."""
+    def __init__(self, base, n=CONNS_PER_VIEWER):
+        self.q = asyncio.Queue()
+        self.all = [Conn(*base) for _ in range(n)]
+        for c in self.all:
+            self.q.put_nowait(c)
+
+    async def get(self, path, layer, stats):
+        conn = await self.q.get()
+        try:
+            return await fetch(conn, path, layer, stats)
+        finally:
+            self.q.put_nowait(conn)
+
+    async def close(self):
+        for c in self.all:
+            await c.close()
+
+
+async def bus_tiles(pool, lat, lon, z, stats, lines_seen):
+    """One bus read as the page does it (hq.js busTileFrame): meta, the tiles covering the screen (all at once), new
+    route lines. Returns (complete, seconds until the next read)."""
     slot = int(time.time() // 10)
-    body = await fetch(conn, f'/tiles/bus/meta.json?r={slot}', 'bus', stats)
+    ok, body = await pool.get(f'/tiles/bus/meta.json?r={slot}', 'bus', stats)
+    if not ok:
+        return False, 10.0
     try:
         meta = json.loads(body) if body else None
     except Exception:
         meta = None
     if not isinstance(meta, dict) or not isinstance(meta.get('small'), list) or not isinstance(meta.get('big'), list):
-        return 10.0
+        return None, 10.0                             # no files: the page falls back to the per-viewer answer
+    try:
+        poll = max(5.0, min(60.0, float(meta.get('every') or 10)))
+    except Exception:
+        poll = 10.0
     w, s, e, n = view_box(lat, lon, z)
     if n - s > meta.get('maxSpan', 99):
-        return 10.0                                   # zoomed too far out: the page shows no buses
+        return True, poll                             # zoomed too far out: the page shows no buses
     small = n - s <= meta.get('smallBelowSpan', 0)
     size, d = (meta['small'], 's') if small else (meta['big'], 'b')
     r0, r1, c0, c1 = math.floor(s / size[0]), math.floor(n / size[0]), math.floor(w / size[1]), math.floor(e / size[1])
     if (r1 - r0 + 1) * (c1 - c0 + 1) > 80:
-        return 10.0
+        return True, poll
+    got = await asyncio.gather(*(pool.get(f'/tiles/bus/{d}/{r}_{c}.json?r={slot}', 'bus', stats)
+                                 for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)))
     sids = set()
-    for r in range(r0, r1 + 1):
-        for c in range(c0, c1 + 1):
-            tb = await fetch(conn, f'/tiles/bus/{d}/{r}_{c}.json?r={slot}', 'bus', stats)
-            if small and tb:
-                try:
-                    for it in json.loads(tb):
-                        if isinstance(it, dict) and isinstance(it.get('s'), str) and isinstance(it.get('r'), list):
-                            sids.add(it['s'])
-                except Exception:
-                    pass
+    for tok, tb in got:
+        if small and tb:
+            try:
+                for it in json.loads(tb):
+                    if isinstance(it, dict) and isinstance(it.get('s'), str) and isinstance(it.get('r'), list):
+                        sids.add(it['s'])
+            except Exception:
+                pass
     build = meta.get('build')
-    for sid in sorted(sids - lines_seen)[:40]:        # each route line once per viewer (the browser keeps it a week)
-        lines_seen.add(sid)
-        safe = urllib.parse.quote(''.join(ch if ch.isalnum() or ch in '_.-' else '_' for ch in sid)[:120])
-        await fetch(conn, f'/tiles/bus/routes/{urllib.parse.quote(str(build))}/{safe}.json', 'bus', stats)
-    try:
-        return max(5.0, min(60.0, float(meta.get('every') or 10)))
-    except Exception:
-        return 10.0
+    new = sorted(sids - lines_seen)[:40]               # each route line once per viewer (the browser keeps it a week)
+    lines_seen.update(new)
+    got += await asyncio.gather(*(pool.get(f'/tiles/bus/routes/{urllib.parse.quote(str(build))}/'
+                                           + urllib.parse.quote(''.join(ch if ch.isalnum() or ch in '_.-' else '_' for ch in sid)[:120]) + '.json',
+                                           'bus', stats) for sid in new))
+    return all(tok for tok, _ in got), poll
 
 
 def page_box(lat, lon, z, w=1440, h=900):
@@ -211,31 +251,33 @@ def page_box(lat, lon, z, w=1440, h=900):
     return math.floor(w0 / gl) * gl, math.floor(s0 / g) * g, math.ceil(e0 / gl) * gl, math.ceil(n0 / g) * g
 
 
-async def rail_tiles(conn, lat, lon, z, stats):
-    """4.16.0: one train read as the page does it (hq.js railTileFrame): meta, then the squares covering the screen.
-    Returns seconds until the next read."""
+async def rail_tiles(pool, lat, lon, z, stats):
+    """4.16.0: one train read as the page does it (hq.js railTileFrame): meta, then the squares covering the screen
+    (4.17.0: all at once). Returns (complete, seconds until the next read)."""
     slot = int(time.time() // 10)
-    body = await fetch(conn, f'/tiles/rail/meta.json?r={slot}', 'rail', stats)
+    ok, body = await pool.get(f'/tiles/rail/meta.json?r={slot}', 'rail', stats)
+    if not ok:
+        return False, 10.0
     try:
         meta = json.loads(body) if body else None
     except Exception:
         meta = None
     if not isinstance(meta, dict) or not isinstance(meta.get('small'), list) or not isinstance(meta.get('big'), list):
-        return 10.0
+        return None, 10.0                             # no files: the page falls back to the per-viewer answer
+    try:
+        poll = max(5.0, min(60.0, float(meta.get('every') or 10)))
+    except Exception:
+        poll = 10.0
     w, s, e, n = page_box(lat, lon, z)
     if n - s > meta.get('maxSpan', 4):
-        return 10.0                                   # zoomed too far out: the page says "Zoom in to see trains"
+        return True, poll                             # zoomed too far out: the page says "Zoom in to see trains"
     size, d = (meta['small'], 's') if n - s <= meta.get('smallBelowSpan', 0) else (meta['big'], 'b')
     r0, r1, c0, c1 = math.floor(s / size[0]), math.floor(n / size[0]), math.floor(w / size[1]), math.floor(e / size[1])
     if (r1 - r0 + 1) * (c1 - c0 + 1) > 80:
-        return 10.0
-    for r in range(r0, r1 + 1):
-        for c in range(c0, c1 + 1):
-            await fetch(conn, f'/tiles/rail/{d}/{r}_{c}.json?r={slot}', 'rail', stats)
-    try:
-        return max(5.0, min(60.0, float(meta.get('every') or 10)))
-    except Exception:
-        return 10.0
+        return True, poll
+    got = await asyncio.gather(*(pool.get(f'/tiles/rail/{d}/{r}_{c}.json?r={slot}', 'rail', stats)
+                                 for r in range(r0, r1 + 1) for c in range(c0, c1 + 1)))
+    return all(tok for tok, _ in got), poll
 
 
 def tiles_for(lat, lon, z):
@@ -246,55 +288,70 @@ def tiles_for(lat, lon, z):
 
 
 async def viewer(i, base, stats, stop, rnd, layers):
+    """One pretend person with the page open. 4.17.0: each layer is read on its own timer, side by side (as the page
+    does), and every completed update is recorded (stats.updates) so the step can tell who got the TPA standard."""
     city = rnd.choice(CITIES)
-    lat, lon = city[1] + rnd.uniform(-0.03, 0.03), city[2] + rnd.uniform(-0.05, 0.05)
-    z = rnd.choice([10, 11, 12, 13, 14, 15, 16])   # 4.14.0: some look zoomed out, where answers are biggest
-    conn = Conn(*base)
-    now = time.monotonic()
-    due = {l: now + rnd.uniform(0, 3) for l in layers}       # a page opens: asks straight away
-    pan_at = now + rnd.uniform(20, 40)
-    first_pictures = TRAFFIC and 'road' in layers_all(layers)      # a page opening shows the traffic straight away
+    view = {'lat': city[1] + rnd.uniform(-0.03, 0.03), 'lon': city[2] + rnd.uniform(-0.05, 0.05),
+            'z': rnd.choice([10, 11, 12, 13, 14, 15, 16])}   # 4.14.0: some look zoomed out, where answers are biggest
+    pool = Pool(base)
+    moved = {l: asyncio.Event() for l in layers}
     lines_seen = set()
-    try:
-        if first_pictures:
-            for tz, tx, ty in tiles_for(lat, lon, min(z, 15)):
-                await fetch(conn, f'/api/v4/components/road/tiles/{tz}/{tx}/{ty}.png', 'traffic', stats)
+
+    async def layer_loop(layer):
+        await asyncio.sleep(rnd.uniform(0, 3))                     # a page opens: asks straight away
         while not stop.is_set():
-            now = time.monotonic()
-            if now >= pan_at:                                   # pans or zooms, then asks again for the new area
-                lat += rnd.uniform(-1, 1) * 900 * 360 / (256 * 2 ** z) * 0.4
-                lon += rnd.uniform(-1, 1) * 1440 * 360 / (256 * 2 ** z) * 0.4
-                z = max(10, min(17, z + rnd.choice([-1, 0, 0, 1])))
-                pan_at = now + rnd.uniform(20, 40)
-                for l in layers:
-                    due[l] = min(due[l], now + 0.3)
-                if TRAFFIC and 'road' in layers_all(layers):     # 4.13.2: only with --traffic (TomTom's monthly allowance)
-                    for tz, tx, ty in tiles_for(lat, lon, min(z, 15)):
-                        await fetch(conn, f'/api/v4/components/road/tiles/{tz}/{tx}/{ty}.png', 'traffic', stats)
-            layer = min(due, key=due.get)
-            wait = due[layer] - time.monotonic()
-            if wait > 0:
-                try:
-                    await asyncio.wait_for(stop.wait(), min(wait, pan_at - time.monotonic() if pan_at > time.monotonic() else 0.01))
-                    break
-                except asyncio.TimeoutError:
-                    continue
-            if layer == 'bus' and not BUS_API:                # 4.15.0: as the page reads buses now
-                due[layer] = time.monotonic() + await bus_tiles(conn, lat, lon, z, stats, lines_seen)
-                continue
-            if layer == 'rail' and not RAIL_API:              # 4.16.0: as the page reads trains now
-                due[layer] = time.monotonic() + await rail_tiles(conn, lat, lon, z, stats)
-                continue
-            body = await fetch(conn, f'/api/v4/components/{layer}/snapshot?{bbox(lat, lon, z)}', layer, stats)
-            poll = 15.0
-            if body:
-                try:
-                    poll = max(5.0, min(60.0, json.loads(body).get('nextPollAfterMs', 15000) / 1000))
-                except Exception:
-                    pass
-            due[layer] = time.monotonic() + poll
+            t0 = time.monotonic()
+            lat, lon, z = view['lat'], view['lon'], view['z']
+            ok = None
+            if layer == 'bus' and not BUS_API:                     # 4.15.0: as the page reads buses now
+                ok, poll = await bus_tiles(pool, lat, lon, z, stats, lines_seen)
+            elif layer == 'rail' and not RAIL_API:                 # 4.16.0: as the page reads trains now
+                ok, poll = await rail_tiles(pool, lat, lon, z, stats)
+            if ok is None:                                         # no files (or the old way asked for): per-viewer answer
+                ok, body = await pool.get(f'/api/v4/components/{layer}/snapshot?{bbox(lat, lon, z)}', layer, stats)
+                poll = 15.0
+                if body:
+                    try:
+                        poll = max(5.0, min(60.0, json.loads(body).get('nextPollAfterMs', 15000) / 1000))
+                    except Exception:
+                        pass
+            stats.read(i, layer, t0, time.monotonic(), ok, poll)
+            moved[layer].clear()
+            try:                                                   # the next read: after its pace, or at once after a pan
+                await asyncio.wait_for(moved[layer].wait(), poll)
+                await asyncio.sleep(0.3)
+            except asyncio.TimeoutError:
+                pass
+
+    async def panner():
+        while not stop.is_set():
+            await asyncio.sleep(rnd.uniform(20, 40))               # pans or zooms, then asks again for the new area
+            z = view['z']
+            view['lat'] += rnd.uniform(-1, 1) * 900 * 360 / (256 * 2 ** z) * 0.4
+            view['lon'] += rnd.uniform(-1, 1) * 1440 * 360 / (256 * 2 ** z) * 0.4
+            view['z'] = max(10, min(17, z + rnd.choice([-1, 0, 0, 1])))
+            for ev in moved.values():
+                ev.set()
+            if TRAFFIC and 'road' in layers_all(layers):           # 4.13.2: only with --traffic (TomTom's monthly allowance)
+                await asyncio.gather(*(pool.get(f'/api/v4/components/road/tiles/{tz}/{tx}/{ty}.png', 'traffic', stats)
+                                       for tz, tx, ty in tiles_for(view['lat'], view['lon'], min(view['z'], 15))))
+
+    try:
+        if TRAFFIC and 'road' in layers_all(layers):               # a page opening shows the traffic straight away
+            await asyncio.gather(*(pool.get(f'/api/v4/components/road/tiles/{tz}/{tx}/{ty}.png', 'traffic', stats)
+                                   for tz, tx, ty in tiles_for(view['lat'], view['lon'], min(view['z'], 15))))
+        jobs = [asyncio.create_task(layer_loop(l)) for l in layers] + [asyncio.create_task(panner())]
+        try:
+            await stop.wait()
+        finally:
+            for j in jobs:
+                j.cancel()
+            got = await asyncio.gather(*jobs, return_exceptions=True)
+            for r in got:
+                if isinstance(r, PermissionError):
+                    raise r
     finally:
-        await conn.close()
+        await pool.close()
 
 
 def layers_all(layers):
@@ -302,6 +359,7 @@ def layers_all(layers):
 
 
 async def fetch(conn, path, layer, stats):
+    """(answered properly, body or None). A 404 is a proper answer (a square with nothing in it); a failure is not."""
     t0 = time.monotonic()
     try:
         status, body = await conn.get(path)
@@ -309,13 +367,16 @@ async def fetch(conn, path, layer, stats):
         stats.add(layer, time.monotonic() - t0, ok)
         if status == 401:
             raise PermissionError('password not accepted')
-        return body if status == 200 else None
+        return ok, (body if status == 200 else None)
     except PermissionError:
+        raise
+    except asyncio.CancelledError:
+        await conn.close()
         raise
     except Exception:
         stats.add(layer, time.monotonic() - t0, False)
         await conn.close()
-        return None
+        return False, None
 
 
 def server_stats(enabled):
@@ -353,12 +414,41 @@ def pct(values, p):
     return s[min(len(s) - 1, int(round(p / 100 * (len(s) - 1))))]
 
 
+def served_share(reads, n, t_from, t_to, grace):
+    """4.17.0, rule 1: the share of the n viewers who got a fresh update of every layer at least every (pace + grace)
+    seconds from t_from to t_to - counting the wait from t_from to their first update in the window and from their
+    last update to t_to. A read that did not complete is no update."""
+    done, layers = {}, set()
+    for v, layer, t0, t1, ok, poll in reads:
+        layers.add(layer)
+        if ok:
+            done.setdefault((v, layer), []).append((t1, poll))
+    if not n or not layers:
+        return 0.0
+    good = 0
+    for v in range(n):
+        fine = True
+        for layer in layers:
+            times = sorted(done.get((v, layer), []))
+            if not times:
+                fine = False
+                break
+            pace = max(pc for _, pc in times) + grace
+            marks = [t_from] + [t for t, _ in times if t_from <= t <= t_to] + [t_to]
+            if any(b - a > pace for a, b in zip(marks, marks[1:])):
+                fine = False
+                break
+        good += fine
+    return good / n
+
+
 async def run_step(n, seconds, base, layers, rnd):
     stats, stop = Stats(), asyncio.Event()
     tasks = []
     started = time.monotonic()
     aborted = ''
     ramp = min(15.0, seconds / 4)
+    lags = []
 
     async def watchdog():
         nonlocal aborted
@@ -373,6 +463,12 @@ async def run_step(n, seconds, base, layers, rnd):
                 aborted = 'more than 20% of requests failing'
                 stop.set()
 
+    async def tester_lag():                         # 4.17.0: is Cloud Shell itself keeping up?
+        while not stop.is_set():
+            t = time.monotonic()
+            await asyncio.sleep(0.2)
+            lags.append((time.monotonic(), time.monotonic() - t - 0.2))
+
     async def spawn():
         for i in range(n):
             if stop.is_set():
@@ -381,30 +477,35 @@ async def run_step(n, seconds, base, layers, rnd):
             await asyncio.sleep(ramp / n)
 
     wd = asyncio.create_task(watchdog())
+    lt = asyncio.create_task(tester_lag())
     await spawn()
     try:
         await asyncio.wait_for(stop.wait(), max(0.0, seconds - (time.monotonic() - started)))
     except asyncio.TimeoutError:
         pass
+    ended = time.monotonic()
     stop.set()
-    for t in tasks:
-        t.cancel()
     results = await asyncio.gather(*tasks, return_exceptions=True)
-    wd.cancel()
+    wd.cancel(); lt.cancel()
     if any(isinstance(r, PermissionError) for r in results):
         raise PermissionError('password not accepted')
-    elapsed = time.monotonic() - started
-    rows = [r for r in stats.rows if r[0] >= started + ramp]          # the settled part of the step
+    elapsed = ended - started
+    settled = started + ramp + 3                                   # every viewer has asked for its first update by now
+    rows = [r for r in stats.rows if r[0] >= started + ramp]       # the settled part of the step
     if not rows:
         rows = stats.rows
-    times = [r[2] for r in rows if r[3]]
     fails = sum(1 for r in rows if not r[3])
+    reads = [r for r in stats.reads if r[3] >= started + ramp]
+    durations = [r[3] - r[2] for r in reads if r[4]] + [99.0 for r in reads if not r[4]]
     by_layer = {}
-    for r in rows:
-        by_layer.setdefault(r[1], []).append(r[2])
+    for r in reads:
+        by_layer.setdefault(r[1], []).append(r[3] - r[2] if r[4] else 99.0)
+    lag = [x for t, x in lags if t >= started + ramp]
     return {'n': n, 'elapsed': elapsed, 'requests': len(rows), 'rate': len(rows) / max(1e-9, elapsed - ramp if elapsed > ramp else elapsed),
-            'p50': pct(times, 50), 'p95': pct(times, 95), 'fail': fails / len(rows) if rows else 1.0,
-            'layers': {k: (pct(v, 50), pct(v, 95), len(v)) for k, v in by_layer.items()}, 'aborted': aborted}
+            'served': served_share(stats.reads, n, settled, ended, LIMITS['grace']) if not aborted and ended > settled else 0.0,
+            'p50': pct(durations, 50), 'p95': pct(durations, 95), 'fail': fails / len(rows) if rows else 1.0,
+            'layers': {k: (pct(v, 50), pct(v, 95), len(v)) for k, v in by_layer.items()}, 'aborted': aborted,
+            'lag95': pct(lag, 95)}
 
 
 def server_use(before, after):
@@ -424,16 +525,21 @@ def fmt_s(v):
     return '   -  ' if v is None else f'{v:5.2f}s'
 
 
+def tester_behind(step):
+    """4.17.0: Cloud Shell (the pretend crowd) fell behind its own timers - the step measured the tester, not the server."""
+    return step.get('lag95') is not None and step['lag95'] > LIMITS['lag']
+
+
 def verdict(step, use):
     why = []
     if step['aborted']:
         why.append(step['aborted'])
-    if step['p50'] is None or step['p50'] > LIMITS['p50']:
-        why.append(f"typical answer {fmt_s(step['p50']).strip()} (limit {LIMITS['p50']:.0f} s)")
-    if step['p95'] is not None and step['p95'] > LIMITS['p95']:
-        why.append(f"1 in 20 answers over {fmt_s(step['p95']).strip()} (limit {LIMITS['p95']:.0f} s)")
-    if step['fail'] > LIMITS['fail']:
-        why.append(f"{step['fail']:.0%} of requests failed (limit {LIMITS['fail']:.0%})")
+    if step['served'] < LIMITS['served']:
+        why.append(f"only {step['served']:.0%} of viewers got a fresh update every {10 + LIMITS['grace']:.0f} s (needs {LIMITS['served']:.0%})")
+    if step['p95'] is None or step['p95'] > LIMITS['p95']:
+        why.append(f"1 in 20 reads took over {fmt_s(step['p95']).strip()} (limit {LIMITS['p95']:.0f} s)")
+    if step['fail'] >= LIMITS['fail']:
+        why.append(f"{step['fail']:.1%} of requests failed (limit: under {LIMITS['fail']:.0%})")
     if use:
         for name, u in use['units'].items():
             if u['memf'] is not None and u['memf'] > LIMITS['mem']:
@@ -443,6 +549,22 @@ def verdict(step, use):
 
 def total_cpu(use):
     return sum(u['cpu'] or 0 for u in use['units'].values()) if use else 0.0
+
+
+def proven(healthy, tester_stop=False):
+    """4.17.0 (Rob 16 Nov 2026 10:34: "it needs to actually mean that ... summarise what that would mean for daily
+    traffic"): what this run proved, in people, and what that means a day (rule of thumb: busiest moment x 36)."""
+    if not healthy:
+        return ['PROVEN: nothing - not even the first step met the TPA standard.']
+    n = healthy[-1]['n']
+    out = [f"PROVEN: {n:,} viewers at once all got the TPA standard (fresh updates at least every {10 + LIMITS['grace']:.0f} s, "
+           f"19 in 20 reads within {LIMITS['p95']:.0f} s, under 1 in 100 requests failed).",
+           f"In visitors a day: roughly {36 * n:,} (rule of thumb: busiest moment x 36; anywhere from about {18 * n:,} to "
+           f"{72 * n:,}, depending on how bunched up visitors are)."]
+    if tester_stop:
+        out.append('The server may cope with more: Cloud Shell could not pretend to be more people than this.')
+    out.append('Anything below is a guess from processor use, not proven.')
+    return out
 
 
 def estimate(healthy, uses, base=None):
@@ -483,6 +605,7 @@ async def main_async(args, base, layers):
     rnd = random.Random(args.seed)
     healthy, uses = [], {}
     idle_use = None
+    tester_stop = False
     if args.server_stats:            # 4.13.1: the server's own work with nobody watching, first
         print('Measuring the server with nobody watching (30 s)...', flush=True)
         b0 = server_stats(True); await asyncio.sleep(30); idle_use = server_use(b0, server_stats(True))
@@ -490,7 +613,9 @@ async def main_async(args, base, layers):
     print(f"TPA load test {VERSION} · {args.host or args.url} · steps {', '.join(map(str, args.steps))} · {args.seconds:.0f} s each"
           f" · buses {'the old way (--bus-api)' if BUS_API else 'as the page reads them (bus files)'}"
           f" · trains {'the old way (--rail-api)' if RAIL_API else 'as the page reads them (train files)'}")
-    print(f"{'viewers':>8} {'req/s':>7} {'typical':>8} {'1 in 20':>8} {'failed':>7}  {'bus':>6} {'rail':>6} {'air':>6} {'traffic':>7}  server")
+    print(f"TPA standard: every viewer gets a fresh update at least every {10 + LIMITS['grace']:.0f} s, 19 in 20 reads within "
+          f"{LIMITS['p95']:.0f} s, under 1 in 100 requests fail. 'served' = viewers who got that for the whole step.")
+    print(f"{'viewers':>8} {'served':>7} {'req/s':>7} {'typical':>8} {'1 in 20':>8} {'failed':>7}  {'bus':>6} {'rail':>6} {'air':>6} {'traffic':>7} {'tester':>7}  server")
     for n in args.steps:
         before = server_stats(args.server_stats)
         step = await run_step(n, args.seconds, base, layers, rnd)
@@ -505,9 +630,14 @@ async def main_async(args, base, layers):
             cpu = sum(u['cpu'] or 0 for u in use['units'].values())
             top = max(use['units'].items(), key=lambda kv: kv[1]['memf'] or 0)
             srv = f"cpu {cpu:.2f}/{use['cpus']} · load {use['load']} · fullest {top[0]} {(top[1]['memf'] or 0):.0%}"
-        print(f"{n:>8} {step['rate']:>7.1f} {fmt_s(step['p50']):>8} {fmt_s(step['p95']):>8} {step['fail']:>7.1%}  "
+        print(f"{n:>8} {step['served']:>7.0%} {step['rate']:>7.1f} {fmt_s(step['p50']):>8} {fmt_s(step['p95']):>8} {step['fail']:>7.1%}  "
               f"{fmt_s(lay.get('bus', (None,))[0]):>6} {fmt_s(lay.get('rail', (None,))[0]):>6} {fmt_s(lay.get('air', (None,))[0]):>6} "
-              f"{fmt_s(lay.get('traffic', (None,))[0]):>7}  {srv}", flush=True)
+              f"{fmt_s(lay.get('traffic', (None,))[0]):>7} {fmt_s(step['lag95']):>7}  {srv}", flush=True)
+        if tester_behind(step):          # 4.17.0: the pretend crowd, not the server, could not keep up
+            tester_stop = True
+            print(f"STOPPED at {n} viewers: Cloud Shell (the tester) fell {step['lag95']:.1f} s behind its own timers, so this "
+                  f"step measured the tester, not the server. It is not counted either way.")
+            break
         why = verdict(step, use)
         if why:
             print(f"STOPPED at {n} viewers: " + '; '.join(why))
@@ -518,6 +648,8 @@ async def main_async(args, base, layers):
     else:
         print(f"All steps healthy up to {args.steps[-1]} viewers.")
     print()
+    for line in proven(healthy, tester_stop):
+        print(line)
     for line in estimate(healthy, uses, idle_use):
         print(line)
     print(BANNER_TO)
