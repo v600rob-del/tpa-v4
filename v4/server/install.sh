@@ -191,7 +191,7 @@ if [[ $ROLE == bus ]]; then
         "$BUS_ENV TPA_BUS_BIND=$BUS_BIND TPA_BUS_ALLOW=$BUS_ALLOW$BUS_RUN" 6G bus.env v4/engines/bus/bus_engine.py
 else
 unit road "road traffic engine (TomTom)" TPA_ROAD_ENGINE_PORT 8782 \
-    "Environment=TPA_ROAD_DATA_DIR=/var/lib/tpa/road" 200M road.env v4/engines/road/road_engine.py
+    "Environment=TPA_ROAD_DATA_DIR=/var/lib/tpa/road" 400M road.env v4/engines/road/road_engine.py   # 400M: Rob 16 Nov 2026 00:06 (184 of 200M stopped the load test; its caches are capped near 200M by design); was 200M
 if [[ -n "${BUS_BIND:-}" ]]; then
 unit bus "bus engine (BODS, whole-country mode), also answering the standby server" TPA_BUS_ENGINE_PORT 8781 \
     "$BUS_ENV TPA_BUS_BIND=$BUS_BIND TPA_BUS_ALLOW=$BUS_ALLOW$BUS_RUN" 6G bus.env v4/engines/bus/bus_engine.py
@@ -202,7 +202,7 @@ fi
 unit air "aircraft engine (ADSB.lol)" TPA_AIR_ENGINE_PORT 8783 \
     "Environment=TPA_AIR_ALWAYS_ON=1" 150M air.env v4/engines/air/air_engine.py   # air.env: FlyItalyADSB key (11 Nov)
 unit rail "train engine (Network Rail), listening all the time" TPA_RAIL_ENGINE_PORT 8784 \
-    "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 700M rail.env v4/engines/rail/rail_engine.py   # 700M: owner 13 Nov 2026 12:45 (sat at 440-445 of 450M all morning); 450M on 12 Nov (was 300M)
+    "Environment=TPA_RAIL_DATA_DIR=/var/lib/tpa/rail TPA_RAIL_ALWAYS_ON=1" 1G rail.env v4/engines/rail/rail_engine.py   # 1G: Rob 16 Nov 2026 00:06 (552 of 700M at 19:50, nearly the load test's 90% line); 700M: owner 13 Nov 2026 12:45 (sat at 440-445 of 450M all morning); 450M on 12 Nov (was 300M)
 # kit 4.20 (owner 12 Nov 17:03, live departure boards): stations.env holds the Rail Data Marketplace board address and key
 # kit 4.21 (owner 12 Nov 18:38-18:40, bus stop boards): bus stops and their boards come from the bus engine (/stops), so
 # HQ is told "stops=" at the bus engine's address below. No new service, user or key.
