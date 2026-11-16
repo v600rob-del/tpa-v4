@@ -992,6 +992,9 @@ function keepAboveSheet(e){
 // the panel being up is known to the page (phones tuck the credits away under it)
 new MutationObserver(()=>document.body.classList.toggle('sheet-up',!selected.classList.contains('hidden'))).observe(selected,{attributes:true,attributeFilter:['class']});
 // 4.51.0: on phones the credits sit behind a small (c) button
+// 4.65.1: on a PC a click on the one-line credits shows them in full (and again hides them)
+(()=>{const c=$('map-credit');if(c)c.addEventListener('click',()=>{if(window.innerWidth<=760)return;
+  document.body.classList.toggle('credits-open');});})();
 (()=>{const t=$('credit-toggle');if(!t)return;t.addEventListener('click',()=>{const on=!document.body.classList.contains('credits-open');
   document.body.classList.toggle('credits-open',on);t.setAttribute('aria-expanded',String(on));});})();
 let follow=null,followPanning=false,followMenu=null;
@@ -2094,7 +2097,7 @@ function liveCredit(){const box=$('map-credit');if(!box)return;
   const live=IDS.filter(id=>state.live[id]&&state.visible[id]&&!state.parked[id]&&(state.status[id]==='ready'||state.status[id]==='stale'))
     .map(id=>shortCredit[layerName(id)]).filter((c,i,all)=>c&&all.indexOf(c)===i);   // 4.54.0: each source once (bus stops and stations share theirs)
   const text='© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'+(live.length?' · Live data: '+live.join(' · '):'');
-  if(box.textContent!==text)box.textContent=text;}
+  if(box.textContent!==text){box.textContent=text;box.title=text;}}   // 4.65.1: the whole line on hover (PC: one line, "..." if long)
 // ---- 4.11.0 Kids mode ------------------------------------------------------------------------------------
 const KID_WORD={bus:['bus','buses'],rail:['train','trains'],air:['plane','planes']};
 let kidsMuted=false;try{kidsMuted=localStorage.getItem('tpa-kids-muted')==='1';}catch(_){}

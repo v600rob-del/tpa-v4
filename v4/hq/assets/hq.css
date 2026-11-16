@@ -502,3 +502,12 @@ body.vector-ready .vector-map{z-index:4}
 .support-note{color:var(--soft);font-size:12px;text-align:center;line-height:1.4}
 .support-close{align-self:center}
 @media (max-width:520px){.tpa-dialog.support-card{max-width:none;width:calc(100vw - 28px)}.support-body{flex-direction:column;align-items:center;text-align:center}.support-picture{width:72px;height:72px}}
+
+/* 4.65.1 (Rob 15 Nov 22:56 "that gigantic bottom bar"; 16 Nov 11:40 the zoom level hidden behind it): the map library's own
+   credits box (street map + picture layers, wrapping onto several lines in the corner where the zoom level is) is not shown -
+   everything in it is in TPA's own credits line. On a PC that line stays on one line ("..." if too long; a click shows it all). */
+.leaflet-control-attribution{display:none!important}
+@media(min-width:761px){
+  .map-bottom>.map-credit{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  body.credits-open .map-bottom>.map-credit{white-space:normal}
+}
