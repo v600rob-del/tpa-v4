@@ -1620,6 +1620,52 @@ async function busTileFrame(){
   if(BUS_MOTION.mode){BUS_MOTION.frames++;BUS_MOTION.ms+=performance.now()-t0;}
   return frame;
 }
+// ---- 4.65.0: published train files (rail 1.6.0; Rob 16 Nov 2026 07:25 "yes that's what I meant, let's proceed") ------
+// The load test at 00:14 on 16 Nov was healthy at 250 viewers; at 500 the train engine was the limit, because it still
+// worked out an answer for every viewer. Now, like the buses, it writes /tiles/rail/meta.json and squares s/<row>_<col>.json
+// (street views) and b/<row>_<col>.json (city views) every 10 s; Caddy hands them out. Each item is {e: the train exactly
+// as the old answer gave it, k: [lat, lon] where it reported, x: [s, w, n, e] the stretch it is on, tt: 1 timetable train}.
+// This picks the same trains the old answer did for the same view (viewBox), nearest first, timetable trains filling any
+// room. ?railtiles=0 is the way back; files missing or over a minute old fall back to the old answer by themselves.
+const RAIL_TILES={on:new URLSearchParams(location.search).get('railtiles')!=='0',used:false,last:null};
+window.TPA_RAIL_TILES=()=>({on:RAIL_TILES.on,used:RAIL_TILES.used,last:RAIL_TILES.last});   // last: the view, trains and notice of the last read (tests)
+async function railTileFrame(){
+  const slot=Math.floor(serverNow()/10000);
+  const meta=await tileJSON('/tiles/rail/meta.json?r='+slot,4000,false);
+  if(!meta||meta.v!==1||!validNum(meta.updatedAt)||serverNow()/1000-meta.updatedAt>60)throw Error('tiles old');
+  const iso=t=>new Date(t*1000).toISOString(),at=meta.updatedAt;
+  const frame={component:'rail',contractVersion:'1.0',health:['ready','stale','unavailable'].includes(meta.health)?meta.health:'stale',
+    observedAt:iso(at),receivedAt:iso(at),expiresAt:iso(at+90),nextPollAfterMs:Math.round(1000*(validNum(meta.every)?meta.every:10)),
+    attribution:String(meta.attribution||'').slice(0,256),groupStacks:true,entities:[]};
+  if(meta.scheduled===true)frame.scheduled=true;
+  if(typeof meta.noticeDetail==='string'&&meta.noticeDetail)frame.noticeDetail=meta.noticeDetail;
+  const {w,s,e,n}=viewBox();
+  if(!validNum(meta.maxSpan)||n-s>meta.maxSpan){frame.notice='Zoom in to see trains';RAIL_TILES.last={box:[s,w,n,e],ids:[],notice:frame.notice};return frame;}
+  if(meta.notice)frame.notice=String(meta.notice).slice(0,120);
+  const small=n-s<=meta.smallBelowSpan,size=small?meta.small:meta.big,dir=small?'s':'b';
+  if(!Array.isArray(size)||!validNum(size[0])||!validNum(size[1])||size[0]<=0||size[1]<=0)throw Error('meta');
+  const r0=Math.floor(s/size[0]),r1=Math.floor(n/size[0]),c0=Math.floor(w/size[1]),c1=Math.floor(e/size[1]);
+  if((r1-r0+1)*(c1-c0+1)>80)throw Error('too many tiles');
+  const asks=[];for(let r=r0;r<=r1;r++)for(let c=c0;c<=c1;c++)asks.push(tileJSON(`/tiles/rail/${dir}/${r}_${c}.json?r=${slot}`,6000,true));
+  const items=new Map();
+  for(const t of await Promise.all(asks))if(Array.isArray(t))for(const it of t)
+    if(it&&it.e&&typeof it.e.id==='string'&&Array.isArray(it.k)&&validNum(it.k[0])&&validNum(it.k[1])&&!items.has(it.e.id))items.set(it.e.id,it);
+  const cy=(s+n)/2,cx=(w+e)/2,live=[],booked=[];
+  const fid=follow&&follow.comp==='rail'?follow.id:null;
+  for(const it of items.values()){
+    const [lat,lon]=it.k,x=Array.isArray(it.x)&&it.x.length===4?it.x:null;
+    const inside=(s<=lat&&lat<=n&&w<=lon&&lon<=e)||(x&&x[0]<=n&&x[2]>=s&&x[1]<=e&&x[3]>=w);
+    if(!inside&&it.e.id!==fid)continue;        // as the old answer: where it reported, or the stretch it is on, in view
+    (it.tt===1?booked:live).push([(lat-cy)**2+(lon-cx)**2,it.e]);}
+  live.sort((a,b)=>a[0]-b[0]);booked.sort((a,b)=>a[0]-b[0]);
+  const max=Number.isInteger(meta.maxPerView)?meta.maxPerView:400;
+  frame.entities=live.slice(0,max).map(q=>q[1]);
+  frame.entities.push(...booked.slice(0,Math.max(0,max-frame.entities.length)).map(q=>q[1]));
+  if(!frame.entities.length&&meta.listening===true)frame.notice='Listening · trains appear as they report at stations';
+  else if(live.length>max&&!meta.notice)frame.notice=`Showing nearest ${max} · zoom in for all`;
+  RAIL_TILES.last={box:[s,w,n,e],ids:frame.entities.map(q=>q.id),notice:frame.notice||''};
+  return frame;
+}
 window.TPA_BUS_TILES=()=>({on:BUS_TILES.on,used:BUS_TILES.used,lines:BUS_TILES.lines.size});
 function deselectComponent(id){
   if(state.selected?.component===id){state.selected=null;selected.classList.add('hidden');}
@@ -1628,13 +1674,18 @@ function deselectComponent(id){
 // 4.28.0 (launch list A1): rounded out to the server's shared squares (as serve_hq.area_query), with the square size,
 // so viewers looking at the same place ask exactly the same question - one answer can then serve them all.
 const SLOT_MS=4000;   // = serve_hq.SHARE_SECONDS
-function viewQuery(){
+// 4.65.0: the area the page asks about (padded by a fifth, snapped outward to a grid) - shared by the per-viewer answer
+// and the published train files, so both pick exactly the same trains and say "Zoom in" at the same point
+function viewBox(){
   let w=-12.5,s=49,e=4.5,n=61.8;
   if(map&&typeof map.getBounds==='function'){const b=map.getBounds().pad(0.2);w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();}
   s=clamp(s,-85,85);n=clamp(n,-85,85);w=clamp(w,-180,180);e=clamp(e,-180,180);
   const g=Math.min(4,Math.max(1/1024,2**Math.floor(Math.log2(Math.max(n-s,1e-4)/4)))),gl=g*2;
   s=Math.max(-85,Math.floor(s/g)*g);n=Math.min(85,Math.ceil(n/g)*g);w=Math.max(-180,Math.floor(w/gl)*gl);e=Math.min(180,Math.ceil(e/gl)*gl);
-  const f=v=>v.toFixed(4);
+  return {w,s,e,n,g};
+}
+function viewQuery(){
+  const {w,s,e,n,g}=viewBox(),f=v=>v.toFixed(4);
   // and the 4-second time slot by the server's clock: a new question every slot, so a kept answer is never old,
   // however long a cache in between might keep it (Cloudflare's free plan may keep things for hours)
   return `west=${f(w)}&south=${f(s)}&east=${f(e)}&north=${f(n)}&cell=${g}&t=${Math.floor(serverNow()/SLOT_MS)}`;
@@ -1739,6 +1790,8 @@ async function getComponent(id){
     // (the page moves them itself); the old per-visitor answer stays as the way back (?tiles=0, or tiles missing/old).
     let raw=null;
     if(id==='bus'&&BUS_TILES.on){try{raw=await busTileFrame();BUS_TILES.used=true;}catch(_){raw=null;BUS_TILES.used=false;}}
+    // 4.65.0: trains the same way (rail 1.6.0); the old per-visitor answer stays as the way back (?railtiles=0, or files missing/old)
+    if(id==='rail'&&RAIL_TILES.on){try{raw=await railTileFrame();RAIL_TILES.used=true;}catch(_){raw=null;RAIL_TILES.used=false;}}
     const f=checkFrame(id,raw||await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}`,1200000,6000));
     {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length){speedMark(id+' shown');hasItems[id]=true;}}
     if(seq<(seqDone[id]||0))return;

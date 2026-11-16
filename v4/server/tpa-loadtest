@@ -38,7 +38,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.15.0'
+VERSION = '4.16.0'
 BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
@@ -48,6 +48,9 @@ TRAFFIC = False
 # line once), which Caddy hands out, and moves the buses itself (N1 since HQ 4.64). The pretend viewers now do exactly
 # that. --bus-api brings back the old per-viewer bus answer, for comparison with earlier runs.
 BUS_API = False
+# 4.16.0 (rail 1.6.0 + HQ 4.65.0, Rob 16 Nov 2026 07:25): the page reads trains from ready-made files too
+# (/tiles/rail/meta.json, then the squares covering the screen). --rail-api brings back the old per-viewer train answer.
+RAIL_API = False
 DEFAULT_STEPS = [10, 25, 50, 100, 250, 500, 1000]
 CITIES = [('York', 53.959, -1.082), ('Hull', 53.744, -0.333), ('Leeds', 53.797, -1.547), ('Manchester', 53.479, -2.244),
           ('London', 51.507, -0.128), ('Birmingham', 52.480, -1.899), ('Nottingham', 52.954, -1.150), ('Newcastle', 54.973, -1.613),
@@ -198,6 +201,43 @@ async def bus_tiles(conn, lat, lon, z, stats, lines_seen):
         return 10.0
 
 
+def page_box(lat, lon, z, w=1440, h=900):
+    """4.16.0: the area the page asks about for trains (hq.js viewBox): the screen padded by a fifth, snapped to a grid."""
+    w0, s0, e0, n0 = view_box(lat, lon, z, w, h)
+    pw, ph = (e0 - w0) * 0.2, (n0 - s0) * 0.2
+    w0, s0, e0, n0 = w0 - pw, s0 - ph, e0 + pw, n0 + ph
+    g = min(4.0, max(1 / 1024, 2.0 ** math.floor(math.log2(max(n0 - s0, 1e-4) / 4))))
+    gl = g * 2
+    return math.floor(w0 / gl) * gl, math.floor(s0 / g) * g, math.ceil(e0 / gl) * gl, math.ceil(n0 / g) * g
+
+
+async def rail_tiles(conn, lat, lon, z, stats):
+    """4.16.0: one train read as the page does it (hq.js railTileFrame): meta, then the squares covering the screen.
+    Returns seconds until the next read."""
+    slot = int(time.time() // 10)
+    body = await fetch(conn, f'/tiles/rail/meta.json?r={slot}', 'rail', stats)
+    try:
+        meta = json.loads(body) if body else None
+    except Exception:
+        meta = None
+    if not isinstance(meta, dict) or not isinstance(meta.get('small'), list) or not isinstance(meta.get('big'), list):
+        return 10.0
+    w, s, e, n = page_box(lat, lon, z)
+    if n - s > meta.get('maxSpan', 4):
+        return 10.0                                   # zoomed too far out: the page says "Zoom in to see trains"
+    size, d = (meta['small'], 's') if n - s <= meta.get('smallBelowSpan', 0) else (meta['big'], 'b')
+    r0, r1, c0, c1 = math.floor(s / size[0]), math.floor(n / size[0]), math.floor(w / size[1]), math.floor(e / size[1])
+    if (r1 - r0 + 1) * (c1 - c0 + 1) > 80:
+        return 10.0
+    for r in range(r0, r1 + 1):
+        for c in range(c0, c1 + 1):
+            await fetch(conn, f'/tiles/rail/{d}/{r}_{c}.json?r={slot}', 'rail', stats)
+    try:
+        return max(5.0, min(60.0, float(meta.get('every') or 10)))
+    except Exception:
+        return 10.0
+
+
 def tiles_for(lat, lon, z):
     n = 2 ** z
     x = int((lon + 180) / 360 * n)
@@ -241,6 +281,9 @@ async def viewer(i, base, stats, stop, rnd, layers):
                     continue
             if layer == 'bus' and not BUS_API:                # 4.15.0: as the page reads buses now
                 due[layer] = time.monotonic() + await bus_tiles(conn, lat, lon, z, stats, lines_seen)
+                continue
+            if layer == 'rail' and not RAIL_API:              # 4.16.0: as the page reads trains now
+                due[layer] = time.monotonic() + await rail_tiles(conn, lat, lon, z, stats)
                 continue
             body = await fetch(conn, f'/api/v4/components/{layer}/snapshot?{bbox(lat, lon, z)}', layer, stats)
             poll = 15.0
@@ -445,7 +488,8 @@ async def main_async(args, base, layers):
         b0 = server_stats(True); await asyncio.sleep(30); idle_use = server_use(b0, server_stats(True))
     print(BANNER_FROM)                   # 4.14.1 (owner 13 Nov 13:09: "could do with the cut from and to part back")
     print(f"TPA load test {VERSION} · {args.host or args.url} · steps {', '.join(map(str, args.steps))} · {args.seconds:.0f} s each"
-          f" · buses {'the old way (--bus-api)' if BUS_API else 'as the page reads them (bus files)'}")
+          f" · buses {'the old way (--bus-api)' if BUS_API else 'as the page reads them (bus files)'}"
+          f" · trains {'the old way (--rail-api)' if RAIL_API else 'as the page reads them (train files)'}")
     print(f"{'viewers':>8} {'req/s':>7} {'typical':>8} {'1 in 20':>8} {'failed':>7}  {'bus':>6} {'rail':>6} {'air':>6} {'traffic':>7}  server")
     for n in args.steps:
         before = server_stats(args.server_stats)
@@ -494,10 +538,13 @@ def main():
                    help='also fetch traffic pictures (uses the TomTom monthly allowance: 12,000 pictures)')
     p.add_argument('--bus-api', action='store_true',
                    help='buses the old way (each viewer asks the server), as before HQ 4.56 - for comparison only')
+    p.add_argument('--rail-api', action='store_true',
+                   help='trains the old way (each viewer asks the server), as before HQ 4.65 - for comparison only')
     args = p.parse_args()
-    global TRAFFIC, SERVER, BUS_API
+    global TRAFFIC, SERVER, BUS_API, RAIL_API
     TRAFFIC = args.traffic
     BUS_API = args.bus_api
+    RAIL_API = args.rail_api
     if args.server_stats and not args.url:
         SERVER = server_for(args.host) or SERVER
         print(f'Server figures from: {SERVER.split("@")[1]} (where {args.host} points)')

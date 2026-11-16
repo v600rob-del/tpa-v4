@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.5.0'
+ENGINE_VERSION = '1.6.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -1903,9 +1903,75 @@ def note_demand() -> None:
     WAKE.set()
 
 
-def snapshot(view) -> dict:
-    now = time.time()
-    note_demand()
+def ask_route(key) -> list | None:
+    """The track route for a stretch if already worked out; otherwise queued for the route worker (None for now)."""
+    with LOCK:
+        path = ROUTES.get(key)
+        if path is None and STATE['trackLoaded'] and key not in PENDING_SET and len(PENDING) < 5000:
+            PENDING.append(key); PENDING_SET.add(key); ROUTE_WAKE.set()
+    return path
+
+
+def train_entity(tid: str, t: dict, now: float):
+    """1.6.0: one live train as the page draws it (moved out of snapshot() unchanged, so the published train files and the
+    per-viewer answer can never differ). Returns (entity, drawn beside its platform)."""
+    drawn = drawn_at(t)              # 0.7.0: beside its platform when we know it
+    leg = t.get('vleg')
+    if leg:
+        drawn = (on_track(leg['from'][1], leg['from'][0]), False)
+    entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
+              'variant': kind_of(t)[0] or None,      # 0.5.0: which of TPA's train drawings to show
+              'position': dict(zip(('lon', 'lat'), drawn[0]), headingDeg=None),
+              'quality': train_quality(t, now), 'observedAt': iso(t['when'])}
+    if leg and now >= leg['start']:
+        key = (round(leg['from'][0], 5), round(leg['from'][1], 5), round(leg['to'][0], 5), round(leg['to'][1], 5))
+        path = ask_route(key)
+        if path:
+            entity['observedAt'] = iso(leg['start'])
+            entity['motion'] = {'mode': 'path', 'points': path, 'arriveAt': iso(leg['end']),
+                                'maxSeconds': round(min(7700, leg['end'] - leg['start'] + 120))}
+            if leg.get('ease'):
+                entity['motion']['ease'] = leg['ease']
+    elif t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
+        path = ask_route(leg_key(t))
+        if path:
+            arrive = t.get('arriveBy') or (t['when'] + t['run'] * 60)     # 0.6.0: re-timed by the signals when known
+            entity['motion'] = {'mode': 'path', 'points': path,
+                                'arriveAt': iso(arrive), 'maxSeconds': round(max(60, arrive - t['when']) + 120)}
+            # 1.1.0 (owner 14:04, 1D77 into Manchester Victoria: "sped up and stopped abruptly"): picks up speed leaving
+            # a station it stopped at, slows into one it stops at (booked; HQ 4.19.0 eases, older HQs ignore it)
+            with LOCK:
+                ease = easing(not t.get('point') and calls_at(t, t.get('stanox', '')), calls_at(t, t.get('nstanox', '')))
+            if ease:
+                entity['motion']['ease'] = ease
+    return entity, drawn[1]
+
+
+def timetable_entity(b: dict, now: float) -> dict:
+    """1.6.0: one timetable train (live feed away, 1.4.0), moved out of snapshot() unchanged."""
+    t = {'headcode': b['head']}
+    entity = {'id': 'rail:TT' + b['uid'].replace(' ', '_'), 'label': f"Train {b['head']} · timetable, not live",
+              'badge': b['head'], 'variant': kind_of(t)[0] or None, 'quality': 'estimated', 'observedAt': iso(now)}
+    if b['from'] is None:
+        entity['position'] = dict(zip(('lon', 'lat'), on_track(b['at'][1], b['at'][0])), headingDeg=None)
+    else:
+        key = (round(b['from'][0], 5), round(b['from'][1], 5), round(b['to'][0], 5), round(b['to'][1], 5))
+        path = ask_route(key)
+        if path:                                   # glides along the real track, as booked
+            entity['position'] = dict(zip(('lon', 'lat'), on_track(b['from'][1], b['from'][0])), headingDeg=None)
+            entity['observedAt'] = iso(b['start'])
+            entity['motion'] = {'mode': 'path', 'points': path, 'arriveAt': iso(b['end']),
+                                'maxSeconds': round(min(7700, b['end'] - b['start'] + 120))}
+            if b.get('ease'):
+                entity['motion']['ease'] = b['ease']
+        else:                                      # the track route is still being worked out: where it is now
+            entity['position'] = {'lon': b['at'][1], 'lat': b['at'][0], 'headingDeg': None}
+    return entity
+
+
+def frame_head(now: float):
+    """1.6.0: the parts of a train answer that are the same for every view (moved out of snapshot() unchanged; the
+    published train files use them too). Returns (frame, health, notice, trains, connected for, timetable trains)."""
     with LOCK:
         h, notice = health(now)
         settle_arrivals(now)
@@ -1930,6 +1996,46 @@ def snapshot(view) -> dict:
     if scheduled:
         frame_out.update(health='ready', scheduled=True)
         h = 'ready'
+    return frame_out, h, notice, trains, connected_for, booked_now
+
+
+def still_shown(t: dict, now: float) -> bool:
+    """A train is shown until 30 min after its last report; a finished or cancelled one goes sooner."""
+    age = now - t['when']
+    return not (age > DROP_AFTER or (t['terminated'] and age > TERMINATED_KEEP)
+                or (t.get('cancelled') and now - t.get('cancelledAt', 0) > CANCELLED_KEEP))
+
+
+def stretch_box(t: dict):
+    """0.4.1 / 1.0.2: the stretch a train is on, as (south, west, north, east), or None. A train is also sent to a view
+    this stretch crosses, so it glides in instead of popping up later, and stays when zoomed in between two places.
+    1.0.0: a train following its timetable uses its timetabled leg."""
+    leg = t.get('vleg')
+    if leg:
+        a, b = leg['from'], leg['to']
+    elif t.get('run'):
+        a, b = (t['lat'], t['lon']), (t['nlat'], t['nlon'])
+    else:
+        return None
+    return min(a[0], b[0]), min(a[1], b[1]), max(a[0], b[0]), max(a[1], b[1])
+
+
+def timetable_box(b: dict):
+    """1.4.0: the stretch a timetable train is on, as (south, west, north, east), or None."""
+    if not b['from']:
+        return None
+    return (min(b['from'][0], b['to'][0]), min(b['from'][1], b['to'][1]),
+            max(b['from'][0], b['to'][0]), max(b['from'][1], b['to'][1]))
+
+
+def crosses(box, s, w, n, e) -> bool:
+    return box is not None and box[0] <= n and box[2] >= s and box[1] <= e and box[3] >= w
+
+
+def snapshot(view) -> dict:
+    now = time.time()
+    note_demand()
+    frame_out, h, notice, trains, connected_for, booked_now = frame_head(now)
     if view is None or view[2] - view[0] > MAX_VIEW_SPAN:
         frame_out['notice'] = 'Zoom in to see trains'
         return frame_out
@@ -1939,93 +2045,26 @@ def snapshot(view) -> dict:
     clat, clon = (s + n) / 2, (w + e) / 2
     inside = []
     for tid, t in trains:
-        age = now - t['when']
-        if age > DROP_AFTER or (t['terminated'] and age > TERMINATED_KEEP) or (t.get('cancelled') and now - t.get('cancelledAt', 0) > CANCELLED_KEEP):
+        if not still_shown(t, now):
             continue
-        # 0.4.1: also send a train that is heading INTO this area, so it glides in instead of popping up later.
-        # 1.0.2 (owner 13:25, following 2D47 and zooming in: "it vanished from my screen"): zoomed right in, a train half way
-        # between two places has neither end in view - so a train is sent whenever the stretch it is on crosses the view
-        def crosses(a_lat, a_lon, b_lat, b_lon):
-            return min(a_lat, b_lat) <= n and max(a_lat, b_lat) >= s and min(a_lon, b_lon) <= e and max(a_lon, b_lon) >= w
-        heading_in = bool(t.get('run')) and crosses(t['lat'], t['lon'], t['nlat'], t['nlon'])
-        leg = t.get('vleg')
-        if leg:                                   # 1.0.0: following its timetable
-            heading_in = crosses(leg['from'][0], leg['from'][1], leg['to'][0], leg['to'][1])
-        if (s <= t['lat'] <= n and w <= t['lon'] <= e) or heading_in:
-            inside.append(((t['lat'] - clat) ** 2 + (t['lon'] - clon) ** 2, tid, t, age))
+        if (s <= t['lat'] <= n and w <= t['lon'] <= e) or crosses(stretch_box(t), s, w, n, e):
+            inside.append(((t['lat'] - clat) ** 2 + (t['lon'] - clon) ** 2, tid, t))
     inside.sort(key=lambda x: x[0])
     on_platform = 0
-    for _, tid, t, age in inside[:MAX_PER_VIEW]:
-        drawn = drawn_at(t)              # 0.7.0: beside its platform when we know it
-        leg = t.get('vleg')
-        if leg:
-            drawn = (on_track(leg['from'][1], leg['from'][0]), False)
-        on_platform += drawn[1]
-        entity = {'id': 'rail:' + tid, 'label': describe(t)[:160], 'badge': t['headcode'] or None,
-                  'variant': kind_of(t)[0] or None,      # 0.5.0: which of TPA's train drawings to show
-                  'position': dict(zip(('lon', 'lat'), drawn[0]), headingDeg=None),
-                  'quality': train_quality(t, now), 'observedAt': iso(t['when'])}
-        if leg and now >= leg['start']:
-            key = (round(leg['from'][0], 5), round(leg['from'][1], 5), round(leg['to'][0], 5), round(leg['to'][1], 5))
-            with LOCK:
-                path = ROUTES.get(key)
-                if path is None and STATE['trackLoaded'] and key not in PENDING_SET and len(PENDING) < 5000:
-                    PENDING.append(key); PENDING_SET.add(key); ROUTE_WAKE.set()
-            if path:
-                entity['observedAt'] = iso(leg['start'])
-                entity['motion'] = {'mode': 'path', 'points': path, 'arriveAt': iso(leg['end']),
-                                    'maxSeconds': round(min(7700, leg['end'] - leg['start'] + 120))}
-                if leg.get('ease'):
-                    entity['motion']['ease'] = leg['ease']
-        elif t.get('run') and t['event'] == 'DEPARTURE' and not t['terminated'] and not t.get('cancelled'):
-            key = leg_key(t)
-            with LOCK:
-                path = ROUTES.get(key)
-                if path is None and STATE['trackLoaded'] and key not in PENDING_SET and len(PENDING) < 5000:
-                    PENDING.append(key); PENDING_SET.add(key); ROUTE_WAKE.set()
-            if path:
-                arrive = t.get('arriveBy') or (t['when'] + t['run'] * 60)     # 0.6.0: re-timed by the signals when known
-                entity['motion'] = {'mode': 'path', 'points': path,
-                                    'arriveAt': iso(arrive), 'maxSeconds': round(max(60, arrive - t['when']) + 120)}
-                # 1.1.0 (owner 14:04, 1D77 into Manchester Victoria: "sped up and stopped abruptly"): picks up speed leaving
-                # a station it stopped at, slows into one it stops at (booked; HQ 4.19.0 eases, older HQs ignore it)
-                with LOCK:
-                    ease = easing(not t.get('point') and calls_at(t, t.get('stanox', '')), calls_at(t, t.get('nstanox', '')))
-                if ease:
-                    entity['motion']['ease'] = ease
+    for _, tid, t in inside[:MAX_PER_VIEW]:
+        entity, on_plat = train_entity(tid, t, now)
+        on_platform += on_plat
         frame_out['entities'].append(entity)
     # 1.4.0: timetable trains, while the live feed is away
     room = MAX_PER_VIEW - len(frame_out['entities'])
     near = []
     for b in booked_now:
         lat, lon = b['at']
-        crossing = b['from'] and min(b['from'][0], b['to'][0]) <= n and max(b['from'][0], b['to'][0]) >= s \
-            and min(b['from'][1], b['to'][1]) <= e and max(b['from'][1], b['to'][1]) >= w
-        if (s <= lat <= n and w <= lon <= e) or crossing:
+        if (s <= lat <= n and w <= lon <= e) or crosses(timetable_box(b), s, w, n, e):
             near.append(((lat - clat) ** 2 + (lon - clon) ** 2, b))
     near.sort(key=lambda x: x[0])
     for _, b in near[:max(0, room)]:
-        t = {'headcode': b['head']}
-        entity = {'id': 'rail:TT' + b['uid'].replace(' ', '_'), 'label': f"Train {b['head']} · timetable, not live",
-                  'badge': b['head'], 'variant': kind_of(t)[0] or None, 'quality': 'estimated', 'observedAt': iso(now)}
-        if b['from'] is None:
-            entity['position'] = dict(zip(('lon', 'lat'), on_track(b['at'][1], b['at'][0])), headingDeg=None)
-        else:
-            key = (round(b['from'][0], 5), round(b['from'][1], 5), round(b['to'][0], 5), round(b['to'][1], 5))
-            with LOCK:
-                path = ROUTES.get(key)
-                if path is None and STATE['trackLoaded'] and key not in PENDING_SET and len(PENDING) < 5000:
-                    PENDING.append(key); PENDING_SET.add(key); ROUTE_WAKE.set()
-            if path:                                   # glides along the real track, as booked
-                entity['position'] = dict(zip(('lon', 'lat'), on_track(b['from'][1], b['from'][0])), headingDeg=None)
-                entity['observedAt'] = iso(b['start'])
-                entity['motion'] = {'mode': 'path', 'points': path, 'arriveAt': iso(b['end']),
-                                    'maxSeconds': round(min(7700, b['end'] - b['start'] + 120))}
-                if b.get('ease'):
-                    entity['motion']['ease'] = b['ease']
-            else:                                      # the track route is still being worked out: where it is now
-                entity['position'] = {'lon': b['at'][1], 'lat': b['at'][0], 'headingDeg': None}
-        frame_out['entities'].append(entity)
+        frame_out['entities'].append(timetable_entity(b, now))
     with LOCK:
         STATE['drawnOnPlatform'] = on_platform
         STATE['timetableTrainsNow'] = len(booked_now)
@@ -2035,6 +2074,213 @@ def snapshot(view) -> dict:
         frame_out['notice'] = f'Showing nearest {MAX_PER_VIEW} · zoom in for all'
     return frame_out
 
+
+# ---------------------------------------------------------------- 1.6.0: trains as published files
+# Rob 16 Nov 2026 07:25 ("yes that's what I meant, let's proceed"; publish plan Stage 2): the load test at 00:14 was healthy
+# at 250 viewers, and at 500 the train engine was the limit (answers 4.76 s, its whole 1 GB, 2.6% failed) because it still
+# worked out an answer for every viewer's area. Now, like the buses, every PUBLISH_EVERY seconds the engine writes
+# ready-made files for the whole country into TILES_DIR/rail: meta.json, small squares s/<row>_<col>.json for street views
+# and big squares b/<row>_<col>.json for city views. The web front door (Caddy) hands them out, so the engine's work no
+# longer grows with the number of people watching. Each item is {"e": the train exactly as snapshot() sends it, "k": [lat,
+# lon] where it reported (to pick the nearest, as snapshot), "x": [s, w, n, e] the stretch it is on (also sent to a view
+# that stretch crosses, as snapshot), "tt": 1 for a timetable train}. Big squares carry each track path thinned to
+# BIG_PATH_TOLERANCE_M (under a pixel at those zooms). A square is only written again when it changes. The per-viewer
+# answer (/snapshot) stays, unchanged: the page falls back to it if the files are missing or old.
+TILES_DIR = (os.environ.get('TPA_RAIL_TILES_DIR') or '').strip()
+PUBLISH_EVERY = 10.0
+TILE_SMALL = (0.2, 0.3)               # degrees of latitude, longitude
+TILE_BIG = (1.0, 1.5)
+SMALL_BELOW_SPAN = 0.3                # views up to this tall (degrees of latitude, as the page asks) use the small squares
+BIG_PATH_TOLERANCE_M = 25.0
+MAX_TILES_PER_TRAIN = 64
+PUBLISH = {'state': 'off' if not TILES_DIR else 'starting', 'rounds': 0, 'last': None, 'recent': [], 'error': ''}
+TILE_LAST: dict = {}                  # (size, row, col) -> hash of the text last written
+THINNED: dict = {}                    # id(path list) -> (path, thinned copy) for paths still in ROUTES
+ITEM_MEMO: dict = {}                  # train id -> (entity, k, box, tt, small text, big text): unchanged trains not re-packed
+
+
+def _folder(path: Path) -> Path:
+    """Made readable by all (the service runs with UMask 0077; Caddy must read them)."""
+    path.mkdir(parents=True, exist_ok=True)
+    os.chmod(path, 0o755)
+    return path
+
+
+def _tile_write(path: Path, text: str) -> int:
+    """Write path and path.gz in full, then swap them in (a visitor never gets half a file). Bytes packed."""
+    raw = text.encode('utf-8')
+    packed = gzip.compress(raw, 6, mtime=0)
+    for target, data in ((path, raw), (path.with_name(path.name + '.gz'), packed)):
+        tmp = target.with_name('.' + target.name + '.tmp')
+        with open(tmp, 'wb') as fh:
+            fh.write(data)
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, target)
+    return len(packed)
+
+
+def _tile_remove(path: Path) -> None:
+    for target in (path, path.with_name(path.name + '.gz')):
+        try:
+            target.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def thin(points: list, tol_m: float) -> list:
+    """Douglas-Peucker: the fewest points that stay within tol_m metres of the track path (ends always kept)."""
+    if len(points) < 3:
+        return list(points)
+    k = math.cos(math.radians(points[0][1]))
+    xy = [(x * 111320 * k, y * 110540) for x, y in points]
+    keep = [False] * len(points)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(points) - 1)]
+    while stack:
+        i, j = stack.pop()
+        (x1, y1), (x2, y2) = xy[i], xy[j]
+        dx, dy = x2 - x1, y2 - y1
+        length = math.hypot(dx, dy) or 1e-9
+        best, bi = -1.0, -1
+        for m in range(i + 1, j):
+            x, y = xy[m]
+            d = abs(dy * x - dx * y + x2 * y1 - y2 * x1) / length
+            if d > best:
+                best, bi = d, m
+        if best > tol_m:
+            keep[bi] = True
+            stack += [(i, bi), (bi, j)]
+    return [p for p, kk in zip(points, keep) if kk]
+
+
+def thinned(path: list) -> list:
+    got = THINNED.get(id(path))
+    if got is None or got[0] is not path:
+        got = (path, thin(path, BIG_PATH_TOLERANCE_M))
+        THINNED[id(path)] = got
+    return got[1]
+
+
+def cells(size, lat: float, lon: float, box=None) -> set:
+    """The squares (row, col) a train belongs in: where it reported, and every square its stretch crosses."""
+    h, w = size
+    out = {(math.floor(lat / h), math.floor(lon / w))}
+    if box is not None:
+        r0, r1 = math.floor(box[0] / h), math.floor(box[2] / h)
+        c0, c1 = math.floor(box[1] / w), math.floor(box[3] / w)
+        if (r1 - r0 + 1) * (c1 - c0 + 1) <= MAX_TILES_PER_TRAIN:
+            out.update((r, c) for r in range(r0, r1 + 1) for c in range(c0, c1 + 1))
+    return out
+
+
+def publish_round() -> dict:
+    t_cpu, t_wall = time.thread_time(), time.monotonic()
+    now = time.time()
+    root = _folder(Path(TILES_DIR) / 'rail')
+    frame_out, h, notice, trains, connected_for, booked_now = frame_head(now)
+    small: dict = {}
+    big: dict = {}
+    shown = on_platform = moving = 0
+
+    seen = set()
+
+    def add(entity, k, box, tt):
+        key = entity['id']
+        seen.add(key)
+        memo = ITEM_MEMO.get(key)
+        if memo and memo[0] == entity and memo[1] == k and memo[2] == box and memo[3] == tt:
+            text_small, text_big = memo[4], memo[5]
+        else:
+            extra = (',"x":' + json.dumps([round(v, 6) for v in box], separators=(',', ':')) if box is not None else '') \
+                + (',"tt":1' if tt else '')
+            head = '{"k":' + json.dumps([round(k[0], 6), round(k[1], 6)], separators=(',', ':')) + extra + ',"e":'
+            text_small = head + json.dumps(entity, separators=(',', ':')) + '}'
+            m = entity.get('motion')
+            if m and m.get('points'):
+                text_big = head + json.dumps(dict(entity, motion=dict(m, points=thinned(m['points']))), separators=(',', ':')) + '}'
+            else:
+                text_big = text_small
+            ITEM_MEMO[key] = (entity, k, box, tt, text_small, text_big)
+        for c in cells(TILE_SMALL, k[0], k[1], box):
+            small.setdefault(c, []).append(text_small)
+        for c in cells(TILE_BIG, k[0], k[1], box):
+            big.setdefault(c, []).append(text_big)
+
+    for tid, t in trains:
+        if not still_shown(t, now):
+            continue
+        entity, on_plat = train_entity(tid, t, now)
+        shown += 1
+        on_platform += on_plat
+        moving += 'motion' in entity
+        add(entity, (t['lat'], t['lon']), stretch_box(t), False)
+    for b in booked_now:
+        add(timetable_entity(b, now), b['at'], timetable_box(b), True)
+    live = {id(r) for r in ROUTES.values() if r}
+    for k in [k for k in THINNED if k not in live]:
+        del THINNED[k]
+    for k in [k for k in ITEM_MEMO if k not in seen]:
+        del ITEM_MEMO[k]
+    written = packed_bytes = largest = 0
+    for name, tiles in (('s', small), ('b', big)):
+        folder = _folder(root / name)
+        for (r, c), parts in tiles.items():
+            text = '[' + ','.join(parts) + ']'
+            digest = hash(text)
+            if TILE_LAST.get((name, r, c)) == digest:
+                continue
+            n = _tile_write(folder / f'{r}_{c}.json', text)
+            TILE_LAST[(name, r, c)] = digest
+            written += 1
+            packed_bytes += n
+            largest = max(largest, n)
+        for gone in [k for k in TILE_LAST if k[0] == name and (k[1], k[2]) not in tiles]:
+            _tile_remove(folder / f'{gone[1]}_{gone[2]}.json')
+            del TILE_LAST[gone]
+    meta = {'v': 1, 'updatedAt': round(now, 1), 'health': frame_out['health'], 'notice': notice or '',
+            'scheduled': bool(frame_out.get('scheduled')), 'attribution': ATTRIBUTION,
+            # the old answer's "Listening" line, when a view has no trains (a fresh connection)
+            'listening': h == 'ready' and not notice and connected_for < 600,
+            'small': list(TILE_SMALL), 'big': list(TILE_BIG), 'smallBelowSpan': SMALL_BELOW_SPAN, 'maxSpan': MAX_VIEW_SPAN,
+            'maxPerView': MAX_PER_VIEW, 'every': PUBLISH_EVERY}
+    if frame_out.get('noticeDetail'):
+        meta['noticeDetail'] = frame_out['noticeDetail']
+    _tile_write(root / 'meta.json', json.dumps(meta, separators=(',', ':')))
+    with LOCK:
+        STATE['timetableTrainsNow'] = len(booked_now)
+    return {'at': iso(now), 'cpuSeconds': round(time.thread_time() - t_cpu, 2), 'wallSeconds': round(time.monotonic() - t_wall, 2),
+            'trains': shown, 'moving': moving, 'onPlatform': on_platform, 'timetableTrains': len(booked_now),
+            'tilesSmall': len(small), 'tilesBig': len(big), 'tilesWritten': written,
+            'packedKbWritten': round(packed_bytes / 1024), 'largestKb': round(largest / 1024, 1)}
+
+
+def publish_summary() -> dict:
+    out = {k: PUBLISH[k] for k in ('state', 'rounds', 'error')}
+    out['dir'] = TILES_DIR
+    out['last'] = PUBLISH['last']
+    rs = PUBLISH['recent']
+    if rs:
+        out['cpuPer10s'] = round(sum(r['cpuSeconds'] / max(PUBLISH_EVERY, r['wallSeconds']) * PUBLISH_EVERY for r in rs) / len(rs), 2)
+    return out
+
+
+def publish_once() -> None:
+    PUBLISH['state'] = 'running'
+    try:
+        r = publish_round()
+        PUBLISH['rounds'] += 1
+        PUBLISH['last'] = r
+        PUBLISH['recent'] = (PUBLISH['recent'] + [r])[-30:]
+        PUBLISH['error'] = ''
+    except Exception as exc:     # a bad round must never take the train layer down; try again next round
+        PUBLISH['error'] = (type(exc).__name__ + ': ' + str(exc))[:160]
+
+
+def publish_worker() -> None:
+    while True:
+        t0 = time.monotonic()
+        publish_once()
+        time.sleep(max(0.5, PUBLISH_EVERY - (time.monotonic() - t0)))
 
 def parse_bbox(query: str):
     q = parse_qs(query)
@@ -2100,6 +2346,7 @@ class Handler(BaseHTTPRequestHandler):
                                                       # 1.5.0: linked by where + when (since start), dropped again, and right now
                                                       'foundByPlace': STATE['placeMatched'], 'foundByPlaceDropped': STATE['placeDropped'],
                                                       **link_counts()},
+                                        'publish': publish_summary(),      # 1.6.0: trains as published files
                                         'platformMap': {'known': STATE['platformsKnown'], 'error': STATE['platformsError'],
                                                         'builtAt': iso(STATE['platformsBuiltAt']) if STATE['platformsBuiltAt'] else None,
                                                         'drawnOnPlatformLastView': STATE['drawnOnPlatform']}})
@@ -2179,6 +2426,8 @@ def main() -> None:
     threading.Thread(target=platforms_loop, daemon=True).start()
     threading.Thread(target=schedule_loop, daemon=True).start()
     threading.Thread(target=onward_loop, daemon=True).start()
+    if TILES_DIR:                    # 1.6.0: trains as published files (on the server: /run/tpa-rail-tiles)
+        threading.Thread(target=publish_worker, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
         print('=' * 60, flush=True)
         print(f'TPA TRAIN ENGINE {ENGINE_VERSION} on http://127.0.0.1:{port}/ (this PC only)', flush=True)

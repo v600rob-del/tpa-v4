@@ -25,6 +25,15 @@
 	}
 	# kit 4.57 (Plan B, owner 13 Nov 2026 19:15): ready-made bus tiles, written by the bus engine every 10 s into
 	# /run/tpa-bus-tiles (in memory), handed out by Caddy itself - packed once (.gz), never by Python per visitor.
+	# kit 4.66 (rail 1.6.0, Rob 16 Nov 2026 07:25 "let's proceed"): ready-made train files, written by the train engine every
+	# 10 s into /run/tpa-rail-tiles/rail (in memory), handed out the same way. Caddy tries the longer path first.
+	handle_path /tiles/rail/* {
+		root * /run/tpa-rail-tiles/rail
+		header Cache-Control "public, max-age=10"
+		file_server {
+			precompressed gzip
+		}
+	}
 	handle_path /tiles/* {
 		root * /run/tpa-bus-tiles
 		@lines path /bus/routes/*
