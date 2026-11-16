@@ -41,7 +41,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.17.0'
+VERSION = '4.17.1'
 BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
@@ -85,6 +85,7 @@ KEY = os.path.expanduser('~/.ssh/tpa_v4_server')
 # The tester itself is watched: if Cloud Shell falls behind (TESTER_LAG), the step says nothing about the server.
 LIMITS = {'served': 0.99, 'p95': 2.0, 'fail': 0.01, 'mem': 0.90, 'grace': 2.0, 'lag': 0.5}
 CONNS_PER_VIEWER = 2
+BACKGROUND = set()                  # 4.17.1: route lines still being fetched after their update was shown
 
 
 class Conn:
@@ -235,9 +236,16 @@ async def bus_tiles(pool, lat, lon, z, stats, lines_seen):
     build = meta.get('build')
     new = sorted(sids - lines_seen)[:40]               # each route line once per viewer (the browser keeps it a week)
     lines_seen.update(new)
-    got += await asyncio.gather(*(pool.get(f'/tiles/bus/routes/{urllib.parse.quote(str(build))}/'
-                                           + urllib.parse.quote(''.join(ch if ch.isalnum() or ch in '_.-' else '_' for ch in sid)[:120]) + '.json',
-                                           'bus', stats) for sid in new))
+    if new:
+        # 4.17.1 (Rob's first 4.17.0 run, 16 Nov 11:22: only 46% served at 1,000 with 1 in 20 reads at 0.74 s): the page
+        # (hq.js busTileFrame) waits at most 2.5 s for new route lines and then shows the buses anyway, and a browser
+        # fetches them all at once over one HTTP/2 connection. So the lines are fetched alongside, as before, but the
+        # update counts as shown when its squares are in - not after the last of up to 40 lines over our 2 connections.
+        lines = asyncio.ensure_future(asyncio.gather(*(pool.get(f'/tiles/bus/routes/{urllib.parse.quote(str(build))}/'
+                                      + urllib.parse.quote(''.join(ch if ch.isalnum() or ch in '_.-' else '_' for ch in sid)[:120]) + '.json',
+                                      'bus', stats) for sid in new)))
+        BACKGROUND.add(lines)
+        lines.add_done_callback(BACKGROUND.discard)
     return all(tok for tok, _ in got), poll
 
 
@@ -615,6 +623,7 @@ async def main_async(args, base, layers):
           f" · trains {'the old way (--rail-api)' if RAIL_API else 'as the page reads them (train files)'}")
     print(f"TPA standard: every viewer gets a fresh update at least every {10 + LIMITS['grace']:.0f} s, 19 in 20 reads within "
           f"{LIMITS['p95']:.0f} s, under 1 in 100 requests fail. 'served' = viewers who got that for the whole step.")
+    print("bus / rail / air = how long 1 in 20 of that layer's reads took (the slowest layer is the one holding viewers back).")
     print(f"{'viewers':>8} {'served':>7} {'req/s':>7} {'typical':>8} {'1 in 20':>8} {'failed':>7}  {'bus':>6} {'rail':>6} {'air':>6} {'traffic':>7} {'tester':>7}  server")
     for n in args.steps:
         before = server_stats(args.server_stats)
@@ -631,8 +640,8 @@ async def main_async(args, base, layers):
             top = max(use['units'].items(), key=lambda kv: kv[1]['memf'] or 0)
             srv = f"cpu {cpu:.2f}/{use['cpus']} · load {use['load']} · fullest {top[0]} {(top[1]['memf'] or 0):.0%}"
         print(f"{n:>8} {step['served']:>7.0%} {step['rate']:>7.1f} {fmt_s(step['p50']):>8} {fmt_s(step['p95']):>8} {step['fail']:>7.1%}  "
-              f"{fmt_s(lay.get('bus', (None,))[0]):>6} {fmt_s(lay.get('rail', (None,))[0]):>6} {fmt_s(lay.get('air', (None,))[0]):>6} "
-              f"{fmt_s(lay.get('traffic', (None,))[0]):>7} {fmt_s(step['lag95']):>7}  {srv}", flush=True)
+              f"{fmt_s(lay.get('bus', (None, None))[1]):>6} {fmt_s(lay.get('rail', (None, None))[1]):>6} {fmt_s(lay.get('air', (None, None))[1]):>6} "
+              f"{fmt_s(lay.get('traffic', (None, None))[1]):>7} {fmt_s(step['lag95']):>7}  {srv}", flush=True)
         if tester_behind(step):          # 4.17.0: the pretend crowd, not the server, could not keep up
             tester_stop = True
             print(f"STOPPED at {n} viewers: Cloud Shell (the tester) fell {step['lag95']:.1f} s behind its own timers, so this "
