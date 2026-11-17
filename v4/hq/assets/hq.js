@@ -304,6 +304,11 @@ async function loadDetails(e,box){
       const line=document.createElement('div');line.className='detail-row';
       const k=document.createElement('span');k.className='detail-label';k.textContent=String(row.label||'').slice(0,30);
       const v=document.createElement('span');v.className='detail-value';v.textContent=String(row.value||'').slice(0,120);
+      // 4.71.0 (tester 17 Nov 19:30, a lane closure: "the panel itself didn't answer 'where exactly?'"): the road's number and
+      // name from the street map, and the nearest town, in place of only "Main road (trunk)"
+      if(e.component==='road'&&row.label==='Road'&&e.position)v.textContent=roadWhere(v.textContent,
+        nearestRoad(e.position.lon,e.position.lat,ROAD_CLASS[v.textContent]||'',window.TPA_MAP_ROADS?.(e.position.lon,e.position.lat)||[]),
+        townNear(e.position.lon,e.position.lat)).slice(0,120);
       // 4.32.0 (owner 14:19 "match ... registration plates to buses"): a number plate looks like one
       if(row.label==='Number plate'&&/^[A-Z0-9 ]{2,10}$/.test(v.textContent))v.classList.add('plate');
       line.append(k,v);(row.more===true?more:rows).push(line);}
@@ -552,7 +557,8 @@ function selectEntity(e){
   const setOpen=open=>{selected.classList.toggle('open',open);grab.setAttribute('aria-expanded',String(open));grab.setAttribute('aria-label',open?'Show less':'Show more');};
   grab.onclick=ev=>{ev.stopPropagation();setOpen(!selected.classList.contains('open'));};setOpen(false);
   selected.classList.toggle('station-box',e.component==='stations'||e.component==='stops'||e.component==='busstations');   // 4.52.0: a wider box for a departure board
-  selected.replaceChildren(...[grab,h,info,more,fb,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
+  // 4.71.0 (tester 17 Nov 19:30: "easy to miss ... a long way down"): Follow me! straight under the name
+  selected.replaceChildren(...[grab,h,info,fb,more,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
   if(isPhone())requestAnimationFrame(()=>keepAboveSheet(e));
   $('map-place').textContent=e.label.toUpperCase();paint();
   loadDetails(e,more);
@@ -1615,6 +1621,25 @@ function kmApart(a1,o1,a2,o2){const k=Math.cos(a1*Math.PI/180);return 111.2*Math
 // how far a 0.1 degree square may be from the place it is counted in: far out a city takes its whole area
 function bubbleReach(z){return z<9?60:z<10?25:8;}   // 8 km: a place inside or touching its 11 km square
 function moreImportant(a,b){return (a.city?0:1000)+(a.rank||99)<(b.city?0:1000)+(b.rank||99);}
+// 4.71.0: where a road incident is - the nearest named road on the street map (one of the same kind counts as 2.5 times
+// nearer; none further than 80 m), and the nearest town within 15 km
+const ROAD_CLASS={'Motorway':'motorway','Motorway slip road':'motorway','Main road (trunk)':'trunk','Main road slip road':'trunk',
+  'A road':'primary','A road slip road':'primary','B road':'secondary','B road link':'secondary','Local road':'tertiary',
+  'Street':'minor','Service road':'service','Track':'track'};
+function nearestRoad(lon,lat,cls,roads){
+  const kx=Math.cos(lat*Math.PI/180)*111195,ky=111195;let best=null,bs=Infinity;
+  for(const r of roads||[])for(const l of r.lines||[])for(let i=0;i+1<l.length;i++){
+    const ax=(l[i][0]-lon)*kx,ay=(l[i][1]-lat)*ky,vx=(l[i+1][0]-lon)*kx-ax,vy=(l[i+1][1]-lat)*ky-ay;
+    const t=Math.max(0,Math.min(1,-(ax*vx+ay*vy)/((vx*vx+vy*vy)||1e-9))),dist=Math.hypot(ax+vx*t,ay+vy*t),score=r.cls===cls?dist:dist*2.5;
+    if(score<bs){bs=score;best={ref:r.ref||'',name:r.name||'',metres:Math.round(dist)};}}
+  return bs<=80?best:null;
+}
+function roadWhere(category,road,town){let t=road?[road.ref,road.name].filter(Boolean).join(' '):(category||'');if(town)t+=(t?', ':'')+'near '+town;return t;}
+function townNear(lon,lat){
+  const places=(window.TPA_MAP_PLACES?.()||[]).concat(POI.map(([name,plon,plat])=>({name,lon:plon,lat:plat,city:false})));
+  const b=nearestPlace(lat,lon,places);return b&&kmApart(lat,lon,b.lat,b.lon)<=15?b.name:'';
+}
+window.TPA_HQ_ROADS={nearest:(lon,lat,cls,roads)=>nearestRoad(lon,lat,cls,roads),where:(c,r,t)=>roadWhere(c,r,t),town:(lon,lat)=>townNear(lon,lat)};
 window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||'',moreImportant:(a,b)=>moreImportant(a,b),reach:z=>bubbleReach(z),places:(pl,z)=>bubblePlaces(pl,z).map(p=>p.name)};
 function bubbleWords(g){
   return BUBBLE_LAYERS.filter(id=>g[id]>0).map(id=>g[id].toLocaleString('en-GB')+' '+BUBBLE_WORD[id][g[id]===1?0:1]);
@@ -2029,20 +2054,24 @@ async function discover(){
     }
   }finally{discovering=false;paint();}
 }
-function search(query){let q=query.trim().toLowerCase(),out=$('target-list');out.replaceChildren();stationSearch(q);if(!q){const p=document.createElement('p');p.className='empty';p.textContent='Find a place, station, bus station, flight, train or bus.';out.append(p);return;}const places=POI.filter(([name])=>name.toLowerCase().includes(q)).slice(0,10).map(([name,lon,lat])=>({name,kind:'Place',action:()=>gotoPlace(lon,lat,11,name)}));const targets=listEntities().filter(e=>e.position&&(e.label.toLowerCase().includes(q)||e.id.toLowerCase().includes(q))).slice(0,10).map(e=>({name:e.label,kind:e.component.toUpperCase(),action:()=>{gotoPlace(e.position.lon,e.position.lat,13,e.label);selectEntity(e);}}));if(q==='uk'||'united kingdom'.includes(q))places.unshift({name:'United Kingdom overview',kind:'Region',action:fitUK});const items=[...places,...targets];if(!items.length){const p=document.createElement('p');p.className='empty';p.textContent='Nothing found by that name.';out.append(p);return;}for(const item of items){const b=document.createElement('button');b.type='button';b.className='search-result';const name=document.createElement('strong');name.textContent=item.name;const type=document.createElement('small');type.textContent=item.kind;b.append(name,type);b.onclick=()=>{item.action();$('search').value=item.name;};out.append(b);}}
+function search(query){let q=query.trim().toLowerCase(),out=$('target-list');out.replaceChildren();stationSearch(q);if(!q){const p=document.createElement('p');p.className='empty';p.textContent='Find a place, station, bus station, flight, train or bus.';out.append(p);return;}const places=POI.filter(([name])=>name.toLowerCase().includes(q)).slice(0,10).map(([name,lon,lat])=>({name,kind:'Place',action:()=>gotoPlace(lon,lat,11,name)}));const targets=listEntities().filter(e=>e.position&&(e.label.toLowerCase().includes(q)||e.id.toLowerCase().includes(q))).slice(0,10).map(e=>({name:e.label,kind:e.component.toUpperCase(),action:()=>{gotoPlace(e.position.lon,e.position.lat,13,e.label);selectEntity(e);}}));if(q==='uk'||'united kingdom'.includes(q))places.unshift({name:'United Kingdom overview',kind:'Region',action:fitUK});const items=[...places,...targets];if(!items.length){const p=document.createElement('p');p.className='empty';const wait=q.length>=2&&stationSearchable();p.classList.toggle('searching',wait);p.textContent=wait?'Searching…':'Nothing found by that name.';out.append(p);return;}for(const item of items){const b=document.createElement('button');b.type='button';b.className='search-result';const name=document.createElement('strong');name.textContent=item.name;const type=document.createElement('small');type.textContent=item.kind;b.append(name,type);b.onclick=()=>{item.action();$('search').value=item.name;closeResults();};out.append(b);}}
 // 4.52.0 (owner 12 Nov 17:25: open a board by "search by name"): stations from the stations engine, by name or
 // three-letter code, at the top of the results. Choosing one goes there and opens its board.
 let stationAsk=0,stationTimer=0;
 // 4.54.0 (owner 12 Nov 20:22, bus stations found by "Search by name"): railway stations first, then bus stations.
+// 4.71.0 (tester 17 Nov 19:30: "Heathrow" first said "Nothing found by that name", then three stations appeared; and the
+// list stayed open after a choice): "Searching…" until the stations have answered, and the list closes once one is chosen.
+function stationSearchable(){return ['busstations','stations'].some(c=>state.live[c]&&!state.parked[c]&&state.visible[c]);}
+function closeResults(){stationAsk++;clearTimeout(stationTimer);$('target-list').replaceChildren();}
 function stationSearch(q){clearTimeout(stationTimer);const ask=++stationAsk;
   if(q.length<2)return;
   stationTimer=setTimeout(async()=>{
-    const out=$('target-list');
+    const out=$('target-list');let found=false;
     for(const [comp,word] of [['busstations','Bus station'],['stations','Station']]){
     if(!state.live[comp]||state.parked[comp]||!state.visible[comp])continue;
     try{const r=await fetch('/api/v4/components/'+comp+'/search?q='+encodeURIComponent(q.slice(0,60)));if(!r.ok)continue;
       const d=await r.json();if(ask!==stationAsk)return;if(!Array.isArray(d.results)||!d.results.length)continue;
-      out.querySelector('p.empty')?.remove();out.querySelectorAll('.station-result.'+comp).forEach(n=>n.remove());
+      found=true;out.querySelector('p.empty')?.remove();out.querySelectorAll('.station-result.'+comp).forEach(n=>n.remove());
       const first=out.firstChild;
       for(const x of d.results.slice(0,8)){
         if(!x||typeof x.id!=='string'||typeof x.label!=='string'||!Number.isFinite(x.lat)||!Number.isFinite(x.lon))continue;
@@ -2051,9 +2080,11 @@ function stationSearch(q){clearTimeout(stationTimer);const ask=++stationAsk;
         const type=document.createElement('small');type.textContent=word+(typeof x.badge==='string'?' · '+x.badge:'');b.append(name,type);
         b.onclick=()=>{const e={component:comp,id:x.id,label:x.label.slice(0,80),badge:typeof x.badge==='string'?x.badge:null,variant:comp==='stations'?'station':'bus',
             quality:'observed',observedAt:new Date(serverNow()).toISOString(),position:{lon:x.lon,lat:x.lat,headingDeg:null}};
-          gotoPlace(x.lon,x.lat,15,x.label);$('search').value=x.label;selectEntity(e);};
+          gotoPlace(x.lon,x.lat,15,x.label);$('search').value=x.label;selectEntity(e);closeResults();};
         out.insertBefore(b,first);}
-    }catch(_){}}},250);}
+    }catch(_){}}
+    if(ask===stationAsk&&!found){const p=out.querySelector('p.empty.searching');if(p){p.classList.remove('searching');p.textContent='Nothing found by that name.';}}
+  },250);}
 for(const id of IDS){$(id+'-toggle').addEventListener('change',()=>{state.visible[id]=$(id+'-toggle').checked;paint();});}
 function clock(){$('localclock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false});}clock();setInterval(clock,1000);
 $('home-button').onclick=home;$('zoom-in').onclick=()=>zoom(1);$('zoom-out').onclick=()=>zoom(-1);$('menu-button').onclick=()=>setMenu(!$('sidebar').classList.contains('open'));$('sidebar-close').onclick=()=>setMenu(false);$('sidebar-backdrop').onclick=()=>setMenu(false);$('search').addEventListener('input',e=>search(e.target.value));

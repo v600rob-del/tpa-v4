@@ -42,6 +42,23 @@ function mapPlaces(){
   }catch(e){return [];}
 }
 Object.defineProperty(window,'TPA_MAP_PLACES',{value:mapPlaces,writable:false,configurable:false});
+// 4.71.0 (tester 17 Nov 19:30: a lane closure said only "Main road (trunk)" - "where exactly?"): the street map's own road
+// numbers and names (OpenStreetMap, already credited) near a point, for the incident box. Only the map pieces already
+// loaded; nothing is downloaded for it.
+function mapRoads(lon,lat,deg){
+  const gl=PLACE_GL.gl;if(!gl||typeof gl.querySourceFeatures!=='function')return [];
+  const d=deg||0.01,near=([x,y])=>Math.abs(x-lon)<d*1.7&&Math.abs(y-lat)<d;
+  try{const out=[];
+    for(const f of gl.querySourceFeatures('openmaptiles',{sourceLayer:'transportation_name'})){
+      const p=f.properties||{},g=f.geometry;if(!g)continue;
+      const ref=String(p.ref||'').trim().slice(0,12),name=String(p['name:en']||p.name_en||p.name||'').trim().slice(0,60);if(!ref&&!name)continue;
+      const lines=g.type==='LineString'?[g.coordinates]:g.type==='MultiLineString'?g.coordinates:[];
+      const keep=lines.filter(l=>Array.isArray(l)&&l.some(near));if(!keep.length)continue;
+      out.push({ref,name,cls:String(p.class||''),lines:keep});}
+    return out;
+  }catch(e){return [];}
+}
+Object.defineProperty(window,'TPA_MAP_ROADS',{value:mapRoads,writable:false,configurable:false});
 // 4.64.1 (Rob 15 Nov 2026 22:04-22:09, "as if a sheet is over the top of the map"): if the window changes size while the
 // street map is starting, MapLibre can miss it and keep drawing on a smaller canvas, so part of the map shows only the
 // plain background. Any time the canvas and its box disagree, the street map is told its real size again.
