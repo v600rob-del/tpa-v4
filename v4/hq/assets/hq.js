@@ -1578,7 +1578,11 @@ function bubbleLayer(id){return BUBBLES_ON&&!!map&&map.getZoom()<BUBBLE_BELOW_ZO
 function bubblesShowing(){return BUBBLE_LAYERS.some(bubbleLayer);}
 // while its town bubbles show, a layer's vehicles are not downloaded at all (the browser's biggest saving zoomed out) -
 // unless one of them is chosen or followed, which stays on the map
-function bubbleSkips(id){return bubbleLayer(id)&&state.selected?.component!==id&&follow?.comp!==id;}
+function bubbleSkips(id){const skip=bubbleLayer(id)&&state.selected?.component!==id&&follow?.comp!==id;BUBBLE_SKIPPED[id]=skip;return skip;}
+// 4.67.4 (Rob 14:11: zoomed in on Beverley "there wasnt any, then waited a while and 4 or 5 appeared"): the last answer
+// was the empty bubble one, which "covered" the bigger zoomed-out view, so zooming in asked for nothing until the next 10 s
+// round. A layer that was in bubbles is asked again as soon as it leaves them.
+const BUBBLE_SKIPPED=Object.create(null);
 function bubbleQuiet(id){return BUBBLE_QUIET.includes(id)&&bubblesShowing();}
 function countInView(id){
   const c=COUNTS[id];if(!c||!map)return 0;const b=map.getBounds(),S=b.getSouth(),N=b.getNorth(),W=b.getWest(),E=b.getEast();let n=0;
@@ -1599,8 +1603,11 @@ function bubblePlaces(places,z){
   if(z<10){const big=places.filter(p=>p.city||(p.rank||99)<=12);if(big.length)return big;}
   return places;
 }
+function kmApart(a1,o1,a2,o2){const k=Math.cos(a1*Math.PI/180);return 111.2*Math.sqrt((a2-a1)**2+((o2-o1)*k)**2);}
+// how far a 0.1 degree square may be from the place it is counted in: far out a city takes its whole area
+function bubbleReach(z){return z<9?60:z<10?25:8;}   // 8 km: a place inside or touching its 11 km square
 function moreImportant(a,b){return (a.city?0:1000)+(a.rank||99)<(b.city?0:1000)+(b.rank||99);}
-window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||'',moreImportant:(a,b)=>moreImportant(a,b),places:(pl,z)=>bubblePlaces(pl,z).map(p=>p.name)};
+window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||'',moreImportant:(a,b)=>moreImportant(a,b),reach:z=>bubbleReach(z),places:(pl,z)=>bubblePlaces(pl,z).map(p=>p.name)};
 function bubbleWords(g){
   return BUBBLE_LAYERS.filter(id=>g[id]>0).map(id=>g[id].toLocaleString('en-GB')+' '+BUBBLE_WORD[id][g[id]===1?0:1]);
 }
@@ -1610,13 +1617,19 @@ function drawBubbles(ox,oy){
   const sig=[z.toFixed(3),W.toFixed(5),N.toFixed(5),d.w,d.h,ox.toFixed(1),oy.toFixed(1)].concat(BUBBLE_LAYERS.map(id=>bubbleLayer(id)&&state.visible[id]?COUNTS[id].at:'-')).join('|');
   if(sig===bubbleSig)return;bubbleSig=sig;
   const pl=(N-S)*0.2,pw=(E-W)*0.2,inside=(lat,lon)=>lat>S-pl&&lat<N+pl&&lon>W-pw&&lon<E+pw;
-  let places=(window.TPA_MAP_PLACES?.()||[]).filter(p=>inside(p.lat,p.lon));
-  if(!places.length)places=POI.map(([name,lon,lat])=>({name,lon,lat,city:true})).filter(p=>inside(p.lat,p.lon));
+  // 4.67.4 (Rob 14:11: "beverley ... 139 buses in the bubble. I zoomed in and there wasnt any"): the street map only gives
+  // the names in the pieces of map it has loaded, so near the edge of the screen a big place (Hull) could be missing and its
+  // buses went to the next name along (Beverley). The page's own list of main places is always added, and a square only
+  // joins a place close enough to be its own (bubbleReach); further out it is a bubble of its own.
+  const fromMap=(window.TPA_MAP_PLACES?.()||[]).filter(p=>inside(p.lat,p.lon)),known=new Set(fromMap.map(p=>p.name));
+  let places=fromMap.length?fromMap.concat(POI.filter(([name])=>!known.has(name)).map(([name,lon,lat])=>({name,lon,lat,city:false,rank:10})).filter(p=>inside(p.lat,p.lon)))
+    :POI.map(([name,lon,lat])=>({name,lon,lat,city:true})).filter(p=>inside(p.lat,p.lon));
   places=bubblePlaces(places,z);
   const groups=new Map();
   for(const id of BUBBLE_LAYERS){if(!bubbleLayer(id)||!state.visible[id])continue;const c=COUNTS[id];
     for(const [r,col,n] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(!inside(lat,lon)||!(n>0))continue;
-      const best=nearestPlace(lat,lon,places);
+      let best=nearestPlace(lat,lon,places);
+      if(best&&kmApart(lat,lon,best.lat,best.lon)>bubbleReach(z))best=null;
       const key=best?best.name+'|'+best.lon.toFixed(3)+'|'+best.lat.toFixed(3):'g'+Math.floor(lat/0.5)+'_'+Math.floor(lon/0.5);
       let g=groups.get(key);
       if(!g){g={name:best?best.name:'',city:!!best?.city,rank:best?.rank||99,lat:best?best.lat:0,lon:best?best.lon:0,wl:0,wn:0,ww:0,bus:0,rail:0};groups.set(key,g);}
@@ -1862,7 +1875,7 @@ function refetchLiveView(){clearTimeout(refetchTimer);refetchTimer=setTimeout(()
   for(const id of IDS)if(state.live[id]&&!state.parked[id]&&(!state.frames[id]?.overlay||hasItems[id])&&(state.status[id]==='ready'||state.status[id]==='stale')){
     // 4.1.0: nothing to fetch if the last answer already covered this whole view.
     const b=fetchedBox[id];
-    if(v&&b&&b.complete&&v.w>=b.w&&v.e<=b.e&&v.s>=b.s&&v.n<=b.n)continue;
+    if(v&&b&&b.complete&&v.w>=b.w&&v.e<=b.e&&v.s>=b.s&&v.n<=b.n&&!(BUBBLE_SKIPPED[id]&&!bubbleLayer(id)))continue;
     getComponent(id);
   }
 },300);}   // 4.1.13: was 0.8 s - a new area's vehicles are asked for sooner
