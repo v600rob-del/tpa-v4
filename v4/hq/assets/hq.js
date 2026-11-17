@@ -2159,9 +2159,15 @@ try{
   window.TPA_BASEMAP.attach(map,{style:direct?cfg.style:via,fallbackStyle:direct?via:null,
     attribution:'<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> | <a href="https://openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'});});
 }catch(e){state.renderer='fallback';reportBrowser('map-constructor-error','leaflet-init',String(e?.message||e));map?.remove?.();map=null;diagnose();}}
+const MAP_PIECE_ERRORS=[];Object.defineProperty(window,'TPA_MAP_PIECE_ERRORS',{value:()=>MAP_PIECE_ERRORS.slice(),writable:false});
 window.TPA_HQ_VECTOR_READY=()=>{speedMark('street map drawn');ready=true;state.renderer='leaflet-maplibre';state.mapErrors=0;
   document.body.classList.add('vector-ready');notice.classList.add('hidden');syncView();};
+// 4.71.2 (Rob 17 Nov 2026 21:42-21:50: "the cover thing" - part of the street map blank, then the plain outline map over
+// everything, right after a refresh until it happened again). Any street map error, even one piece of map that failed to
+// download, put the plain outline map on top of the street map for the rest of the visit. Once the street map has drawn,
+// a failed piece is only noted: the street map stays, and MapLibre fills the gap from the pieces it has.
 window.TPA_HQ_VECTOR_ERROR=(message)=>{state.mapErrors++;const t=String(message||'Unknown source error');
+  if(state.renderer==='leaflet-maplibre'&&('street map drawn' in SPEED.first)){MAP_PIECE_ERRORS.push({at:new Date().toISOString(),message:t.slice(0,160)});if(MAP_PIECE_ERRORS.length>20)MAP_PIECE_ERRORS.shift();return;}
   // A source error does not destroy Leaflet controls or the five sockets.
   // Keep fallback geography; never turn it invisible until the actual basemap loads.
   if(state.mapErrors>=1){ready=false;state.renderer='leaflet-degraded';document.body.classList.remove('vector-ready');paint();diagnose();}
