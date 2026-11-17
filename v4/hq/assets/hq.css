@@ -60,7 +60,14 @@ body.vector-ready .vector-map{z-index:4}
 .review-pin .review-art svg{transition:transform .2s ease}
 .review-pin .review-route{position:absolute;top:30px;left:50%;transform:translateX(-50%);border:2px solid currentColor;background:#e5f9ff;color:#07182b;font-size:11px;line-height:16px;font-weight:900;padding:0 5px;border-radius:10px;white-space:nowrap;box-shadow:0 2px 5px #06132499}
 .review-pin.bus .review-route{background:#1f805b;color:#fff;border-color:#d9fff0}
-.review-pin.stale{opacity:.52}
+.review-pin.stale{opacity:1}
+/* 4.72.0 (Rob 17 Nov: no grey; "something that looks like it is attempting to get data"): a soft "searching for signal"
+   ping round a vehicle we've lost touch with, then a gentle fade away. Drawn by the graphics chip (opacity/transform only). */
+.review-pin.searching::before,.review-pin.searching .review-art::after{content:'';position:absolute;left:50%;top:50%;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;border:3px solid #14a394;box-shadow:0 0 0 1px #ffffffb0,inset 0 0 0 1px #ffffffb0;opacity:0;pointer-events:none;animation:tpa-search 2s ease-out infinite}
+.review-pin.searching .review-art::after{animation-delay:.7s}   /* two rings, like a signal being sent out */
+@keyframes tpa-search{0%{opacity:1;transform:scale(.75)}75%{opacity:0;transform:scale(1.7)}100%{opacity:0;transform:scale(1.7)}}
+.marker-layer .vehicle-pin.leaving,.marker-layer .vehicle-pin.glide.leaving{opacity:0!important;transition:opacity 1.5s ease,transform var(--glide,1000ms) linear}
+@media(prefers-reduced-motion:reduce){.review-pin.searching::before{animation:none;opacity:.8;border-style:dashed;transform:none}.review-pin.searching .review-art::after{display:none}}
 .review-pin.selected-pin,.review-pin:focus-visible{transform:translate(-50%,-50%) scale(1.17);outline:3px solid #ffdf35;outline-offset:4px;box-shadow:0 0 13px 5px #ffdf35,0 4px 10px #0008;z-index:20;opacity:1;color:#ffe76a}
 .review-pin.selected-pin::after{content:'';position:absolute;inset:-10px;border:2px solid #ffdf35;border-radius:15px;pointer-events:none}
 .review-no-live{color:#ffe397!important;font-weight:800}

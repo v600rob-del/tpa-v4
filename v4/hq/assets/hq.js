@@ -115,8 +115,26 @@ function listEntities(){return IDS.flatMap(id=>{
   if(!state.visible[id]||state.status[id]==='not_installed')return [];
   const entities=(state.frames[id]?.entities||[]).filter(airShown);
   // A failed/stale component may keep its last-known markers, but never appear current.
-  return state.status[id]==='ready'?entities:entities.map(e=>({...e,quality:'stale'}));
+  // 4.72.0 (Rob 17 Nov 22:56-22:59: grey "looks more like we have lost a connection"; "better to have something that looks like
+  // it is attempting to get data"): a late layer's vehicles carry on as they were (the words still say so) for LATE_GRACE_MS,
+  // then they look for their data (lostState) and in the end fade away. layerLate = how long the layer has been late (ms).
+  if(state.status[id]==='ready'){delete LATE[id];return entities;}
+  if(!LATE[id])LATE[id]=Date.now();
+  const lateFor=Date.now()-LATE[id];
+  return entities.map(e=>({...e,quality:'stale',ownQuality:e.quality,layerLate:lateFor}));
 });}
+// 4.72.0: no grey vehicles. 0 = normal; 1 = looking for its data (full colour, a soft "searching for signal" pulse); 2 = gone
+// (faded away). A vehicle is "lost" when its own engine says stale (a bus silent 5 min, a train with nothing to go on, a
+// cancelled train) or its whole layer has been late for over LATE_GRACE_MS. It searches for up to SEARCH_MS, then fades away.
+// The selected or followed vehicle never fades away (its box stays useful); it keeps searching.
+const LATE={},LATE_GRACE_MS=Number(window.TPA_HQ_TEST_LATE_GRACE_MS)||120000,SEARCH_MS=Number(window.TPA_HQ_TEST_SEARCH_MS)||180000,SEARCHING=new Map();let GONE=new Set();   // (the TEST values: tests only)
+window.TPA_HQ_SEARCHING=()=>({searching:[...SEARCHING.keys()].filter(k=>!GONE.has(k)),gone:[...GONE],late:{...LATE}});
+function isLost(e){const own=e.layerLate===undefined?e.quality:e.ownQuality;return own==='stale'||(e.layerLate!==undefined&&e.layerLate>LATE_GRACE_MS);}
+function lostState(e,k,keepIt){
+  if(!isLost(e)){SEARCHING.delete(k);return 0;}
+  const t=Date.now();if(!SEARCHING.has(k)){SEARCHING.set(k,t);if(SEARCHING.size>20000)SEARCHING.delete(SEARCHING.keys().next().value);}
+  return t-SEARCHING.get(k)>SEARCH_MS&&!keepIt?2:1;
+}
 // ICON REVIEW ONLY. The SVG shapes are fixed HQ artwork reproduced from the
 // legacy approved map marker paths; component JSON supplies DATA, never HTML.
 // This review build is physically separate from the working HQ 4.0.8 checkpoint.
@@ -582,19 +600,30 @@ let moving=0,mapMoving=false;
 // the screen glide and the rest step once a second, until it is comfortable again.
 // Phones start (and stay) with fewer gliding vehicles to save battery; the rest step once a second.
 const GLIDE_MAX=(window.innerWidth||1000)<760?60:600,GLIDE_MIN=15;
-let glideBudget=GLIDE_MAX,frameAvg=16,lastFrame=0,glideCount=0;
+let glideBudget=GLIDE_MAX,frameAvg=16,lastFrame=0,glideCount=0,frameBase=16.7;
+// 4.72.0 (measured 17 Nov 22:50: on a PC drawing ~30 frames a second the budget fell 600 -> 42 -> 15 in 3 minutes and never
+// came back, so most icons stepped once a second): "slow" is judged against THIS device's own steady pace (frameBase, a
+// floor that drops at once and creeps up slowly), not a fixed 60-frames-a-second screen. Gliding itself is done by the
+// graphics chip, so a steady 30 frames a second is fine; only frames well behind the device's own pace cut the budget, and
+// it grows back as soon as the device keeps its pace again.
+function glideJudge(g,dt){
+  g.base=Math.min(50,dt<g.base?g.base*0.7+dt*0.3:g.base+(dt-g.base)*0.0003);   // never takes slower than 20 a second as "its pace"
+  g.avg=g.avg*0.98+dt*0.02;
+  if(g.avg>g.base*1.6+6&&g.budget>GLIDE_MIN){g.budget=Math.max(GLIDE_MIN,Math.floor(g.budget*0.85));g.avg=g.base*1.3;}
+  else if(g.avg<g.base*1.25+2&&g.budget<GLIDE_MAX&&g.full)g.budget=Math.min(GLIDE_MAX,g.budget+10);
+  return g;}
+window.TPA_HQ_GLIDE_JUDGE=(dts,budget)=>{const g={base:16.7,avg:16,budget:budget||GLIDE_MAX,full:true};for(const dt of dts)glideJudge(g,Math.min(100,dt));return g;};   // tests
 function watchFrames(ts){
   requestAnimationFrame(watchFrames);
   if(lastFrame&&glideCount&&document.visibilityState==='visible'&&!mapMoving){
     // 4.1.5: only sustained slowness counts (a single busy moment, e.g. fresh data arriving, doesn't).
-    const dt=Math.min(100,ts-lastFrame);frameAvg=frameAvg*0.98+dt*0.02;
-    if(frameAvg>34&&glideBudget>GLIDE_MIN){glideBudget=Math.max(GLIDE_MIN,Math.floor(glideBudget*0.85));frameAvg=22;}
-    else if(frameAvg<20&&glideBudget<GLIDE_MAX&&glideCount>=glideBudget){glideBudget=Math.min(GLIDE_MAX,glideBudget+10);}
+    const g=glideJudge({base:frameBase,avg:frameAvg,budget:glideBudget,full:glideCount>=glideBudget},Math.min(100,ts-lastFrame));
+    frameBase=g.base;frameAvg=g.avg;glideBudget=g.budget;
   }
   lastFrame=ts;
 }
 requestAnimationFrame(watchFrames);
-window.TPA_HQ_GLIDE_STATUS=()=>({budget:glideBudget,gliding:glideCount,frameMs:Math.round(frameAvg*10)/10});
+window.TPA_HQ_GLIDE_STATUS=()=>({budget:glideBudget,gliding:glideCount,frameMs:Math.round(frameAvg*10)/10,deviceMs:Math.round(frameBase*10)/10});
 function keyOf(e){return e.component+':'+e.id;}
 // 4.13.3 (owner 3 Nov 19:11: "Your clock is 6.5 seconds behind"): vehicles are moved by the SERVER's time. Each answer
 // carries it; the difference from this device's clock is taken from the quickest recent answers (least delay).
@@ -733,13 +762,13 @@ function infoText(e,est){
   if(e.component==='stations')return 'Railway station'+(e.badge?' · code '+e.badge:'');   // 4.52.0
   if(e.component==='stops')return 'Bus stop'+(e.badge?' '+e.badge:'')+' · live times where buses are seen';   // 4.53.0
   if(e.component==='busstations')return ({coach:'Coach station',interchange:'Interchange'}[e.variant]||'Bus station')+' · live times where buses are seen';   // 4.54.0
-  if(e.motion&&e.motion.mode==='timed'&&e.motion.fresh)return 'About here now · carried on from its last report at '+seen+' (estimate)'+(e.quality==='stale'?' · may have moved':'');   // 4.62.0 test modes
-  if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'About here now · worked out from its timetable and its last report at '+seen+(e.quality==='stale'?' · may have moved':'');   // 4.61.0
-  if(e.motion&&e.motion.mode==='timed'&&!e.motion.delay)return 'Following its reported journey · last reported '+seen+(e.quality==='stale'?' · may have moved':'');   // 4.64.0 (N1, no line ahead)
-  if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
+  if(e.motion&&e.motion.mode==='timed'&&e.motion.fresh)return 'About here now · carried on from its last report at '+seen+' (estimate)'+(e.quality==='stale'?' · checking for its latest update':'');   // 4.62.0 test modes
+  if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'About here now · worked out from its timetable and its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.61.0
+  if(e.motion&&e.motion.mode==='timed'&&!e.motion.delay)return 'Following its reported journey · last reported '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.64.0 (N1, no line ahead)
+  if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · checking for its latest update':'');
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
-  if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · may have moved':'');
-  return (e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · may have moved':'');
+  if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · checking for its latest update':'');
+  return (e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · checking for its latest update':'');
 }
 // Phone-sized screens show at most this many vehicles per layer (engines already send the
 // ones nearest the middle of the view first); hundreds of overlapping icons can't be read.
@@ -799,12 +828,14 @@ function markers(){
    const next=new Set();for(const [,k] of list)if(glideOK.has(k)&&next.size<glideBudget)next.add(k);
    for(const [,k] of list){if(next.size>=glideBudget)break;next.add(k);}
    glideOK=next;glideCount=glideOK.size;}
-  const items=[],present=new Set();
+  const items=[],present=new Set(),goneNow=new Set();
   for(const e of listEntities()){
     if(!e.position)continue;
     if((bubbleLayer(e.component)||bubbleQuiet(e.component))&&!(follow&&follow.key===keyOf(e))
        &&!(state.selected&&state.selected.id===e.id&&state.selected.component===e.component))continue;   // 4.67.0: in a town bubble
     const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;present.add(k);
+    const lost=lostState(e,k,(follow&&follow.key===k)||(state.selected&&state.selected.id===e.id&&state.selected.component===e.component));   // 4.72.0
+    if(lost===2){goneNow.add(k);continue;}
     if(pos.est||blends.has(k)||(state.live[e.component]&&e.motion))moving++;
     shown.set(k,{lon:pos.lon,lat:pos.lat});
     const [x,y]=pixel(pos.lon,pos.lat);
@@ -812,13 +843,14 @@ function markers(){
     // 4.18.2 (owner 13:34: back from another window, the followed train "had carried on its route but left me where i was"):
     // the followed vehicle is never dropped for being off screen - the map goes to it
     if((x<-M||y<-M||x>d.w+M||y>d.h+M)&&!followed)continue;
-    items.push({e,k,pos,x:x-ox,y:y-oy});
+    items.push({e,k,pos,x:x-ox,y:y-oy,searching:lost===1});
   }
   drawBubbles(ox,oy);   // 4.67.0
   // 4.8.0 (owner 1 Nov 13:40, York at zoom 13: a pile of buses on top of each other): icons that would sit
   // on top of each other are shown as one "N buses" badge, which splits as you zoom in.
   const grouped=groupStacks(items);fanOut(items,grouped,now);
-  for(const {e,k,pos,x,y} of items){
+  GONE=goneNow;   // 4.72.0
+  for(const {e,k,pos,x,y,searching} of items){
     if(grouped.has(k))continue;
     if((perLayer[e.component]=(perLayer[e.component]||0)+1)>cap)continue;
     keep.add(k);
@@ -830,7 +862,7 @@ function markers(){
     // a side-on train faces the way it is going (west-ish: mirrored), and keeps facing that way when it stops
     if(e.component==='rail'&&!KIDS){const a=estimate(e,now+2000);if(a){const mx=metresXY(pos,a)[0];if(Math.abs(mx)>2){if(FACE.size>5000)FACE.clear();FACE.set(k,mx<0);}}}
     const faceLeft=e.component==='rail'&&FACE.get(k)===true;
-    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&isMilitary(e)?' k-military':''}${e.component==='air'&&isService(e)?' k-'+e.variant.split('-')[0]:''}${isGround(e)?' k-ground':''}${active?' selected-pin':''}${pos.est?' est-pos':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
+    const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&isMilitary(e)?' k-military':''}${e.component==='air'&&isService(e)?' k-'+e.variant.split('-')[0]:''}${isGround(e)?' k-ground':''}${active?' selected-pin':''}${pos.est?' est-pos':''}${searching?' searching':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
     // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
     // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
     const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id;
@@ -859,7 +891,8 @@ function markers(){
     }else if(pin.tf!==tf){b.style.transform=tf;pin.tf=tf;if(follow?.key===k)followTo(x,y,glide,null);}
     b.onclick=KIDS?()=>kidsTap(e,b):()=>{if(active){state.selected=null;selected.classList.add('hidden');paint();}else selectEntity(e);};
   }
-  for(const [k,pin] of pins)if(!keep.has(k)){noteVanish(k,pin,present,d);pin.b.remove();pins.delete(k);}
+  // 4.72.0: a vehicle that has searched long enough fades away gently (no grey ghost, no sudden vanish)
+  for(const [k,pin] of pins)if(!keep.has(k)){noteVanish(k,pin,present,d);if(GONE.has(k)&&!REDUCED)fadeAway(pin.b);else pin.b.remove();pins.delete(k);}
   drawStacks(viewMoved);
   if(shown.size>keep.size*4+4000)for(const k of shown.keys())if(!keep.has(k))shown.delete(k);
   updateSelectedInfo(now);
@@ -1119,7 +1152,8 @@ markerLayer.addEventListener('contextmenu',ev=>{
 // 4.12.0 (owner 1 Nov 20:02, bus sign-off): count vehicles that disappear while on screen - their engine stopped
 // sending them while the map was showing them (not ones that moved off screen, went into a group or whose layer
 // was switched off) - so "buses vanish" becomes a number, shown in #speed and in every report.
-const VANISH={total:0,byLayer:Object.create(null),byKey:new Map(),recent:[]};
+const VANISH={total:0,byLayer:Object.create(null),byKey:new Map(),recent:[]};window.TPA_HQ_VANISH=()=>({total:VANISH.total});   // 4.72.0: tests read it
+function fadeAway(b){b.classList.add('leaving');b.style.pointerEvents='none';b.removeAttribute('aria-pressed');setTimeout(()=>b.remove(),1700);}   // 4.72.0
 function noteVanish(k,pin,present,d){
   if(present.has(k)||!pin.e||zoomAnim||!state.visible[pin.e.component]||!state.live[pin.e.component]||pin.lat==null)return;
   const [x,y]=pixel(pin.lon,pin.lat);if(x<0||y<0||x>d.w||y>d.h)return;
@@ -1178,11 +1212,15 @@ function motionLoop(ts){
   lastTick=ts;const t0=performance.now();markers();tickCost=tickCost*0.7+(performance.now()-t0)*0.3;
 }
 requestAnimationFrame(motionLoop);
+// 4.72.0 (Rob 17 Nov: "Calm note if data late"): plain, calm words; the full owner page still shows the engine's own notice
+function lateWords(id,notice){const late=LATE[id]?Date.now()-LATE[id]:0;
+  const calm=late>LATE_GRACE_MS?'Looking for the latest '+layerName(id)+' updates…':'Updates running a little late · carrying on meanwhile';
+  return FULL_VIEW&&notice?calm+' — '+notice:calm;}
 function layerName(id){return ($(id+'-toggle').closest('.layer-toggle')?.querySelector('strong')?.textContent||id).toLowerCase();}
 const kidsSeen=Object.create(null);
 function counts(){const d=dims();const anyLive=IDS.some(id=>state.live[id]&&!state.parked[id]);
 for(const id of IDS){let entries=state.frames[id]?.entities;
-let count=(entries||[]).filter(e=>{if(!e.position||isGround(e))return false;   // 4.45.0: airport vehicles are not planes
+let count=(entries||[]).filter(e=>{if(!e.position||isGround(e)||GONE.has(keyOf(e)))return false;   // 4.45.0: airport vehicles are not planes; 4.72.0: faded away
 let [x,y]=pixel(e.position.lon,e.position.lat);return x>=0&&x<=d.w&&y>=0&&y<=d.h;}).length;
 const bubbled=bubbleLayer(id);if(bubbled)count=countInView(id);   // 4.67.0: every one in view, as the town bubbles count
 kidsSeen[id]=state.live[id]&&state.visible[id]&&!state.parked[id]&&state.status[id]==='ready'&&!(state.frames[id]?.notice||'').startsWith('Zoom in')?count:0;
@@ -1195,9 +1233,9 @@ if(state.live[id]){
   const tooFar=overlay&&state.z<overlay.minZoom;
   status.textContent=!state.visible[id]?'Hidden':
     state.status[id]==='ready'?(tooFar?'Zoom in to see '+layerName(id):notice||(overlay?'Live · showing on map':count+' in view')):
-    state.status[id]==='stale'?(notice||'Delayed · showing last update'):
+    state.status[id]==='stale'?lateWords(id,notice):   // 4.72.0: calm words while a layer's data is late
     (notice||'Unavailable · will retry');
-  chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?(scheduled?'TIMETABLE':'LIVE'):state.status[id]==='stale'?'DELAYED':'OFF AIR';
+  chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?(scheduled?'TIMETABLE':'LIVE'):state.status[id]==='stale'?'CATCHING UP':'OFF AIR';
   if(n)n.textContent=(entries||bubbled)&&!overlay&&!bubbleQuiet(id)?String(count):'—';continue;}
 status.textContent=!state.visible[id]?'Hidden':state.status[id]==='ready'?count+' MOCK in view':state.status[id]==='unavailable'&&entries?.length?'UNAVAILABLE · stale last-known MOCK':state.status[id]==='stale'&&entries?.length?'STALE · last-known MOCK':({not_installed:'Not connected yet',unavailable:'Unavailable',stale:'Delayed'}[state.status[id]]||state.status[id]);
 chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?'MOCK':state.status[id]==='not_installed'?'EMPTY':state.status[id].toUpperCase();

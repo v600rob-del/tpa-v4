@@ -33,6 +33,7 @@ const P0={
   priorShare:0.5,    // until enough is learned: half its recent speed
   ratio:false,       // learn a share of the bus's own recent speed (true) or a speed for its speed band (false)
   speedWindow:120, movedM:10,
+  endM:400,          // 1.1 (HQ 4.72.0): standing within this of either end of its line = waiting at the end of the route
   TC:12,             // s: how quickly the icon's speed is steered towards the estimate
   accUp:1.0, accDown:2.0,       // m/s per s (a bus pulls away at ~1 m/s2)
   vmaxShare:2, vmaxAdd:5, vmaxAbs:20,
@@ -79,22 +80,31 @@ function bin(v,edges){let i=0;while(i<edges.length&&v>=edges[i])i++;return i;}
 function quantile(arr,q){const a=arr.slice().sort((x,y)=>x-y);if(!a.length)return null;const p=q*(a.length-1),i=Math.floor(p),f=p-i;return i+1<a.length?a[i]+(a[i+1]-a[i])*f:a[i];}
 
 // ---------- learning how far buses really go (per region)
+const mvOf=x=>x===true?1:x===false||!x?0:x===2?2:1;
 class Learner{
   constructor(P){this.P=P;this.cells=new Map();this.n=0;this.cache=new Map();}
-  key(g,vb,mv,tb){return g+'|'+vb+'|'+mv+'|'+tb;}
+  // mv: 1 moving at its report; 0 standing mid-route (at a stop or lights: it will move off soon); 2 standing near an end
+  // of its line (often a long wait before it sets off). 1.1 (Rob 17 Nov 22:37, X47 at Pocklington George Street: held at the
+  // stop, then "speeding up" and "bogged off"): the two kinds of standing used to be learned together, so the long waits at
+  // the ends of routes taught that a bus standing at an ordinary stop stays there.
+  key(g,vb,mv,tb){return g+'|'+vb+'|'+mvOf(mv)+'|'+tb;}
   add(g,v,moved,tau,ve){const P=this.P;if(!(tau>0)||!isFinite(ve))return;
-    const k=this.key(g,bin(v,P.vBins),moved?1:0,bin(tau,P.tauBins));let a=this.cells.get(k);if(!a)this.cells.set(k,a=[]);
+    const k=this.key(g,bin(v,P.vBins),moved,bin(tau,P.tauBins));let a=this.cells.get(k);if(!a)this.cells.set(k,a=[]);
     a.push(P.ratio&&v>=P.vBins[0]?ve/v:ve);if(a.length>P.cellCap)a.shift();this.n++;this.cache.clear();}
   // effective speed (m/s) to carry on with over the next tau seconds
-  speed(g,v,moved,tau){const P=this.P,vb=bin(v,P.vBins),tb=bin(tau,P.tauBins),ck=this.key(g,vb,moved?1:0,tb);
+  speed(g,v,moved,tau){const P=this.P,vb=bin(v,P.vBins),tb=bin(tau,P.tauBins),ck=this.key(g,vb,moved,tb);
     let c=this.cache.get(ck);if(c===undefined){c=this.share(g,vb,moved,tb);this.cache.set(ck,c);}   // learned values change only when reports arrive
     if(c===null)return {ve:P.priorShare*v,learned:false};
     return {ve:P.ratio&&v>=P.vBins[0]?c*v:c,learned:true};}
   share(g,vb,moved,tb){const P=this.P;
-    let a=this.cells.get(this.key(g,vb,moved?1:0,tb));
-    if(!a||a.length<P.minCell){// back off: same speed band, any time since report / moving state
-      const pool=[];for(const mv of [0,1])for(let t=0;t<=P.tauBins.length;t++){const c=this.cells.get(this.key(g,vb,mv,t));if(c)pool.push(...c);}
-      if(pool.length>=P.minCell)a=pool;else return null;}
+    let a=this.cells.get(this.key(g,vb,moved,tb));
+    if(!a||a.length<P.minCell){// back off: same speed band and moving state, any time since report; then any moving state
+      // (1.1: but a bus at an ordinary stop never learns from buses waiting at the ends of their routes)
+      const m0=mvOf(moved);
+      for(const mvs of [[m0],m0===2?[0,1,2]:[0,1]]){const pool=[];
+        for(const mv of mvs)for(let t=0;t<=P.tauBins.length;t++){const c=this.cells.get(this.key(g,vb,mv,t));if(c)pool.push(...c);}
+        if(pool.length>=P.minCell){a=pool;break;}}
+      if(!a||a.length<P.minCell)return null;}
     return Math.max(0,quantile(a,P.q));}
 }
 
@@ -132,13 +142,15 @@ class FreshEngine{
       const had=new Set(old.fx.map(q=>q[0]));
       for(const [Tj,mj] of path.fx){if(had.has(Tj))continue;
         for(let i=0;i<path.fx.length;i++){const [Ti,mi]=path.fx[i];const tau=Tj-Ti;if(!(Ti<Tj)||tau<5||tau>this.P.horizon+60)continue;
-          const f=this.features(path.fx,i);if(f.v===null)continue;this.learn.add(B.g,f.v,f.moved,tau,(mj-mi)/tau);}}}
+          const f=this.features(path.fx,i,path.line.length);if(f.v===null)continue;this.learn.add(B.g,f.v,f.moved,tau,(mj-mi)/tau);}}}
     B.path=path;
   }
   // speed over the last SPEED_WINDOW s before report i, and whether it moved since the report before
-  features(fx,i){const P=this.P,[T,m]=fx[i];let v=null,moved=false;
+  features(fx,i,len){const P=this.P,[T,m]=fx[i];let v=null,moved=false;
     for(let k=0;k<i;k++){if(T-fx[k][0]<=P.speedWindow){v=Math.max(0,Math.min(25,(m-fx[k][1])/(T-fx[k][0])));break;}}
-    if(i>0)moved=m-fx[i-1][1]>=P.movedM;return {v,moved};}
+    if(i>0)moved=m-fx[i-1][1]>=P.movedM;
+    if(!moved&&len>0&&(m<P.endM||len-m<P.endM))moved=2;   // standing near an end of its line
+    return {v,moved};}
   otherPath(B,it){
     const P=this.P,ts=[...B.fixes.keys()].sort((a,b)=>a-b);
     // 1) borrow a route line from a bus of the same operator and route number, if this bus's reports lie on it
@@ -186,7 +198,7 @@ class FreshEngine{
         B.gapC=[Tn,gaps.length?quantile(gaps,0.5):30];}
       const gap=B.gapC[1],fz=B.fixes.get(Tn),Un=fz&&fz[2]!==undefined?fz[2]:t;
       return {m:mn,v:0,glideV:Math.min(P.vmaxAbs,v),mn,how:'to newest report',Tn,arriveBy:Un+P.jitShare*Math.min(120,Math.max(10,gap))};}
-    const tau=Math.max(0,t-Tn),f=this.features(fx,n);
+    const tau=Math.max(0,t-Tn),f=this.features(fx,n,path.line.length);
     if(f.v===null)return {m:mn,v:0,mn,how:'held (no speed yet)',Tn};
     const tt=Math.min(tau,P.horizon),{ve,learned}=this.learn.speed(B.g,f.v,f.moved,Math.max(1,tt));
     const m=Math.min(path.line.length,mn+ve*tt);
