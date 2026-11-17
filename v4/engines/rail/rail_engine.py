@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.6.0'
+ENGINE_VERSION = '1.7.0'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -2173,6 +2173,33 @@ def cells(size, lat: float, lon: float, box=None) -> set:
     return out
 
 
+
+# 1.7.0 (Rob 16-17 Nov 2026: town bubbles below zoom 13, "Leeds · 312 buses · 48 trains"): zoomed out, a view gets only part
+# of the trains (at most 400, none wider than 4 degrees), so the page cannot count them itself. Every round the engine also writes counts.json: how many
+# trains it is showing in each 0.1 x 0.1 degree square, by where each one last reported. The page adds the squares up per town.
+COUNT_CELL = 0.1
+COUNT_LAST = {'digest': None}
+
+
+def write_counts(root: Path, points, now: float) -> int:
+    """points: (lat, lon) of every train shown this round. Writes counts.json if it changed; returns how many trains."""
+    cells: dict = {}
+    n = 0
+    for lat, lon in points:
+        if lat is None or lon is None:
+            continue
+        key = (math.floor(lat / COUNT_CELL), math.floor(lon / COUNT_CELL))
+        cells[key] = cells.get(key, 0) + 1
+        n += 1
+    body = [[r, c, k] for (r, c), k in sorted(cells.items())]
+    digest = hash(json.dumps(body, separators=(',', ':')))
+    if COUNT_LAST['digest'] != digest:
+        _tile_write(root / 'counts.json', json.dumps({'v': 1, 'at': round(now, 1), 'cell': COUNT_CELL, 'total': n, 'c': body},
+                                                      separators=(',', ':')))
+        COUNT_LAST['digest'] = digest
+    return n
+
+
 def publish_round() -> dict:
     t_cpu, t_wall = time.thread_time(), time.monotonic()
     now = time.time()
@@ -2183,10 +2210,12 @@ def publish_round() -> dict:
     shown = on_platform = moving = 0
 
     seen = set()
+    counted = []                                      # 1.7.0: where each shown train is, for counts.json
 
     def add(entity, k, box, tt):
         key = entity['id']
         seen.add(key)
+        counted.append((k[0], k[1]))
         memo = ITEM_MEMO.get(key)
         if memo and memo[0] == entity and memo[1] == k and memo[2] == box and memo[3] == tt:
             text_small, text_big = memo[4], memo[5]
@@ -2237,6 +2266,7 @@ def publish_round() -> dict:
         for gone in [k for k in TILE_LAST if k[0] == name and (k[1], k[2]) not in tiles]:
             _tile_remove(folder / f'{gone[1]}_{gone[2]}.json')
             del TILE_LAST[gone]
+    write_counts(root, counted, now)
     meta = {'v': 1, 'updatedAt': round(now, 1), 'health': frame_out['health'], 'notice': notice or '',
             'scheduled': bool(frame_out.get('scheduled')), 'attribution': ATTRIBUTION,
             # the old answer's "Listening" line, when a view has no trains (a fresh connection)

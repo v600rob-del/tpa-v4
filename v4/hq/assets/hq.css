@@ -518,3 +518,15 @@ html:not(.kids-view) .map-bottom>.credit-toggle::after{content:"i";display:inlin
 html:not(.kids-view) .map-bottom>.map-credit{display:none}
 html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;position:absolute;right:0;bottom:40px;left:auto;
   max-width:min(92vw,560px);white-space:normal;text-align:right;line-height:1.45;cursor:pointer}
+
+/* 4.67.0 (Rob 16-17 Nov): town bubbles below zoom 13 - one per town, "Leeds · 312 buses · 48 trains"; tap to zoom in */
+.bubble-layer{position:absolute;left:0;top:0;width:0;height:0}   /* before the icons, so planes stay on top */
+.marker-layer.zoom-anim .bubble-layer{opacity:0}
+.town-bubble{position:absolute;left:0;top:0;pointer-events:auto;display:flex;flex-direction:column;align-items:center;gap:1px;
+  padding:5px 10px;border-radius:13px;background:#0b1626ee;border:1.5px solid #2fc7b5;color:#fff;cursor:pointer;white-space:nowrap;
+  font-family:var(--tpa-sign,system-ui),system-ui,sans-serif;line-height:1.15;box-shadow:0 3px 12px #0008}
+.town-bubble strong{font-size:12px;font-weight:700;letter-spacing:.04em}
+.town-bubble span{font-size:10.5px;font-weight:600;color:#ffb21e}
+.town-bubble.big{padding:6px 12px;border-width:2px}
+.town-bubble.big strong{font-size:13px}
+.town-bubble:hover,.town-bubble:focus-visible{border-color:#ffdf35;outline:none;filter:brightness(1.1)}

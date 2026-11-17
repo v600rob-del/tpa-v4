@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.22.1'
+ENGINE_VERSION = '0.23.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1788,6 +1788,33 @@ def company_table(by_company: dict, top: int = 20) -> list:
     return out
 
 
+
+# 0.23.0 (Rob 16-17 Nov 2026: town bubbles below zoom 13, "Leeds · 312 buses · 48 trains"): zoomed out, a view gets only part
+# of the buss (at most 400, none wider than 1.6 degrees), so the page cannot count them itself. Every round the engine also writes counts.json: how many
+# buss it is showing in each 0.1 x 0.1 degree square, by where each one last reported. The page adds the squares up per town.
+COUNT_CELL = 0.1
+COUNT_LAST = {'digest': None}
+
+
+def write_counts(root: Path, points, now: float) -> int:
+    """points: (lat, lon) of every bus shown this round. Writes counts.json if it changed; returns how many buss."""
+    cells: dict = {}
+    n = 0
+    for lat, lon in points:
+        if lat is None or lon is None:
+            continue
+        key = (math.floor(lat / COUNT_CELL), math.floor(lon / COUNT_CELL))
+        cells[key] = cells.get(key, 0) + 1
+        n += 1
+    body = [[r, c, k] for (r, c), k in sorted(cells.items())]
+    digest = hash(json.dumps(body, separators=(',', ':')))
+    if COUNT_LAST['digest'] != digest:
+        _tile_write(root / 'counts.json', json.dumps({'v': 1, 'at': round(now, 1), 'cell': COUNT_CELL, 'total': n, 'c': body},
+                                                      separators=(',', ':')))
+        COUNT_LAST['digest'] = digest
+    return n
+
+
 def publish_round() -> dict:
     t_cpu, t_wall = time.thread_time(), time.monotonic()
     FORECAST_ROUND.update(built=0, waiting=set())    # 0.22.0: new journeys' stops placed this round
@@ -1808,6 +1835,7 @@ def publish_round() -> dict:
            'lineBeingDrawn': 0}
     by_company: dict = {}                             # 0.17.4 (owner 21:45 "are these buses spread across the uk?")
     lines = {}
+    counted = []                                      # 0.23.0: where each shown bus is, for counts.json
     for i, v in enumerate(vehicles):
         if i % 500 == 0:
             while FETCHING.is_set():                  # the download comes first, as everywhere else
@@ -1823,6 +1851,7 @@ def publish_round() -> dict:
             hidden += 1
             continue
         shown += 1
+        counted.append((v.get('lat'), v.get('lon')))
         if '"f":[' in got[0]:
             fc_buses += 1
         d = step_delay(v['key'])                      # 0.20.0: this bus's own delay, carried in its tile item
@@ -1881,6 +1910,7 @@ def publish_round() -> dict:
         for gone in [k for k in TILE_LAST if k[0] == name and (k[1], k[2]) not in tiles]:
             _tile_remove(folder / f'{gone[1]}_{gone[2]}.json')
             del TILE_LAST[gone]
+    write_counts(_folder(root), counted, now)
     build = ''
     tt = TIMETABLE['tt']
     if tt is not None:

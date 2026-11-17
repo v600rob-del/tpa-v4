@@ -796,6 +796,8 @@ function markers(){
   const items=[],present=new Set();
   for(const e of listEntities()){
     if(!e.position)continue;
+    if((bubbleLayer(e.component)||bubbleQuiet(e.component))&&!(follow&&follow.key===keyOf(e))
+       &&!(state.selected&&state.selected.id===e.id&&state.selected.component===e.component))continue;   // 4.67.0: in a town bubble
     const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;present.add(k);
     if(pos.est||blends.has(k)||(state.live[e.component]&&e.motion))moving++;
     shown.set(k,{lon:pos.lon,lat:pos.lat});
@@ -806,6 +808,7 @@ function markers(){
     if((x<-M||y<-M||x>d.w+M||y>d.h+M)&&!followed)continue;
     items.push({e,k,pos,x:x-ox,y:y-oy});
   }
+  drawBubbles(ox,oy);   // 4.67.0
   // 4.8.0 (owner 1 Nov 13:40, York at zoom 13: a pile of buses on top of each other): icons that would sit
   // on top of each other are shown as one "N buses" badge, which splits as you zoom in.
   const grouped=groupStacks(items);fanOut(items,grouped,now);
@@ -1167,20 +1170,21 @@ function counts(){const d=dims();const anyLive=IDS.some(id=>state.live[id]&&!sta
 for(const id of IDS){let entries=state.frames[id]?.entities;
 let count=(entries||[]).filter(e=>{if(!e.position||isGround(e))return false;   // 4.45.0: airport vehicles are not planes
 let [x,y]=pixel(e.position.lon,e.position.lat);return x>=0&&x<=d.w&&y>=0&&y<=d.h;}).length;
+const bubbled=bubbleLayer(id);if(bubbled)count=countInView(id);   // 4.67.0: every one in view, as the town bubbles count
 kidsSeen[id]=state.live[id]&&state.visible[id]&&!state.parked[id]&&state.status[id]==='ready'&&!(state.frames[id]?.notice||'').startsWith('Zoom in')?count:0;
 const status=$(id+'-source-status'),chip=$(id+'-chip').querySelector('strong'),n=$(id+'-count');
 if(state.parked[id]){status.textContent='Unavailable · coming soon';chip.textContent='SOON';if(n)n.textContent='—';continue;}
 if(state.live[id]){
   // 4.0.10: a real engine is connected. Plain wording; never the word MOCK.
   const overlay=state.frames[id]?.overlay,detail=FULL_VIEW&&state.frames[id]?.noticeDetail?' — '+state.frames[id].noticeDetail:'',
-    notice=(state.frames[id]?(state.frames[id].notice||''):(state.notice[id]||''))+detail,scheduled=state.frames[id]?.scheduled===true;
+    notice=bubbled?'':(state.frames[id]?(state.frames[id].notice||''):(state.notice[id]||''))+detail,scheduled=state.frames[id]?.scheduled===true;
   const tooFar=overlay&&state.z<overlay.minZoom;
   status.textContent=!state.visible[id]?'Hidden':
     state.status[id]==='ready'?(tooFar?'Zoom in to see '+layerName(id):notice||(overlay?'Live · showing on map':count+' in view')):
     state.status[id]==='stale'?(notice||'Delayed · showing last update'):
     (notice||'Unavailable · will retry');
   chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?(scheduled?'TIMETABLE':'LIVE'):state.status[id]==='stale'?'DELAYED':'OFF AIR';
-  if(n)n.textContent=entries&&!overlay?String(count):'—';continue;}
+  if(n)n.textContent=(entries||bubbled)&&!overlay?String(count):'—';continue;}
 status.textContent=!state.visible[id]?'Hidden':state.status[id]==='ready'?count+' MOCK in view':state.status[id]==='unavailable'&&entries?.length?'UNAVAILABLE · stale last-known MOCK':state.status[id]==='stale'&&entries?.length?'STALE · last-known MOCK':({not_installed:'Not connected yet',unavailable:'Unavailable',stale:'Delayed'}[state.status[id]]||state.status[id]);
 chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?'MOCK':state.status[id]==='not_installed'?'EMPTY':state.status[id].toUpperCase();
 if(n)n.textContent=entries?String(count):'—';}
@@ -1548,6 +1552,81 @@ function roadShape(it){
   if(ROAD_SHAPES.size>2000)ROAD_SHAPES.delete(ROAD_SHAPES.keys().next().value);
   return sh;
 }
+// ---- 4.67.0 town bubbles ------------------------------------------------------------------------------------------------
+// Rob 16 Nov 11:40 (declutter: "grouped buses/trains per city that separate as you zoom in"; one bubble per town; planes
+// always separate) and 17 Nov 10:50 (they separate at zoom 13). Below zoom 13 buses and trains are one bubble per town,
+// counted by their engines (counts.json: every vehicle on the map, by 0.1 degree square - zoomed out, a view only gets part
+// of the vehicles, so the page cannot count them itself). Railway stations, bus stations and stops wait for zoom 13 too.
+// Names: the street map's own city and town labels (cities only when far out). Bubbles that would overlap join the bigger.
+// ?bubbles=0 is the old way; without fresh counts (e.g. an engine without them) every vehicle is drawn as before.
+const BUBBLE_BELOW_ZOOM=13,BUBBLE_LAYERS=['bus','rail'],BUBBLE_QUIET=['stations','busstations','stops'];
+const BUBBLES_ON=!KIDS&&new URLSearchParams(location.search).get('bubbles')!=='0';
+const COUNTS={bus:null,rail:null,asked:-1};
+const BUBBLE_WORD={bus:['bus','buses'],rail:['train','trains']};
+let bubbleSig='';
+const bubbleBox=document.createElement('div');bubbleBox.className='bubble-layer';markerLayer.append(bubbleBox);
+async function fetchCounts(){
+  if(!BUBBLES_ON||!map||map.getZoom()>=BUBBLE_BELOW_ZOOM)return;
+  const slot=Math.floor(serverNow()/10000);if(COUNTS.asked===slot)return;COUNTS.asked=slot;
+  await Promise.all(BUBBLE_LAYERS.map(async id=>{
+    try{const c=await tileJSON(`/tiles/${id}/counts.json?r=${slot}`,4000,true);
+      if(c&&c.v===1&&validNum(c.cell)&&c.cell>0&&Array.isArray(c.c)&&validNum(c.at)){COUNTS[id]=c;bubbleSig='';paint();}}catch(_){}}));
+}
+setInterval(fetchCounts,2000);setTimeout(fetchCounts,300);
+function countsFresh(id){const c=COUNTS[id];return !!c&&serverNow()/1000-c.at<=60;}
+function bubbleLayer(id){return BUBBLES_ON&&!!map&&map.getZoom()<BUBBLE_BELOW_ZOOM&&BUBBLE_LAYERS.includes(id)&&countsFresh(id);}
+function bubblesShowing(){return BUBBLE_LAYERS.some(bubbleLayer);}
+// while its town bubbles show, a layer's vehicles are not downloaded at all (the browser's biggest saving zoomed out) -
+// unless one of them is chosen or followed, which stays on the map
+function bubbleSkips(id){return bubbleLayer(id)&&state.selected?.component!==id&&follow?.comp!==id;}
+function bubbleQuiet(id){return BUBBLE_QUIET.includes(id)&&bubblesShowing();}
+function countInView(id){
+  const c=COUNTS[id];if(!c||!map)return 0;const b=map.getBounds(),S=b.getSouth(),N=b.getNorth(),W=b.getWest(),E=b.getEast();let n=0;
+  for(const [r,col,k] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(lat>=S&&lat<=N&&lon>=W&&lon<=E)n+=k;}
+  return n;
+}
+function bubbleWords(g){
+  return BUBBLE_LAYERS.filter(id=>g[id]>0).map(id=>g[id].toLocaleString('en-GB')+' '+BUBBLE_WORD[id][g[id]===1?0:1]);
+}
+function drawBubbles(ox,oy){
+  if(!bubblesShowing()){if(bubbleBox.childElementCount)bubbleBox.replaceChildren();bubbleSig='';return;}
+  const z=map.getZoom(),b=map.getBounds(),d=dims(),W=b.getWest(),E=b.getEast(),S=b.getSouth(),N=b.getNorth();
+  const sig=[z.toFixed(3),W.toFixed(5),N.toFixed(5),d.w,d.h,ox.toFixed(1),oy.toFixed(1)].concat(BUBBLE_LAYERS.map(id=>bubbleLayer(id)&&state.visible[id]?COUNTS[id].at:'-')).join('|');
+  if(sig===bubbleSig)return;bubbleSig=sig;
+  const pl=(N-S)*0.2,pw=(E-W)*0.2,inside=(lat,lon)=>lat>S-pl&&lat<N+pl&&lon>W-pw&&lon<E+pw;
+  let places=(window.TPA_MAP_PLACES?.()||[]).filter(p=>inside(p.lat,p.lon));
+  if(!places.length)places=POI.map(([name,lon,lat])=>({name,lon,lat,city:true})).filter(p=>inside(p.lat,p.lon));
+  if(z<9&&places.some(p=>p.city))places=places.filter(p=>p.city);    // far out: cities only
+  const groups=new Map();
+  for(const id of BUBBLE_LAYERS){if(!bubbleLayer(id)||!state.visible[id])continue;const c=COUNTS[id];
+    for(const [r,col,n] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(!inside(lat,lon)||!(n>0))continue;
+      const k=Math.cos(lat*Math.PI/180);let best=null,bd=Infinity;
+      for(const p of places){const dd=(p.lat-lat)**2+((p.lon-lon)*k)**2;if(dd<bd){bd=dd;best=p;}}
+      const key=best?best.name+'|'+best.lon.toFixed(3)+'|'+best.lat.toFixed(3):'g'+Math.floor(lat/0.5)+'_'+Math.floor(lon/0.5);
+      let g=groups.get(key);
+      if(!g){g={name:best?best.name:'',lat:best?best.lat:0,lon:best?best.lon:0,wl:0,wn:0,ww:0,bus:0,rail:0};groups.set(key,g);}
+      g[id]+=n;g.wl+=lat*n;g.wn+=lon*n;g.ww+=n;}}
+  const list=[...groups.values()].sort((a,b)=>(b.bus+b.rail)-(a.bus+a.rail)),gapX=isPhone()?120:132,gapY=isPhone()?52:46,kept=[];
+  for(const g of list){
+    if(!g.name){g.lat=g.wl/g.ww;g.lon=g.wn/g.ww;}
+    const [x,y]=pixel(g.lon,g.lat);g.x=x-ox;g.y=y-oy;
+    const near=kept.find(k=>Math.abs(k.x-g.x)<gapX&&Math.abs(k.y-g.y)<gapY);
+    if(near){near.bus+=g.bus;near.rail+=g.rail;continue;}
+    kept.push(g);}
+  const out=[];
+  for(const g of kept){
+    if(g.x<-80||g.y<-40||g.x>d.w+80||g.y>d.h+40)continue;
+    const words=bubbleWords(g);if(!words.length)continue;
+    const btn=document.createElement('button');btn.type='button';btn.className='town-bubble'+(g.bus+g.rail>=100?' big':'');
+    btn.style.transform=`translate(${g.x.toFixed(1)}px,${g.y.toFixed(1)}px) translate(-50%,-50%)`;
+    if(g.name)btn.append(el('strong','',g.name));
+    btn.append(el('span','',words.join(' · ')));
+    btn.setAttribute('aria-label',(g.name?g.name+': ':'')+words.join(' and ')+'. Zoom in to see each one.');
+    btn.title='Zoom in to see each one';
+    btn.onclick=ev=>{ev.stopPropagation();stopFollow();map.setView([g.lat,g.lon],BUBBLE_BELOW_ZOOM);};
+    out.push(btn);}
+  bubbleBox.replaceChildren(...out);
+}
 async function busTileFrame(){
   const R=window.TPA_BUS_REPLAY;if(!R)throw Error('no replay');
   const slot=Math.floor(serverNow()/10000);
@@ -1558,6 +1637,7 @@ async function busTileFrame(){
     observedAt:iso(got),receivedAt:iso(got),expiresAt:iso(got+90),nextPollAfterMs:10000,attribution:String(meta.attribution||'').slice(0,256),
     groupStacks:true,entities:[]};
   if(meta.notice)frame.notice=String(meta.notice).slice(0,120);
+  if(bubbleSkips('bus'))return frame;   // 4.67.0: in town bubbles
   let w=-12.5,s=49,e=4.5,n=61.8;
   if(map&&typeof map.getBounds==='function'){const b=map.getBounds();w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();}
   if(n-s>meta.maxSpan){frame.notice='Zoom in to see buses';return frame;}
@@ -1648,6 +1728,7 @@ async function railTileFrame(){
   if(meta.scheduled===true)frame.scheduled=true;
   if(typeof meta.noticeDetail==='string'&&meta.noticeDetail)frame.noticeDetail=meta.noticeDetail;
   const {w,s,e,n}=viewBox();
+  if(bubbleSkips('rail'))return frame;   // 4.67.0: in town bubbles
   if(!validNum(meta.maxSpan)||n-s>meta.maxSpan){frame.notice='Zoom in to see trains';RAIL_TILES.last={box:[s,w,n,e],ids:[],notice:frame.notice};return frame;}
   if(meta.notice)frame.notice=String(meta.notice).slice(0,120);
   const small=n-s<=meta.smallBelowSpan,size=small?meta.small:meta.big,dir=small?'s':'b';

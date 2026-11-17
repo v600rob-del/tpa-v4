@@ -26,6 +26,22 @@ function calmMap(gl){
   }catch(e){report('map-calm-error','calm',String(e&&e.message||e));}
 }
 Object.defineProperty(window,'TPA_CALM_MAP',{value:calmMap,writable:false,configurable:false});
+// 4.67.0 (Rob 16-17 Nov: town bubbles below zoom 13, "Leeds · 312 buses · 48 trains"): the street map's own city and town
+// names (OpenStreetMap, already credited) for the tiles it has loaded - the page names each bubble after the nearest one.
+const PLACE_GL={gl:null};
+function mapPlaces(){
+  const gl=PLACE_GL.gl;if(!gl||typeof gl.querySourceFeatures!=='function')return [];
+  try{const out=[],seen=new Set();
+    for(const f of gl.querySourceFeatures('openmaptiles',{sourceLayer:'place'})){
+      const p=f.properties||{},cls=p.class;if((cls!=='city'&&cls!=='town')||f.geometry?.type!=='Point')continue;
+      const name=String(p['name:en']||p.name_en||p.name||'').trim().slice(0,40);if(!name)continue;
+      const [lon,lat]=f.geometry.coordinates;if(!Number.isFinite(lon)||!Number.isFinite(lat))continue;
+      const k=name+'|'+lon.toFixed(2)+'|'+lat.toFixed(2);if(seen.has(k))continue;seen.add(k);
+      out.push({name,city:cls==='city',lon,lat});}
+    return out;
+  }catch(e){return [];}
+}
+Object.defineProperty(window,'TPA_MAP_PLACES',{value:mapPlaces,writable:false,configurable:false});
 // 4.64.1 (Rob 15 Nov 2026 22:04-22:09, "as if a sheet is over the top of the map"): if the window changes size while the
 // street map is starting, MapLibre can miss it and keep drawing on a smaller canvas, so part of the map shows only the
 // plain background. Any time the canvas and its box disagree, the street map is told its real size again.
@@ -47,6 +63,7 @@ if(!window.TPA_VECTOR_LAYER)throw Error('Buffer adapter not initialized');
 const layer=window.TPA_VECTOR_LAYER(opts).addTo(map), gl=layer.getMaplibreMap?.();
 timings.vectorLayerAttached=performance.now();report('vector-layer-attached','bridge-attached','Leaflet vector adapter attached');
 if(gl){
+PLACE_GL.gl=gl;
 gl.on('style.load',()=>calmMap(gl));if(gl.isStyleLoaded?.())calmMap(gl);   // 4.27.0: also after a switch to the fallback style
 const finish=()=>{timings.basemapLoaded=performance.now();if(status)status.hidden=true;window.TPA_HQ_VECTOR_READY?.();report('map-loaded','liberty-style','Vector style loaded');};
 if(gl.loaded())finish();else gl.once('load',finish);
