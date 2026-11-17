@@ -123,18 +123,30 @@ function listEntities(){return IDS.flatMap(id=>{
   const lateFor=Date.now()-LATE[id];
   return entities.map(e=>({...e,quality:'stale',ownQuality:e.quality,layerLate:lateFor}));
 });}
-// 4.72.0: no grey vehicles. 0 = normal; 1 = looking for its data (full colour, a soft "searching for signal" pulse); 2 = gone
-// (faded away). A vehicle is "lost" when its own engine says stale (a bus silent 5 min, a train with nothing to go on, a
-// cancelled train) or its whole layer has been late for over LATE_GRACE_MS. It searches for up to SEARCH_MS, then fades away.
+// 4.72.0: no grey vehicles. 0 = normal; 1 = lost, looking for its data (4.72.1: looks normal - Rob 23:49, a pulse "draws the
+// user towards" what we want to steer them away from; class "searching" is a marker only); 2 = gone (faded away). A vehicle is "lost" when its own engine says stale (a bus silent 5 min, a train with nothing to go on, a
+// cancelled train) or its whole layer has been late for over LATE_GRACE_MS. It searches for up to SEARCH_MS (1 min), then fades away.
 // The selected or followed vehicle never fades away (its box stays useful); it keeps searching.
-const LATE={},LATE_GRACE_MS=Number(window.TPA_HQ_TEST_LATE_GRACE_MS)||120000,SEARCH_MS=Number(window.TPA_HQ_TEST_SEARCH_MS)||180000,SEARCHING=new Map();let GONE=new Set();   // (the TEST values: tests only)
+const LATE={},LATE_GRACE_MS=Number(window.TPA_HQ_TEST_LATE_GRACE_MS)||120000,SEARCH_MS=Number(window.TPA_HQ_TEST_SEARCH_MS)||60000,SEARCHING=new Map();let GONE=new Set();   // (the TEST values: tests only)
 window.TPA_HQ_SEARCHING=()=>({searching:[...SEARCHING.keys()].filter(k=>!GONE.has(k)),gone:[...GONE],late:{...LATE}});
 function isLost(e){const own=e.layerLate===undefined?e.quality:e.ownQuality;return own==='stale'||(e.layerLate!==undefined&&e.layerLate>LATE_GRACE_MS);}
-function lostState(e,k,keepIt){
-  if(!isLost(e)){SEARCHING.delete(k);return 0;}
-  const t=Date.now();if(!SEARCHING.has(k)){SEARCHING.set(k,t);if(SEARCHING.size>20000)SEARCHING.delete(SEARCHING.keys().next().value);}
-  return t-SEARCHING.get(k)>SEARCH_MS&&!keepIt?2:1;
+// 4.72.1 (Rob 17 Nov 23:47, Hull: "as soon as i opened I have pulsing" - a train that had finished at Hull, a train being carried
+// on to Cottingham, a quiet bus): only a vehicle that is SITTING STILL with old information searches. One that has finished
+// its journey ("terminated at ...") stands normally at its platform; one still being carried on by its estimate looks normal.
+// The search clock starts when its information went old (its last report + LOST_AFTER for its layer), not when this page
+// opened, so a long-silent vehicle fades away almost at once instead of pulsing for 3 minutes on arrival.
+const LOST_AFTER={bus:300,rail:600};   // seconds after its last report that its engine calls it stale (bus 5 min, rail 10 min)
+function finished(e){return typeof e.label==='string'&&/(^|· )terminated at /.test(e.label);}
+function lostState(e,k,keepIt,pos,now){
+  if(!isLost(e)||finished(e)){SEARCHING.delete(k);return 0;}
+  const here=estimate(e,now),ahead=here&&estimate(e,now+3000);   // (estimate only: whereNow would change the vehicle's blends)
+  if(ahead&&Math.hypot(...metresXY(here,ahead))>3){SEARCHING.delete(k);return 0;}   // still being carried on: looks normal
+  if(!SEARCHING.has(k)){let start=now;const ob=Date.parse(e.observedAt);
+    if(e.layerLate===undefined&&Number.isFinite(ob))start=Math.min(now,ob+1000*(LOST_AFTER[e.component]||120));
+    SEARCHING.set(k,start);if(SEARCHING.size>20000)SEARCHING.delete(SEARCHING.keys().next().value);}
+  return now-SEARCHING.get(k)>SEARCH_MS&&!keepIt?2:1;
 }
+
 // ICON REVIEW ONLY. The SVG shapes are fixed HQ artwork reproduced from the
 // legacy approved map marker paths; component JSON supplies DATA, never HTML.
 // This review build is physically separate from the working HQ 4.0.8 checkpoint.
@@ -834,7 +846,7 @@ function markers(){
     if((bubbleLayer(e.component)||bubbleQuiet(e.component))&&!(follow&&follow.key===keyOf(e))
        &&!(state.selected&&state.selected.id===e.id&&state.selected.component===e.component))continue;   // 4.67.0: in a town bubble
     const k=keyOf(e),pos=whereNow(e,now);if(!pos)continue;present.add(k);
-    const lost=lostState(e,k,(follow&&follow.key===k)||(state.selected&&state.selected.id===e.id&&state.selected.component===e.component));   // 4.72.0
+    const lost=lostState(e,k,(follow&&follow.key===k)||(state.selected&&state.selected.id===e.id&&state.selected.component===e.component),pos,now);   // 4.72.0
     if(lost===2){goneNow.add(k);continue;}
     if(pos.est||blends.has(k)||(state.live[e.component]&&e.motion))moving++;
     shown.set(k,{lon:pos.lon,lat:pos.lat});
