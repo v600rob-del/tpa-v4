@@ -27,9 +27,12 @@ MAX_SPEED = 35.0            # m/s: a report needing more than this along the rou
 MAX_POINTS = 200            # HQ accepts up to 200 points
 
 
+BLOCK = 16                  # bus 0.24.0: pieces of line per block, each block with a box round it
+
+
 class Shape:
     """A route line in local metres, with the distance along it at each point."""
-    __slots__ = ('lon', 'lat', 'x', 'y', 'cum', 'k')
+    __slots__ = ('lon', 'lat', 'x', 'y', 'cum', 'k', 'bx0', 'bx1', 'by0', 'by1')
 
     def __init__(self, lonlat):
         pts = [p for i, p in enumerate(lonlat) if i == 0 or p != lonlat[i - 1]]
@@ -42,6 +45,14 @@ class Shape:
         self.cum = array('d', [0.0])
         for i in range(1, len(pts)):
             self.cum.append(self.cum[-1] + math.hypot(self.x[i] - self.x[i - 1], self.y[i] - self.y[i - 1]))
+        # bus 0.24.0: a box round each block of BLOCK pieces (piece i joins points i-1 and i; block b holds pieces
+        # b*BLOCK+1 .. (b+1)*BLOCK), so placing a report can pass over whole blocks that are too far away
+        self.bx0, self.bx1, self.by0, self.by1 = array('d'), array('d'), array('d'), array('d')
+        n = len(pts)
+        for start in range(1, n, BLOCK):
+            end = min(n - 1, start + BLOCK - 1)
+            xs, ys = self.x[start - 1:end + 1], self.y[start - 1:end + 1]
+            self.bx0.append(min(xs)); self.bx1.append(max(xs)); self.by0.append(min(ys)); self.by1.append(max(ys))
 
     @property
     def length(self):
@@ -49,7 +60,46 @@ class Shape:
 
     def project(self, lon, lat, lo=0.0, hi=None):
         """(distance along, distance off) of the nearest point on the route between lo and hi metres
-        along it; None if the route is further than MAX_OFF_ROUTE_M away there."""
+        along it; None if the route is further than MAX_OFF_ROUTE_M away there.
+
+        bus 0.24.0 (17 Nov 2026 evening peak: placing reports on route lines was about a third of a round, lines average
+        1,161 points): the same answer as project_every_piece, but a block of pieces whose box is further away than the
+        best found so far (or than MAX_OFF_ROUTE_M) is passed over - none of its pieces could be nearer."""
+        hi = self.length if hi is None else hi
+        px, py = lon * self.k, lat * M_PER_DEG
+        i0 = max(1, bisect_right(self.cum, max(0.0, lo)))
+        i1 = min(len(self.cum) - 1, bisect_left(self.cum, hi) + 1)
+        best_m = best_d = None
+        x, y, cum = self.x, self.y, self.cum
+        bx0, bx1, by0, by1 = self.bx0, self.bx1, self.by0, self.by1
+        hypot = math.hypot
+        b = (i0 - 1) // BLOCK
+        while True:
+            start = b * BLOCK + 1
+            if start > i1:
+                break
+            end = min(i1, start + BLOCK - 1)
+            if b < len(bx0):
+                dx = bx0[b] - px if px < bx0[b] else (px - bx1[b] if px > bx1[b] else 0.0)
+                dy = by0[b] - py if py < by0[b] else (py - by1[b] if py > by1[b] else 0.0)
+                if (dx or dy) and hypot(dx, dy) > (MAX_OFF_ROUTE_M if best_d is None else min(best_d, MAX_OFF_ROUTE_M)):
+                    b += 1
+                    continue
+            for i in range(max(start, i0), end + 1):
+                ax, ay, bx, by = x[i - 1], y[i - 1], x[i], y[i]
+                vx, vy = bx - ax, by - ay
+                L2 = vx * vx + vy * vy
+                f = 0.0 if L2 == 0 else max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / L2))
+                d = hypot(ax + vx * f - px, ay + vy * f - py)
+                if best_d is None or d < best_d - 1e-9:
+                    best_m, best_d = cum[i - 1] + f * (cum[i] - cum[i - 1]), d
+            b += 1
+        if best_d is None or best_d > MAX_OFF_ROUTE_M:
+            return None
+        return (best_m, best_d)
+
+    def project_every_piece(self, lon, lat, lo=0.0, hi=None):
+        """Before 0.24.0 (kept to check project against): every piece of the line between lo and hi."""
         hi = self.length if hi is None else hi
         px, py = lon * self.k, lat * M_PER_DEG
         i0 = max(1, bisect_right(self.cum, max(0.0, lo)))
