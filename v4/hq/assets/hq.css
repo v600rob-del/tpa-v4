@@ -550,3 +550,8 @@ html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;pos
 .layers-panel:not(.folded) .fold-arrow{transform:rotate(180deg)}
 .layers-panel.folded .fold-body{display:none}
 .layers-panel.folded .section-title{margin-bottom:0}
+
+/* 4.70.0: a bubble "near" a town (none close enough to be its own) says so in a lighter hand; the one-time tip can sit
+   above its town (arrow pointing down) when another bubble is just below */
+.town-bubble strong.near{font-weight:600;font-style:italic;opacity:.85}
+.bubble-tip.above::before{top:auto;bottom:-6px;border-top:6px solid #ffb21e;border-bottom:0}

@@ -1185,14 +1185,14 @@ if(state.parked[id]){status.textContent='Unavailable · coming soon';chip.textCo
 if(state.live[id]){
   // 4.0.10: a real engine is connected. Plain wording; never the word MOCK.
   const overlay=state.frames[id]?.overlay,detail=FULL_VIEW&&state.frames[id]?.noticeDetail?' — '+state.frames[id].noticeDetail:'',
-    notice=bubbled?'':(state.frames[id]?(state.frames[id].notice||''):(state.notice[id]||''))+detail,scheduled=state.frames[id]?.scheduled===true;
+    notice=bubbled?'':bubbleQuiet(id)?'Zoom in to see '+layerName(id):(state.frames[id]?(state.frames[id].notice||''):(state.notice[id]||''))+detail,scheduled=state.frames[id]?.scheduled===true;   // 4.70.0: stations wait for zoom 13
   const tooFar=overlay&&state.z<overlay.minZoom;
   status.textContent=!state.visible[id]?'Hidden':
     state.status[id]==='ready'?(tooFar?'Zoom in to see '+layerName(id):notice||(overlay?'Live · showing on map':count+' in view')):
     state.status[id]==='stale'?(notice||'Delayed · showing last update'):
     (notice||'Unavailable · will retry');
   chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?(scheduled?'TIMETABLE':'LIVE'):state.status[id]==='stale'?'DELAYED':'OFF AIR';
-  if(n)n.textContent=(entries||bubbled)&&!overlay?String(count):'—';continue;}
+  if(n)n.textContent=(entries||bubbled)&&!overlay&&!bubbleQuiet(id)?String(count):'—';continue;}
 status.textContent=!state.visible[id]?'Hidden':state.status[id]==='ready'?count+' MOCK in view':state.status[id]==='unavailable'&&entries?.length?'UNAVAILABLE · stale last-known MOCK':state.status[id]==='stale'&&entries?.length?'STALE · last-known MOCK':({not_installed:'Not connected yet',unavailable:'Unavailable',stale:'Delayed'}[state.status[id]]||state.status[id]);
 chip.textContent=!state.visible[id]?'OFF':state.status[id]==='ready'?'MOCK':state.status[id]==='not_installed'?'EMPTY':state.status[id].toUpperCase();
 if(n)n.textContent=entries?String(count):'—';}
@@ -1636,11 +1636,12 @@ function drawBubbles(ox,oy){
   const groups=new Map();
   for(const id of BUBBLE_LAYERS){if(!bubbleLayer(id)||!state.visible[id])continue;const c=COUNTS[id];
     for(const [r,col,n] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(!inside(lat,lon)||!(n>0))continue;
-      let best=nearestPlace(lat,lon,places);
-      if(best&&kmApart(lat,lon,best.lat,best.lon)>bubbleReach(z))best=null;
+      let best=nearestPlace(lat,lon,places),near='';
+      // 4.70.0 (Rob chose 17 Nov 19:11): a square too far from any place to be its own is "near" the nearest one
+      if(best&&kmApart(lat,lon,best.lat,best.lon)>bubbleReach(z)){near=best.name;best=null;}
       const key=best?best.name+'|'+best.lon.toFixed(3)+'|'+best.lat.toFixed(3):'g'+Math.floor(lat/0.5)+'_'+Math.floor(lon/0.5);
       let g=groups.get(key);
-      if(!g){g={name:best?best.name:'',city:!!best?.city,rank:best?.rank||99,lat:best?best.lat:0,lon:best?best.lon:0,wl:0,wn:0,ww:0,bus:0,rail:0};groups.set(key,g);}
+      if(!g){g={name:best?best.name:'',near,city:!!best?.city,rank:best?.rank||99,lat:best?best.lat:0,lon:best?best.lon:0,wl:0,wn:0,ww:0,bus:0,rail:0};groups.set(key,g);}
       g[id]+=n;g.wl+=lat*n;g.wn+=lon*n;g.ww+=n;}}
   const list=[...groups.values()].sort((a,b)=>(b.bus+b.rail)-(a.bus+a.rail)),gapX=isPhone()?120:132,gapY=isPhone()?52:46,kept=[];
   for(const g of list){
@@ -1659,9 +1660,10 @@ function drawBubbles(ox,oy){
     const words=bubbleWords(g);if(!words.length)continue;
     const btn=document.createElement('button');btn.type='button';btn.className='town-bubble'+(g.bus+g.rail>=100?' big':'');
     btn.style.transform=`translate(${g.x.toFixed(1)}px,${g.y.toFixed(1)}px) translate(-50%,-50%)`;
-    if(g.name)btn.append(el('strong','',g.name));
+    const title=g.name||(g.near?'near '+g.near:'');
+    if(title)btn.append(el('strong',g.name?'':'near',title));
     btn.append(el('span','',words.join(' · ')));
-    btn.setAttribute('aria-label',(g.name?g.name+': ':'')+words.join(' and ')+'. Zoom in to see each one.');
+    btn.setAttribute('aria-label',(title?title+': ':'')+words.join(' and ')+'. Zoom in to see each one.');
     btn.title='Zoom in to see each one';
     btn.onclick=ev=>{ev.stopPropagation();bubbleTipDone();stopFollow();map.setView([g.lat,g.lon],BUBBLE_BELOW_ZOOM);};
     out.push(btn);}
@@ -1671,8 +1673,12 @@ function drawBubbles(ox,oy){
     const top=kept.find(g=>g.x>=0&&g.y>=0&&g.x<=d.w&&g.y<=d.h&&bubbleWords(g).length);
     if(top){BUBBLE_TIP.shown=true;try{localStorage.setItem(BUBBLE_TIP_KEY,'1');}catch(_){}
       clearTimeout(BUBBLE_TIP.timer);BUBBLE_TIP.timer=setTimeout(bubbleTipDone,12000);
-      const tip=el('div','bubble-tip');tip.setAttribute('role','note');
-      tip.style.transform=`translate(${top.x.toFixed(1)}px,${(top.y+30).toFixed(1)}px) translate(-50%,0)`;
+      // 4.70.0 (Rob chose 17 Nov 19:11; seen 16:20: the tip under Hull sat over Hessle): above the town when another
+      // bubble is just below it
+      const below=kept.some(k=>k!==top&&Math.abs(k.x-top.x)<170&&k.y>top.y&&k.y-top.y<100);
+      const tip=el('div','bubble-tip'+(below?' above':''));tip.setAttribute('role','note');
+      tip.style.transform=below?`translate(${top.x.toFixed(1)}px,${(top.y-30).toFixed(1)}px) translate(-50%,-100%)`
+        :`translate(${top.x.toFixed(1)}px,${(top.y+30).toFixed(1)}px) translate(-50%,0)`;
       const x=el('button','bubble-tip-close','×');x.type='button';x.setAttribute('aria-label','Close tip');
       x.onclick=ev=>{ev.stopPropagation();bubbleTipDone();};
       tip.append(el('span','','Tap a town to see its buses and trains'),x);out.push(tip);}}
