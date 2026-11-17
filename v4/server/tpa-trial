@@ -180,6 +180,9 @@ def reading(label, seconds=60):
             'roundTypical': median([w for w, c in seen.values() if w is not None]),
             'roundCpuTypical': median([c for w, c in seen.values() if c is not None]),
             'cpu': {k: round((cb.get(k, 0) - ca.get(k, 0)) / mins, 1) for k in ('road legs', 'publishing', 'matching', 'engine total')},
+            # 17 Nov 2026 (evening peak, the engine using a whole core): every part the engine meters, a minute
+            'cpuAll': sorted(((k, round((cb.get(k, 0) - ca.get(k, 0)) / mins, 1)) for k in cb if isinstance(cb.get(k), (int, float))),
+                             key=lambda kv: -kv[1]),
             'memoryMB': memory_mb(), 'memoryParts': memory_parts(), 'roadMB': b.get('roadCacheMB'), 'roadLimitMB': b.get('roadCacheLimitMB'),
             'tilesAge': tiles_age(), 'packedKb': last.get('packedKbWritten'), 'largestKb': last.get('largestKb'),
             'forecast': last.get('forecast')}
@@ -547,6 +550,8 @@ def look(argv):
         say(f'Reading {k + 1} of {minutes}...')
         r = reading(f'reading {k + 1}')
         lines.append(show(f'READING {k + 1}', r))
+        if r is not None and r.get('cpuAll'):        # 17 Nov 2026: every part, biggest first (parts can sit inside others)
+            lines.append('   every part, processor-seconds a minute: ' + ', '.join(f'{k} {v}' for k, v in r['cpuAll'] if v > 0))
         if r is None:
             ok = False
             break
