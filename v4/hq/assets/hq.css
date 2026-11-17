@@ -532,10 +532,9 @@ html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;pos
 .town-bubble:hover,.town-bubble:focus-visible{border-color:#ffdf35;outline:none;filter:brightness(1.1)}
 
 /* 4.68.0 (tester 17 Nov: had to try clicking a bubble to find out what it did; Rob chose these two): a bubble lifts and
-   brightens under the mouse, and a one-time tip says what a tap does */
-.town-bubble{transition:scale .15s ease,filter .15s ease,border-color .15s ease,box-shadow .15s ease}
-@media(hover:hover){.town-bubble:hover{scale:1.08;filter:brightness(1.18);border-color:#ffdf35;box-shadow:0 6px 18px #000a;z-index:1}}
-@media(prefers-reduced-motion:reduce){.town-bubble{transition:none}}
+   brightens under the mouse (taken out again in 4.68.1), and a one-time tip says what a tap does */
+/* 4.68.1 (Rob 17 Nov 16:21: "the bubbles are bouncing all over when you hover near them"): no growing under the mouse;
+   the 4.67.0 brighter edge stays */
 .bubble-tip{position:absolute;left:0;top:0;pointer-events:auto;display:flex;align-items:center;gap:8px;padding:6px 6px 6px 11px;
   border-radius:10px;background:#ffb21e;color:#0b1626;font:600 12px/1.25 var(--tpa-sign,system-ui),system-ui,sans-serif;
   white-space:nowrap;box-shadow:0 4px 14px #0009;animation:bubble-tip-in .3s ease-out}
