@@ -541,3 +541,12 @@ html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;pos
 .bubble-tip::before{content:"";position:absolute;left:50%;top:-6px;margin-left:-6px;border:6px solid transparent;border-top:0;border-bottom-color:#ffb21e}
 .bubble-tip-close{border:0;background:#0b162622;color:#0b1626;width:20px;height:20px;border-radius:50%;font:700 14px/1 system-ui;cursor:pointer;padding:0}
 @keyframes bubble-tip-in{from{opacity:0}to{opacity:1}}
+
+/* 4.69.0 (Rob 17 Nov 16:25: the layers take up too much of the menu): the Tracking layers section folds under its heading */
+.fold-title{cursor:pointer;user-select:none}
+.fold-button{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:6px;font:inherit;letter-spacing:inherit;color:inherit}
+.fold-button:focus-visible{outline:2px solid var(--cyan,#2fc7b5);outline-offset:3px;border-radius:3px}
+.fold-arrow{display:inline-block;transition:transform .2s ease;font-size:.9em}
+.layers-panel:not(.folded) .fold-arrow{transform:rotate(180deg)}
+.layers-panel.folded .fold-body{display:none}
+.layers-panel.folded .section-title{margin-bottom:0}

@@ -998,6 +998,14 @@ new MutationObserver(()=>document.body.classList.toggle('sheet-up',!selected.cla
 // 4.65.1: on a PC a click on the one-line credits shows them in full (and again hides them)
 (()=>{const c=$('map-credit');if(c)c.addEventListener('click',()=>{if(window.innerWidth<=760)return;
   document.body.classList.toggle('credits-open');});})();
+// 4.69.0 (Rob 17 Nov 16:25: "the layers still take up too much of the menu"; he chose: the whole section folds away):
+// the Tracking layers switches fold up under their heading - folded to begin with; the visitor's choice is remembered
+(()=>{const b=$('layers-fold'),p=b?.closest('.layers-panel');if(!b||!p)return;
+  const set=open=>{p.classList.toggle('folded',!open);b.setAttribute('aria-expanded',String(open));};
+  let open=false;try{open=localStorage.getItem('tpa-layers-open')==='1';}catch(_){}
+  set(open);
+  p.querySelector('.fold-title').addEventListener('click',()=>{const now=p.classList.contains('folded');set(now);
+    try{localStorage.setItem('tpa-layers-open',now?'1':'0');}catch(_){}});})();
 (()=>{const t=$('credit-toggle');if(!t)return;t.addEventListener('click',()=>{const on=!document.body.classList.contains('credits-open');
   document.body.classList.toggle('credits-open',on);t.setAttribute('aria-expanded',String(on));});
   // 4.66.0 (Rob 17 Nov: the credits bar "takes up way too much of the screen"): on every screen the credits are a small

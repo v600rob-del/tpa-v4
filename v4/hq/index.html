@@ -29,8 +29,9 @@
       <div><p class="eyebrow">TRAINS · PLANES · AUTOMOBILES · (AND BOATS)</p><h1>TPA <em>HQ</em></h1><p class="subheading">Your world, moving.</p><p class="copyright-top">© 2026 Rob Burnett</p></div>
     </div>
     <div class="onair"><span class="pulse"></span><strong>MOCK ICON REVIEW · NOT LIVE</strong><span id="localclock">—</span></div>
-    <section class="panel" aria-label="Tracking layers">
-      <div class="section-title"><h2>TRACKING LAYERS</h2><span class="micro">SHOW / HIDE</span></div>
+    <section class="panel layers-panel folded" aria-label="Tracking layers">
+      <div class="section-title fold-title"><h2><button type="button" id="layers-fold" class="fold-button" aria-expanded="false" aria-controls="layers-body">TRACKING LAYERS <span class="fold-arrow" aria-hidden="true">▾</span></button></h2><span class="micro">SHOW / HIDE</span></div>
+      <div id="layers-body" class="fold-body">
       <label class="layer-toggle" for="air-toggle" data-component="air"><span class="layer-icon aircraft">✈</span><span class="layer-copy"><strong>Aircraft</strong><small id="air-source-status">Not installed · connection ready</small></span><input type="checkbox" id="air-toggle" checked/><span class="switch"></span></label>
       <div class="air-filter" role="group" aria-label="Which aircraft to show"><button type="button" data-air="all" aria-pressed="true">All</button><button type="button" data-air="normal" aria-pressed="false">Non-military</button><button type="button" data-air="military" aria-pressed="false">Military</button><button type="button" data-air="services" aria-pressed="false">Emergency</button></div>
       <label class="layer-toggle" for="sea-toggle" data-component="sea"><span class="layer-icon shipping">⛴</span><span class="layer-copy"><strong>Vessels</strong><small id="sea-source-status">Not installed · connection ready</small></span><input type="checkbox" id="sea-toggle" checked/><span class="switch"></span></label>
@@ -40,6 +41,7 @@
       <label class="layer-toggle" for="busstations-toggle" data-component="busstations"><span class="layer-icon busstations">🚍</span><span class="layer-copy"><strong>Bus stations</strong><small id="busstations-source-status">Not installed · connection ready</small></span><input type="checkbox" id="busstations-toggle" checked/><span class="switch"></span></label>
       <label class="layer-toggle" for="stops-toggle" data-component="stops"><span class="layer-icon stops">🚏</span><span class="layer-copy"><strong>Bus stops</strong><small id="stops-source-status">Not installed · connection ready</small></span><input type="checkbox" id="stops-toggle" checked/><span class="switch"></span></label>
       <label class="layer-toggle" for="road-toggle" data-component="road"><span class="layer-icon traffic">≋</span><span class="layer-copy"><strong>Road traffic</strong><small id="road-source-status">Not installed · connection ready</small></span><input type="checkbox" id="road-toggle" checked/><span class="switch"></span></label>
+      </div>
     </section>
     <section class="panel stats-panel" aria-label="Current map counts">
       <div class="section-title"><h2>MOCK MARKERS IN VIEW</h2><span class="micro">FICTIONAL DATA</span></div>
