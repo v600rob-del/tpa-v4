@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.24.0'
+ENGINE_VERSION = '0.25.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -944,8 +944,9 @@ def poll_decision(now: float):
         watched = now - STATE['lastDemandAt'] < DEMAND_WINDOW
         viewed = watched or ALWAYS_ON
         pace = POLL_SECONDS if watched else IDLE_POLL_SECONDS
-        # After repeated failures, back off gently (up to 5 minutes) rather than hammer BODS.
-        wait = pace * min(10, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else pace
+        # After failures, ease off a little (at most twice the normal gap) rather than hammer BODS.
+        # 0.25.0: was up to 10x (150 s while watched), which kept buses old long after BODS recovered (17 Nov 19:20-19:30).
+        wait = pace * min(2, 2 ** max(0, STATE['consecutiveErrors'] - 1)) if STATE['consecutiveErrors'] else pace
         due = now - STATE['lastAttemptAt'] >= wait
         uncovered = MODE == 'area' and wanted is not None and not covers(STATE['coverage'], wanted) \
             and now - STATE['lastAttemptAt'] >= 3  # a newly viewed area need not wait the full 30 s
