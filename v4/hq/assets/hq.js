@@ -1688,16 +1688,21 @@ function bubbleTipState(){
 }
 function bubbleTipDone(){if(BUBBLE_TIP.done)return;BUBBLE_TIP.done=true;clearTimeout(BUBBLE_TIP.timer);
   try{localStorage.setItem(BUBBLE_TIP_KEY,'1');}catch(_){}bubbleSig='';paint();}
+const BUS_TILES_MAX_AGE_S=180;
 async function busTileFrame(){
   const R=window.TPA_BUS_REPLAY;if(!R)throw Error('no replay');
   const slot=Math.floor(serverNow()/10000);
   const meta=await tileJSON('/tiles/bus/meta.json?r='+slot,4000,false);
-  if(!meta||meta.v!==1||!validNum(meta.updatedAt)||serverNow()/1000-meta.updatedAt>60)throw Error('tiles old');
+  // 4.69.1 (Rob 17 Nov 17:28: "loading the map and getting greyed out buses"): at the evening peak (21,400 buses) the bus
+  // engine sometimes takes 30-80 s for a round [measured 17:30], so files over 60 s old greyed every bus. The buses keep
+  // moving on their own tracks meanwhile; they only grey after 3 minutes without new files (4 since their download).
+  if(!meta||meta.v!==1||!validNum(meta.updatedAt)||serverNow()/1000-meta.updatedAt>BUS_TILES_MAX_AGE_S)throw Error('tiles old');
   const iso=s=>new Date(s*1000).toISOString(),got=meta.fetchedAt||meta.updatedAt;
   const frame={component:'bus',contractVersion:'1.0',health:['ready','stale','unavailable'].includes(meta.health)?meta.health:'stale',
-    observedAt:iso(got),receivedAt:iso(got),expiresAt:iso(got+90),nextPollAfterMs:10000,attribution:String(meta.attribution||'').slice(0,256),
+    observedAt:iso(got),receivedAt:iso(got),expiresAt:iso(got+BUS_TILES_MAX_AGE_S+60),nextPollAfterMs:10000,attribution:String(meta.attribution||'').slice(0,256),
     groupStacks:true,entities:[]};
   if(meta.notice)frame.notice=String(meta.notice).slice(0,120);
+  BUS_TILES.current=Date.parse(frame.expiresAt)>=serverNow();   // 4.69.1: what the page will treat as current (not greyed)
   if(bubbleSkips('bus'))return frame;   // 4.67.0: in town bubbles
   let w=-12.5,s=49,e=4.5,n=61.8;
   if(map&&typeof map.getBounds==='function'){const b=map.getBounds();w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();}
@@ -1816,7 +1821,7 @@ async function railTileFrame(){
   RAIL_TILES.last={box:[s,w,n,e],ids:frame.entities.map(q=>q.id),notice:frame.notice||''};
   return frame;
 }
-window.TPA_BUS_TILES=()=>({on:BUS_TILES.on,used:BUS_TILES.used,lines:BUS_TILES.lines.size});
+window.TPA_BUS_TILES=()=>({on:BUS_TILES.on,used:BUS_TILES.used,lines:BUS_TILES.lines.size,current:BUS_TILES.current});
 function deselectComponent(id){
   if(state.selected?.component===id){state.selected=null;selected.classList.add('hidden');}
 }
