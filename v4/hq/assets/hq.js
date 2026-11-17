@@ -1614,7 +1614,7 @@ function bubbleWords(g){
 function drawBubbles(ox,oy){
   if(!bubblesShowing()){if(bubbleBox.childElementCount)bubbleBox.replaceChildren();bubbleSig='';return;}
   const z=map.getZoom(),b=map.getBounds(),d=dims(),W=b.getWest(),E=b.getEast(),S=b.getSouth(),N=b.getNorth();
-  const sig=[z.toFixed(3),W.toFixed(5),N.toFixed(5),d.w,d.h,ox.toFixed(1),oy.toFixed(1)].concat(BUBBLE_LAYERS.map(id=>bubbleLayer(id)&&state.visible[id]?COUNTS[id].at:'-')).join('|');
+  const sig=[z.toFixed(3),W.toFixed(5),N.toFixed(5),d.w,d.h,ox.toFixed(1),oy.toFixed(1),bubbleTipState()].concat(BUBBLE_LAYERS.map(id=>bubbleLayer(id)&&state.visible[id]?COUNTS[id].at:'-')).join('|');
   if(sig===bubbleSig)return;bubbleSig=sig;
   const pl=(N-S)*0.2,pw=(E-W)*0.2,inside=(lat,lon)=>lat>S-pl&&lat<N+pl&&lon>W-pw&&lon<E+pw;
   // 4.67.4 (Rob 14:11: "beverley ... 139 buses in the bubble. I zoomed in and there wasnt any"): the street map only gives
@@ -1655,10 +1655,31 @@ function drawBubbles(ox,oy){
     btn.append(el('span','',words.join(' · ')));
     btn.setAttribute('aria-label',(g.name?g.name+': ':'')+words.join(' and ')+'. Zoom in to see each one.');
     btn.title='Zoom in to see each one';
-    btn.onclick=ev=>{ev.stopPropagation();stopFollow();map.setView([g.lat,g.lon],BUBBLE_BELOW_ZOOM);};
+    btn.onclick=ev=>{ev.stopPropagation();bubbleTipDone();stopFollow();map.setView([g.lat,g.lon],BUBBLE_BELOW_ZOOM);};
     out.push(btn);}
+  // 4.68.0 (tester, 17 Nov 16:09: "I had to try clicking the label to discover what it did"; Rob chose a one-time tip):
+  // the first time bubbles show (welcome closed), a short tip under the biggest one on screen, once per browser
+  if(out.length&&bubbleTipState()==='show'){
+    const top=kept.find(g=>g.x>=0&&g.y>=0&&g.x<=d.w&&g.y<=d.h&&bubbleWords(g).length);
+    if(top){BUBBLE_TIP.shown=true;try{localStorage.setItem(BUBBLE_TIP_KEY,'1');}catch(_){}
+      clearTimeout(BUBBLE_TIP.timer);BUBBLE_TIP.timer=setTimeout(bubbleTipDone,12000);
+      const tip=el('div','bubble-tip');tip.setAttribute('role','note');
+      tip.style.transform=`translate(${top.x.toFixed(1)}px,${(top.y+30).toFixed(1)}px) translate(-50%,0)`;
+      const x=el('button','bubble-tip-close','×');x.type='button';x.setAttribute('aria-label','Close tip');
+      x.onclick=ev=>{ev.stopPropagation();bubbleTipDone();};
+      tip.append(el('span','','Tap a town to see its buses and trains'),x);out.push(tip);}}
   bubbleBox.replaceChildren(...out);
 }
+const BUBBLE_TIP_KEY='tpa-bubble-tip-seen',BUBBLE_TIP={shown:false,done:false,timer:0};
+function bubbleTipState(){
+  if(BUBBLE_TIP.done)return 'done';
+  if(BUBBLE_TIP.shown)return 'show';
+  if(!$('tpa-welcome')?.classList.contains('hidden'))return 'wait';    // not under the welcome screen
+  try{if(localStorage.getItem(BUBBLE_TIP_KEY)){BUBBLE_TIP.done=true;return 'done';}}catch(_){}
+  return 'show';
+}
+function bubbleTipDone(){if(BUBBLE_TIP.done)return;BUBBLE_TIP.done=true;clearTimeout(BUBBLE_TIP.timer);
+  try{localStorage.setItem(BUBBLE_TIP_KEY,'1');}catch(_){}bubbleSig='';paint();}
 async function busTileFrame(){
   const R=window.TPA_BUS_REPLAY;if(!R)throw Error('no replay');
   const slot=Math.floor(serverNow()/10000);

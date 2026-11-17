@@ -530,3 +530,15 @@ html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;pos
 .town-bubble.big{padding:6px 12px;border-width:2px}
 .town-bubble.big strong{font-size:13px}
 .town-bubble:hover,.town-bubble:focus-visible{border-color:#ffdf35;outline:none;filter:brightness(1.1)}
+
+/* 4.68.0 (tester 17 Nov: had to try clicking a bubble to find out what it did; Rob chose these two): a bubble lifts and
+   brightens under the mouse, and a one-time tip says what a tap does */
+.town-bubble{transition:scale .15s ease,filter .15s ease,border-color .15s ease,box-shadow .15s ease}
+@media(hover:hover){.town-bubble:hover{scale:1.08;filter:brightness(1.18);border-color:#ffdf35;box-shadow:0 6px 18px #000a;z-index:1}}
+@media(prefers-reduced-motion:reduce){.town-bubble{transition:none}}
+.bubble-tip{position:absolute;left:0;top:0;pointer-events:auto;display:flex;align-items:center;gap:8px;padding:6px 6px 6px 11px;
+  border-radius:10px;background:#ffb21e;color:#0b1626;font:600 12px/1.25 var(--tpa-sign,system-ui),system-ui,sans-serif;
+  white-space:nowrap;box-shadow:0 4px 14px #0009;animation:bubble-tip-in .3s ease-out}
+.bubble-tip::before{content:"";position:absolute;left:50%;top:-6px;margin-left:-6px;border:6px solid transparent;border-top:0;border-bottom-color:#ffb21e}
+.bubble-tip-close{border:0;background:#0b162622;color:#0b1626;width:20px;height:20px;border-radius:50%;font:700 14px/1 system-ui;cursor:pointer;padding:0}
+@keyframes bubble-tip-in{from{opacity:0}to{opacity:1}}
