@@ -139,14 +139,34 @@ def running_commit():
         return ''
 
 
-def reading(label):
-    """One minute of the engine: {version, health, rounds in the minute, last round s, processor-seconds per minute by
-    job, memory, road-map memory, tiles age}; None if the engine did not answer."""
+def median(xs):
+    xs = sorted(xs)
+    return None if not xs else xs[len(xs) // 2] if len(xs) % 2 else round((xs[len(xs) // 2 - 1] + xs[len(xs) // 2]) / 2, 2)
+
+
+def reading(label, seconds=60):
+    """`seconds` of the engine: {version, health, rounds in the time, last round s, typical round (wall and the round's own
+    processor time, over every round seen), processor-seconds per minute by job, memory, road-map memory, tiles age};
+    None if the engine did not answer.
+
+    17 Nov 2026 (two trials put back on "a round takes no longer than 1.2 x before"): one round's time jumps about by itself -
+    the same 0.22.0 measured 15.2 s at 11:34 and 5.0 s at 12:53 - because a round waits whenever a national download is
+    being read. So every round in the reading is seen (the status is asked every 5 s), and the mark uses the typical
+    (middle) round's own processor time, which leaves out that waiting."""
     a, ta = status(), now()
     if a is None:
         return None
-    say(f'   {label}: measuring for one minute...')
-    wait(60)
+    say(f'   {label}: measuring for {"one minute" if seconds == 60 else f"{seconds // 60} minutes"}...')
+    seen, last_n = {}, ((a.get('publish') or {}).get('rounds') or 0)
+    end = now() + seconds
+    while now() < end:
+        wait(min(5, max(0.0, end - now())))
+        s = status()
+        p = (s or {}).get('publish') or {}
+        n, l = p.get('rounds') or 0, p.get('last') or {}
+        if n > last_n and n not in seen and l.get('wallSeconds') is not None:
+            seen[n] = (l.get('wallSeconds'), l.get('cpuSeconds'))
+            last_n = n
     b, tb = status(), now()
     if b is None or (b.get('cpuSeconds') or {}).get('engine total', 0) < (a.get('cpuSeconds') or {}).get('engine total', 0):
         return None                      # stopped answering, or restarted in the middle
@@ -155,8 +175,10 @@ def reading(label):
     pa, pb = a.get('publish') or {}, b.get('publish') or {}
     last = pb.get('last') or {}
     return {'version': b.get('engineVersion'), 'health': b.get('health'),
-            'rounds': (pb.get('rounds') or 0) - (pa.get('rounds') or 0), 'roundsTotal': pb.get('rounds') or 0,
-            'roundSeconds': last.get('wallSeconds'), 'buses': last.get('buses'),
+            'rounds': round(((pb.get('rounds') or 0) - (pa.get('rounds') or 0)) / mins), 'roundsTotal': pb.get('rounds') or 0,   # a minute
+            'roundSeconds': last.get('wallSeconds'), 'buses': last.get('buses'), 'roundsSeen': len(seen),
+            'roundTypical': median([w for w, c in seen.values() if w is not None]),
+            'roundCpuTypical': median([c for w, c in seen.values() if c is not None]),
             'cpu': {k: round((cb.get(k, 0) - ca.get(k, 0)) / mins, 1) for k in ('road legs', 'publishing', 'matching', 'engine total')},
             'memoryMB': memory_mb(), 'memoryParts': memory_parts(), 'roadMB': b.get('roadCacheMB'), 'roadLimitMB': b.get('roadCacheLimitMB'),
             'tilesAge': tiles_age(), 'packedKb': last.get('packedKbWritten'), 'largestKb': last.get('largestKb'),
@@ -167,8 +189,10 @@ def show(label, r):
     if r is None:
         return f'{label}: the bus engine did not answer'
     c = r['cpu']
+    typical = '' if not r.get('roundsSeen') else (f', typical round {r["roundTypical"]} s of which its own work '
+                                                  f'{r["roundCpuTypical"]} s ({r["roundsSeen"]} round{"" if r["roundsSeen"] == 1 else "s"} seen)')
     return (f'{label}: version {r["version"]}, health {r["health"]} | rounds of tiles in the minute: {r["rounds"]}, last round took '
-            f'{r["roundSeconds"]} s, tiles {r["tilesAge"]} s old, buses {r["buses"]} | processor-seconds a minute: road legs '
+            f'{r["roundSeconds"]} s{typical}, tiles {r["tilesAge"]} s old, buses {r["buses"]} | processor-seconds a minute: road legs '
             f'{c["road legs"]}, all publishing {c["publishing"]}, matching {c["matching"]}, engine total {c["engine total"]} | '
             f'memory {r["memoryMB"]} MB'
             + ('' if not r.get('memoryParts') else ' (the program itself {} MB, files it has read {} MB, tiles and other shared memory {} MB)'
@@ -232,7 +256,7 @@ def trial(argv):
             'sudo python3 -B -u tpa-trial --reading [--minutes 2]')
         return 2
     old = running_commit()
-    say(f'tpa-trial: about 12 to 20 minutes; up to 35 if the old version has to go back. Progress shows below, the result '
+    say(f'tpa-trial: about 14 to 22 minutes; up to 37 if the old version has to go back. Progress shows below, the result '
         f'comes at the end. (If this connection drops, the trial carries on by itself: sudo cat {LOG})')
     lines = []                           # the block to copy back
 
@@ -254,7 +278,7 @@ def trial(argv):
         return finish('RESULT: NOTHING WAS CHANGED.', 1)
 
     say('Step 1 of 5: reading the engine as it is now...')
-    before = reading('before')
+    before = reading('before', 120)
     lines.append(show('BEFORE', before))
     if before is None:
         return finish('RESULT: NOTHING WAS CHANGED (the engine must be answering before a trial starts).', 1)
@@ -284,7 +308,7 @@ def trial(argv):
                 say(f'   settled; running on before the reading, minute {minute + 1} of {extra}...')
                 wait(60)
             say('Step 4 of 5: reading the new version...')
-            after = reading('after')
+            after = reading('after', 120)
             lines.append(show('AFTER ', after))
             if after is None:
                 failed.append('the engine stopped answering during the reading')
@@ -297,7 +321,11 @@ def trial(argv):
                      f'{after["cpu"]["road legs"]} (before: {before["cpu"]["road legs"]})'),
                     (after['memoryMB'] is not None and after['memoryMB'] <= max_mem, f'memory at most {max_mem} MB', f'{after["memoryMB"]} MB'),
                 ]
-                if before['roundSeconds'] and after['roundSeconds'] is not None:
+                if before.get('roundCpuTypical') and after.get('roundCpuTypical') is not None:
+                    marks.append((after['roundCpuTypical'] <= max_factor * before['roundCpuTypical'],
+                                  f'a typical round\'s own work is no more than {max_factor:g} x before ({before["roundCpuTypical"]} s)',
+                                  f'{after["roundCpuTypical"]} s'))
+                elif before['roundSeconds'] and after['roundSeconds'] is not None:
                     marks.append((after['roundSeconds'] <= max_factor * before['roundSeconds'],
                                   f'a round takes no longer than {max_factor:g} x before ({before["roundSeconds"]} s)', f'{after["roundSeconds"]} s'))
                 if expect_road is not None:

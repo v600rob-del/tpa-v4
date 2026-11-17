@@ -1585,6 +1585,14 @@ function countInView(id){
   for(const [r,col,k] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(lat>=S&&lat<=N&&lon>=W&&lon<=E)n+=k;}
   return n;
 }
+// 4.67.1 (17 Nov, live: Leeds's trains came out as "Rothwell" - the middle of Leeds's 0.1 degree square is nearer
+// Rothwell): a city counts as twice as near as a town
+function nearestPlace(lat,lon,places){
+  const k=Math.cos(lat*Math.PI/180);let best=null,bd=Infinity;
+  for(const p of places){const dd=((p.lat-lat)**2+((p.lon-lon)*k)**2)/(p.city?4:1);if(dd<bd){bd=dd;best=p;}}
+  return best;
+}
+window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||''};
 function bubbleWords(g){
   return BUBBLE_LAYERS.filter(id=>g[id]>0).map(id=>g[id].toLocaleString('en-GB')+' '+BUBBLE_WORD[id][g[id]===1?0:1]);
 }
@@ -1600,18 +1608,19 @@ function drawBubbles(ox,oy){
   const groups=new Map();
   for(const id of BUBBLE_LAYERS){if(!bubbleLayer(id)||!state.visible[id])continue;const c=COUNTS[id];
     for(const [r,col,n] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(!inside(lat,lon)||!(n>0))continue;
-      const k=Math.cos(lat*Math.PI/180);let best=null,bd=Infinity;
-      for(const p of places){const dd=(p.lat-lat)**2+((p.lon-lon)*k)**2;if(dd<bd){bd=dd;best=p;}}
+      const best=nearestPlace(lat,lon,places);
       const key=best?best.name+'|'+best.lon.toFixed(3)+'|'+best.lat.toFixed(3):'g'+Math.floor(lat/0.5)+'_'+Math.floor(lon/0.5);
       let g=groups.get(key);
-      if(!g){g={name:best?best.name:'',lat:best?best.lat:0,lon:best?best.lon:0,wl:0,wn:0,ww:0,bus:0,rail:0};groups.set(key,g);}
+      if(!g){g={name:best?best.name:'',city:!!best?.city,lat:best?best.lat:0,lon:best?best.lon:0,wl:0,wn:0,ww:0,bus:0,rail:0};groups.set(key,g);}
       g[id]+=n;g.wl+=lat*n;g.wn+=lon*n;g.ww+=n;}}
   const list=[...groups.values()].sort((a,b)=>(b.bus+b.rail)-(a.bus+a.rail)),gapX=isPhone()?120:132,gapY=isPhone()?52:46,kept=[];
   for(const g of list){
     if(!g.name){g.lat=g.wl/g.ww;g.lon=g.wn/g.ww;}
     const [x,y]=pixel(g.lon,g.lat);g.x=x-ox;g.y=y-oy;
     const near=kept.find(k=>Math.abs(k.x-g.x)<gapX&&Math.abs(k.y-g.y)<gapY);
-    if(near){near.bus+=g.bus;near.rail+=g.rail;continue;}
+    if(near){near.bus+=g.bus;near.rail+=g.rail;
+      if(g.city&&!near.city&&g.name){near.name=g.name;near.city=true;near.lat=g.lat;near.lon=g.lon;near.x=g.x;near.y=g.y;}   // 4.67.1: a city names it
+      continue;}
     kept.push(g);}
   const out=[];
   for(const g of kept){
