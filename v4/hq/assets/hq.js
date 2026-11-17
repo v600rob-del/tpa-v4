@@ -1592,8 +1592,15 @@ function nearestPlace(lat,lon,places){
   for(const p of places){const dd=((p.lat-lat)**2+((p.lon-lon)*k)**2)/(p.city?4:1);if(dd<bd){bd=dd;best=p;}}
   return best;
 }
+// far out (below 9) cities only; below 10 also the bigger towns (the street map's rank 12 or better): 4.67.3 (17 Nov 14:10,
+// live at zoom 9: 570 buses around Wigan named "Ashton-in-Makerfield", rank 14; Wigan is 11)
+function bubblePlaces(places,z){
+  if(z<9&&places.some(p=>p.city))return places.filter(p=>p.city);
+  if(z<10){const big=places.filter(p=>p.city||(p.rank||99)<=12);if(big.length)return big;}
+  return places;
+}
 function moreImportant(a,b){return (a.city?0:1000)+(a.rank||99)<(b.city?0:1000)+(b.rank||99);}
-window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||'',moreImportant:(a,b)=>moreImportant(a,b)};
+window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||'',moreImportant:(a,b)=>moreImportant(a,b),places:(pl,z)=>bubblePlaces(pl,z).map(p=>p.name)};
 function bubbleWords(g){
   return BUBBLE_LAYERS.filter(id=>g[id]>0).map(id=>g[id].toLocaleString('en-GB')+' '+BUBBLE_WORD[id][g[id]===1?0:1]);
 }
@@ -1605,7 +1612,7 @@ function drawBubbles(ox,oy){
   const pl=(N-S)*0.2,pw=(E-W)*0.2,inside=(lat,lon)=>lat>S-pl&&lat<N+pl&&lon>W-pw&&lon<E+pw;
   let places=(window.TPA_MAP_PLACES?.()||[]).filter(p=>inside(p.lat,p.lon));
   if(!places.length)places=POI.map(([name,lon,lat])=>({name,lon,lat,city:true})).filter(p=>inside(p.lat,p.lon));
-  if(z<9&&places.some(p=>p.city))places=places.filter(p=>p.city);    // far out: cities only
+  places=bubblePlaces(places,z);
   const groups=new Map();
   for(const id of BUBBLE_LAYERS){if(!bubbleLayer(id)||!state.visible[id])continue;const c=COUNTS[id];
     for(const [r,col,n] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(!inside(lat,lon)||!(n>0))continue;
