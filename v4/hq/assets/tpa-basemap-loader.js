@@ -37,7 +37,7 @@ function mapPlaces(){
       const name=String(p['name:en']||p.name_en||p.name||'').trim().slice(0,40);if(!name)continue;
       const [lon,lat]=f.geometry.coordinates;if(!Number.isFinite(lon)||!Number.isFinite(lat))continue;
       const k=name+'|'+lon.toFixed(2)+'|'+lat.toFixed(2);if(seen.has(k))continue;seen.add(k);
-      out.push({name,city:cls==='city',lon,lat});}
+      out.push({name,city:cls==='city',lon,lat,rank:Number(p.rank)||99});}   // rank: 1 the most important (OpenMapTiles)
     return out;
   }catch(e){return [];}
 }

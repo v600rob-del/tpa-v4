@@ -1592,7 +1592,8 @@ function nearestPlace(lat,lon,places){
   for(const p of places){const dd=((p.lat-lat)**2+((p.lon-lon)*k)**2)/(p.city?4:1);if(dd<bd){bd=dd;best=p;}}
   return best;
 }
-window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||''};
+function moreImportant(a,b){return (a.city?0:1000)+(a.rank||99)<(b.city?0:1000)+(b.rank||99);}
+window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||'',moreImportant:(a,b)=>moreImportant(a,b)};
 function bubbleWords(g){
   return BUBBLE_LAYERS.filter(id=>g[id]>0).map(id=>g[id].toLocaleString('en-GB')+' '+BUBBLE_WORD[id][g[id]===1?0:1]);
 }
@@ -1611,7 +1612,7 @@ function drawBubbles(ox,oy){
       const best=nearestPlace(lat,lon,places);
       const key=best?best.name+'|'+best.lon.toFixed(3)+'|'+best.lat.toFixed(3):'g'+Math.floor(lat/0.5)+'_'+Math.floor(lon/0.5);
       let g=groups.get(key);
-      if(!g){g={name:best?best.name:'',city:!!best?.city,lat:best?best.lat:0,lon:best?best.lon:0,wl:0,wn:0,ww:0,bus:0,rail:0};groups.set(key,g);}
+      if(!g){g={name:best?best.name:'',city:!!best?.city,rank:best?.rank||99,lat:best?best.lat:0,lon:best?best.lon:0,wl:0,wn:0,ww:0,bus:0,rail:0};groups.set(key,g);}
       g[id]+=n;g.wl+=lat*n;g.wn+=lon*n;g.ww+=n;}}
   const list=[...groups.values()].sort((a,b)=>(b.bus+b.rail)-(a.bus+a.rail)),gapX=isPhone()?120:132,gapY=isPhone()?52:46,kept=[];
   for(const g of list){
@@ -1619,7 +1620,9 @@ function drawBubbles(ox,oy){
     const [x,y]=pixel(g.lon,g.lat);g.x=x-ox;g.y=y-oy;
     const near=kept.find(k=>Math.abs(k.x-g.x)<gapX&&Math.abs(k.y-g.y)<gapY);
     if(near){near.bus+=g.bus;near.rail+=g.rail;
-      if(g.city&&!near.city&&g.name){near.name=g.name;near.city=true;near.lat=g.lat;near.lon=g.lon;near.x=g.x;near.y=g.y;}   // 4.67.1: a city names it
+      // 4.67.1: a city names it; 4.67.2 (17 Nov 13:25, live: Leeds and Bradford joined as "Bradford"): of two cities, the
+      // more important one on the street map (its own rank: Leeds before Bradford)
+      if(g.name&&moreImportant(g,near)){near.name=g.name;near.city=g.city;near.rank=g.rank;near.lat=g.lat;near.lon=g.lon;near.x=g.x;near.y=g.y;}
       continue;}
     kept.push(g);}
   const out=[];
