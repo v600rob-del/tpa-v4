@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.22.0'
+ENGINE_VERSION = '0.22.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -3081,7 +3081,7 @@ def road_replay_for(v: dict, now: float, deadline: float | None):
 
 # 0.8.0 (owner 1 Nov 13:42: "ideally, the end user would get the start and end destination, then which
 # stop is next"): HQ asks for a clicked bus's details (/details?id=bus:<key>). Timetabled times only.
-STOPS_ALONG = OrderedDict()   # trip_id -> [(metres along route, name, indicator, arrive s, depart s)]
+STOPS_ALONG = OrderedDict()   # trip_id -> [(metres along route, name, indicator, arrive s, depart s, stop id)]
 
 
 def _clock(secs: int) -> str:
@@ -3111,7 +3111,7 @@ def stops_along(trip_id: str, sh):
             got = sh.project(lon, lat, max(0.0, last - 50), None)
             if got is not None:
                 m = last = max(last, got[0])
-        out.append((m, name, ind, arr, dep))
+        out.append((m, name, ind, arr, dep, sid))
     with JOURNEY_LOCK:
         STOPS_ALONG[trip_id] = out
         while len(STOPS_ALONG) > 300:
@@ -3486,9 +3486,19 @@ def details(entity_id: str) -> dict:
         out['rows'].append({'label': 'Running', 'value': 'About on time' if abs(late) <= 1 else
                             f'About {late} min late' if late > 0 else f'About {-late} min early'})
     calls = []
+    names = [_stop_name(st[1], st[2]) for st in stops]
+    # 0.22.1 (first-impressions visit, 17 Nov: several "Woodmansey Hull Road" in a row): stops sharing a name on this journey
+    # say which side road or landmark each is near - "Woodmansey Hull Road (near Shopeth Way)"; other names are unchanged
+    twins = {n for n in names if names.count(n) > 1}
+    if twins:
+        try:
+            near = TIMETABLE['tt'].near_of([st[5] for st, n in zip(stops, names) if n in twins])
+        except Exception:
+            near = {}
+        names = [f'{n} (near {near[st[5]]})' if n in twins and near.get(st[5]) else n for st, n in zip(stops, names)]
     for i, (st, state) in enumerate(zip(stops, states)):
         booked = st[4] if i == 0 else st[3]
-        stop = {'name': _stop_name(st[1], st[2])[:80], 'state': state, 'time': _clock(booked)}   # 0.11.1: 80, wrapped by HQ
+        stop = {'name': names[i][:80], 'state': state, 'time': _clock(booked)}   # 0.11.1: 80, wrapped by HQ
         if state == 'due' and late is not None and abs(late) >= 2:
             stop['expected'] = _clock(booked + late * 60)
         calls.append(stop)

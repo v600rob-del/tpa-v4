@@ -200,7 +200,11 @@ body.vector-ready .vector-map{z-index:4}
 .welcome-ready .prep-list{gap:10px 14px}
 .welcome-ready .prep-item{flex-direction:column;gap:3px;font-size:11px}
 .welcome-ready .prep-item .prep-tick{display:none}
-.tpa-primary.waiting{visibility:hidden;opacity:0}
+.tpa-primary.waiting{position:relative;overflow:hidden;background:#173843;color:#cfe9ee;cursor:default}   /* 4.66.0: on screen, filling up */
+.tpa-primary .enter-fill{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--cyan);opacity:.45;animation:enter-fill 5s linear forwards}
+.tpa-primary .enter-text{position:relative}
+@keyframes enter-fill{to{width:100%}}
+@media(prefers-reduced-motion:reduce){.tpa-primary .enter-fill{animation:none;width:50%}}
 .tpa-primary{transition:opacity .5s}
 .tip-picture{display:block;width:96px;height:96px;margin:0 auto 8px;border-radius:50%;object-fit:cover;clip-path:circle(46%);box-shadow:0 0 0 3px #8a6a2c55}
 @media(prefers-reduced-motion:reduce){.prep-item:not(.done) .prep-icon{animation:none}}
@@ -374,9 +378,7 @@ body.vector-ready .vector-map{z-index:4}
   /* Follow (and Report) straight under the title, so they are always in the short panel; the details below them
      (rows such as an aircraft's Emergency are never tucked away: the short panel scrolls) */
   .map-selection:not(.kids-bubble)>.vehicle-details{order:2}.map-selection:not(.kids-bubble)>.live-source,.map-selection:not(.kids-bubble)>.review-no-live{order:3}
-  .credit-toggle{display:inline-flex;align-items:center;justify-content:center;pointer-events:auto;width:30px;height:30px;padding:0!important;border-radius:50%!important;font-size:14px!important;cursor:pointer}
-  .map-bottom>.map-credit{display:none}
-  body.credits-open .map-bottom>.map-credit{display:block;position:absolute;left:0;right:0;bottom:40px;max-width:none}
+  body.credits-open .map-bottom>.map-credit{left:0;right:0;max-width:none}
   body.sheet-up .map-bottom{display:none}
   .crumb{white-space:normal;max-width:calc(100% - 150px)}
   .crumb #map-place{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;line-height:1.25;white-space:normal;max-width:none;text-overflow:clip}
@@ -507,7 +509,12 @@ body.vector-ready .vector-map{z-index:4}
    credits box (street map + picture layers, wrapping onto several lines in the corner where the zoom level is) is not shown -
    everything in it is in TPA's own credits line. On a PC that line stays on one line ("..." if too long; a click shows it all). */
 .leaflet-control-attribution{display:none!important}
-@media(min-width:761px){
-  .map-bottom>.map-credit{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
-  body.credits-open .map-bottom>.map-credit{white-space:normal}
-}
+/* 4.66.0 (Rob 17 Nov: "takes up way too much of the screen"): on every screen (not Kids mode) the credits are one small
+   button - "© OpenStreetMap", plus "© TomTom" while the traffic shows. A tap opens the whole line above it. */
+html:not(.kids-view) .map-bottom>.credit-toggle{display:inline-flex;align-items:center;gap:6px;margin-left:auto;pointer-events:auto;cursor:pointer;
+  width:auto;height:auto;padding:5px 9px;border-radius:999px;font-size:10px;line-height:1.2;white-space:nowrap}
+html:not(.kids-view) .map-bottom>.credit-toggle::after{content:"i";display:inline-grid;place-items:center;width:13px;height:13px;border-radius:50%;
+  border:1px solid currentColor;font:700 9px/1 Georgia,serif;font-style:italic;letter-spacing:0}
+html:not(.kids-view) .map-bottom>.map-credit{display:none}
+html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;position:absolute;right:0;bottom:40px;left:auto;
+  max-width:min(92vw,560px);white-space:normal;text-align:right;line-height:1.45;cursor:pointer}

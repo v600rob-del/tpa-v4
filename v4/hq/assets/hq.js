@@ -996,7 +996,12 @@ new MutationObserver(()=>document.body.classList.toggle('sheet-up',!selected.cla
 (()=>{const c=$('map-credit');if(c)c.addEventListener('click',()=>{if(window.innerWidth<=760)return;
   document.body.classList.toggle('credits-open');});})();
 (()=>{const t=$('credit-toggle');if(!t)return;t.addEventListener('click',()=>{const on=!document.body.classList.contains('credits-open');
-  document.body.classList.toggle('credits-open',on);t.setAttribute('aria-expanded',String(on));});})();
+  document.body.classList.toggle('credits-open',on);t.setAttribute('aria-expanded',String(on));});
+  // 4.66.0 (Rob 17 Nov: the credits bar "takes up way too much of the screen"): on every screen the credits are a small
+  // button (street map, plus traffic when shown); the full line opens above it and closes again on a tap anywhere else
+  document.addEventListener('pointerdown',ev=>{if(!document.body.classList.contains('credits-open'))return;
+    if(ev.target.closest&&(ev.target.closest('#credit-toggle')||ev.target.closest('#map-credit')))return;
+    document.body.classList.remove('credits-open');t.setAttribute('aria-expanded','false');},true);})();
 let follow=null,followPanning=false,followMenu=null;
 function isFollowing(e){return !!follow&&follow.comp===e.component&&follow.id===e.id;}
 function followAt(now){if(!follow?.to)return null;const f=follow.dur>0?Math.min(1,(now-follow.t0)/follow.dur):1;
@@ -1871,7 +1876,7 @@ async function discover(){
     }
   }finally{discovering=false;paint();}
 }
-function search(query){let q=query.trim().toLowerCase(),out=$('target-list');out.replaceChildren();stationSearch(q);if(!q){const p=document.createElement('p');p.className='empty';p.textContent='Search a UK place. Vehicle targets will appear when independently connected.';out.append(p);return;}const places=POI.filter(([name])=>name.toLowerCase().includes(q)).slice(0,10).map(([name,lon,lat])=>({name,kind:'Place',action:()=>gotoPlace(lon,lat,11,name)}));const targets=listEntities().filter(e=>e.position&&(e.label.toLowerCase().includes(q)||e.id.toLowerCase().includes(q))).slice(0,10).map(e=>({name:e.label,kind:e.component.toUpperCase(),action:()=>{gotoPlace(e.position.lon,e.position.lat,13,e.label);selectEntity(e);}}));if(q==='uk'||'united kingdom'.includes(q))places.unshift({name:'United Kingdom overview',kind:'Region',action:fitUK});const items=[...places,...targets];if(!items.length){const p=document.createElement('p');p.className='empty';p.textContent='No matching place or connected target.';out.append(p);return;}for(const item of items){const b=document.createElement('button');b.type='button';b.className='search-result';const name=document.createElement('strong');name.textContent=item.name;const type=document.createElement('small');type.textContent=item.kind;b.append(name,type);b.onclick=()=>{item.action();$('search').value=item.name;};out.append(b);}}
+function search(query){let q=query.trim().toLowerCase(),out=$('target-list');out.replaceChildren();stationSearch(q);if(!q){const p=document.createElement('p');p.className='empty';p.textContent='Find a place, station, bus station, flight, train or bus.';out.append(p);return;}const places=POI.filter(([name])=>name.toLowerCase().includes(q)).slice(0,10).map(([name,lon,lat])=>({name,kind:'Place',action:()=>gotoPlace(lon,lat,11,name)}));const targets=listEntities().filter(e=>e.position&&(e.label.toLowerCase().includes(q)||e.id.toLowerCase().includes(q))).slice(0,10).map(e=>({name:e.label,kind:e.component.toUpperCase(),action:()=>{gotoPlace(e.position.lon,e.position.lat,13,e.label);selectEntity(e);}}));if(q==='uk'||'united kingdom'.includes(q))places.unshift({name:'United Kingdom overview',kind:'Region',action:fitUK});const items=[...places,...targets];if(!items.length){const p=document.createElement('p');p.className='empty';p.textContent='Nothing found by that name.';out.append(p);return;}for(const item of items){const b=document.createElement('button');b.type='button';b.className='search-result';const name=document.createElement('strong');name.textContent=item.name;const type=document.createElement('small');type.textContent=item.kind;b.append(name,type);b.onclick=()=>{item.action();$('search').value=item.name;};out.append(b);}}
 // 4.52.0 (owner 12 Nov 17:25: open a board by "search by name"): stations from the stations engine, by name or
 // three-letter code, at the top of the results. Choosing one goes there and opens its board.
 let stationAsk=0,stationTimer=0;
@@ -2019,8 +2024,8 @@ function makeDialog(id,title){
 function openDialog(back){lastFocus=document.activeElement;back.classList.remove('hidden');
   for(const list of prepLists)if(back.contains(list.box))list.t0=performance.now();   // 4.7.2: the tiles play again each time
   const enter=back._enter,wait=Number(back.dataset.enterAfter||0);
-  if(enter&&wait>0){clearTimeout(back._enterTimer);enter.classList.add('waiting');enter.disabled=true;enter.setAttribute('aria-hidden','true');
-    back._enterTimer=setTimeout(()=>{enter.classList.remove('waiting');enter.disabled=false;enter.removeAttribute('aria-hidden');enter.focus();},wait*1000);}
+  if(enter&&wait>0){clearTimeout(back._enterTimer);enterWaiting(enter,wait);
+    back._enterTimer=setTimeout(()=>{enterReady(enter);enter.focus();},wait*1000);}
   back.querySelector('.tpa-primary:not(.waiting),button:not([disabled]),a')?.focus();}
 function closeDialog(back){back.classList.add('hidden');if(back.id==='tpa-welcome'){try{localStorage.setItem(WELCOME_KEY,'1');}catch(_){}}lastFocus?.focus?.();}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.tpa-dialog-back:not(.hidden)').forEach(closeDialog);});
@@ -2057,6 +2062,13 @@ function buildSupport(tip,sup){
   card.append(close);
   return back;
 }
+// 4.66.0 (first-impressions visit, 17 Nov: "I wasn't sure how long I needed to wait"): the button is on screen from the
+// start, saying "Getting ready…" and filling up over the wait, then becomes Let's go!
+function enterWaiting(enter,wait){
+  enter.classList.add('waiting');enter.disabled=true;enter.removeAttribute('aria-hidden');
+  const fill=el('span','enter-fill');fill.style.animationDuration=wait+'s';
+  enter.replaceChildren(fill,el('span','enter-text','Getting ready…'));}
+function enterReady(enter){enter.classList.remove('waiting');enter.disabled=false;enter.textContent=enter.dataset.label||"Let's go!";}
 function buildWelcome(w,tip,credits){
   const {back,card}=makeDialog('tpa-welcome',str(w?.title,80)||'Welcome to TPA');
   card.classList.add('welcome-card');
@@ -2076,7 +2088,8 @@ function buildWelcome(w,tip,credits){
   // 4.7.0: the streams pulse and turn green; Let's go! appears after enterAfterSeconds (5) from opening
   const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Preparing streams'),makeFlapBoard());   // 4.26.0
   const wait=Number.isFinite(w?.enterAfterSeconds)?clamp(w.enterAfterSeconds,0,10):0;
-  if(wait>0){enter.classList.add('waiting');enter.disabled=true;enter.setAttribute('aria-hidden','true');back.dataset.enterAfter=String(wait);}
+  enter.dataset.label=enter.textContent;
+  if(wait>0){enterWaiting(enter,wait);back.dataset.enterAfter=String(wait);}
   back._enter=enter;
   main.append(ready,enter);
   const tipBtn=tipControl(tip);
@@ -2097,7 +2110,10 @@ function liveCredit(){const box=$('map-credit');if(!box)return;
   const live=IDS.filter(id=>state.live[id]&&state.visible[id]&&!state.parked[id]&&(state.status[id]==='ready'||state.status[id]==='stale'))
     .map(id=>shortCredit[layerName(id)]).filter((c,i,all)=>c&&all.indexOf(c)===i);   // 4.54.0: each source once (bus stops and stations share theirs)
   const text='© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'+(live.length?' · Live data: '+live.join(' · '):'');
-  if(box.textContent!==text){box.textContent=text;box.title=text;}}   // 4.65.1: the whole line on hover (PC: one line, "..." if long)
+  if(box.textContent!==text){box.textContent=text;box.title=text;}
+  // 4.66.0: the small credits button - the street map's credit, and TomTom's while the traffic is on the map
+  const t=$('credit-toggle');if(t&&!KIDS){const road=state.live.road&&state.visible.road&&!state.parked.road&&(state.status.road==='ready'||state.status.road==='stale');
+    const short='© OpenStreetMap'+(road?' · © TomTom':'');if(t.dataset.short!==short){t.dataset.short=short;t.textContent=short;}}}   // 4.65.1: the whole line on hover (PC: one line, "..." if long)
 // ---- 4.11.0 Kids mode ------------------------------------------------------------------------------------
 const KID_WORD={bus:['bus','buses'],rail:['train','trains'],air:['plane','planes']};
 let kidsMuted=false;try{kidsMuted=localStorage.getItem('tpa-kids-muted')==='1';}catch(_){}

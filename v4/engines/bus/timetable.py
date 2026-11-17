@@ -135,7 +135,7 @@ def service_day_and_seconds(iso_text):
 # ---------------------------------------------------------------- building
 SCHEMA = (
     'CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)',
-    'CREATE TABLE stops (stop_id TEXT PRIMARY KEY, lat REAL, lon REAL, name TEXT, indicator TEXT, bearing TEXT, source TEXT)',
+    'CREATE TABLE stops (stop_id TEXT PRIMARY KEY, lat REAL, lon REAL, name TEXT, indicator TEXT, bearing TEXT, source TEXT, near TEXT)',
     'CREATE TABLE agency (agency_id TEXT PRIMARY KEY, name TEXT, noc TEXT)',
     'CREATE TABLE routes (route_id TEXT PRIMARY KEY, agency_id TEXT, short_name TEXT)',
     'CREATE TABLE calendar (service_id TEXT PRIMARY KEY, days TEXT, start TEXT, finish TEXT)',
@@ -224,9 +224,10 @@ class Builder:
                         continue
                     if not (49 < lat < 61.5 and -9 < lon < 2.5):
                         continue
-                    yield ((r.get('ATCOCode') or '').strip(), lat, lon, (r.get('CommonName') or '').strip()[:80],
-                           (r.get('Indicator') or '').strip()[:30], (r.get('Bearing') or '').strip()[:3], 'naptan')
-        return self.insert('INSERT OR IGNORE INTO stops VALUES (?,?,?,?,?,?,?)', (r for r in rows() if r[0]), 'stopsNaptan')
+                    name = (r.get('CommonName') or '').strip()[:80]
+                    yield ((r.get('ATCOCode') or '').strip(), lat, lon, name,
+                           (r.get('Indicator') or '').strip()[:30], (r.get('Bearing') or '').strip()[:3], 'naptan', near_word(r, name))
+        return self.insert('INSERT OR IGNORE INTO stops VALUES (?,?,?,?,?,?,?,?)', (r for r in rows() if r[0]), 'stopsNaptan')
 
     def gtfs(self, zip_path):
         with zipfile.ZipFile(zip_path) as zf:
@@ -238,8 +239,8 @@ class Builder:
                         continue
                     sid = (r.get('stop_id') or '').strip()
                     if sid:
-                        yield sid, lat, lon, (r.get('stop_name') or '').strip()[:80], '', '', 'gtfs'
-            self.insert('INSERT OR IGNORE INTO stops VALUES (?,?,?,?,?,?,?)', stops(), 'stopsOnlyInTimetable')
+                        yield sid, lat, lon, (r.get('stop_name') or '').strip()[:80], '', '', 'gtfs', ''
+            self.insert('INSERT OR IGNORE INTO stops VALUES (?,?,?,?,?,?,?,?)', stops(), 'stopsOnlyInTimetable')
             self.insert('INSERT OR REPLACE INTO agency VALUES (?,?,?)',
                         ((r.get('agency_id', ''), (r.get('agency_name') or '')[:80], (r.get('agency_noc') or '')[:10])
                          for r in _rows(zf, 'agency.txt')), 'agencies')
@@ -405,6 +406,18 @@ def fetch_and_build(data_dir, gtfs_url=GTFS_URL, naptan_url=NAPTAN_URL, status=l
 
 
 # ---------------------------------------------------------------- reading (used by the engine)
+def near_word(r, name):
+    """0.22.1 (first-impressions visit, 17 Nov 2026: several stops in a row called "Woodmansey Hull Road" and "I couldn't tell
+    precisely which stop was which"): NaPTAN also says which side road (Crossing) or landmark each stop is near - eleven
+    "Woodmansey Hull Road" stops are near Shopeth Way, Woodmansey Grange and so on. Kept (short) to tell such stops apart."""
+    low = (name or '').lower()
+    for field in ('Crossing', 'Landmark'):
+        w = ' '.join((r.get(field) or '').replace('_', ' ').split())[:40]
+        if w and w.lower() not in low and w.lower() not in ('-', 'n/a', 'unknown', 'none', 'stop', 'bus stop'):
+            return w
+    return ''
+
+
 class Timetable:
     """Read-only view of timetable.sqlite. Small, on-demand lookups only."""
 
@@ -417,6 +430,8 @@ class Timetable:
         import threading
         self.lock = threading.Lock()
         self.runs = {}                                   # (service_id, date) -> bool, small
+        # 0.22.1: timetables built before 0.22.1 have no 'near' column (filled at the next weekly rebuild)
+        self.has_near = 'near' in [c[1] for c in self.db.execute('PRAGMA table_info(stops)')]
 
     def close(self):
         self.db.close()
@@ -497,6 +512,20 @@ class Timetable:
                 s = self.db.execute('SELECT lat, lon, name, indicator FROM stops WHERE stop_id=?', (sid,)).fetchone()
                 out.append((sid,) + (tuple(s) if s else (None, None, '', '')) + (arr, dep))
             return out
+
+    def near_of(self, stop_ids):
+        """{stop_id: side road or landmark it is near} for the stops that have one (0.22.1; {} on older timetables)."""
+        ids = [s for s in dict.fromkeys(stop_ids) if s]
+        if not self.has_near or not ids:
+            return {}
+        out = {}
+        with self.lock:
+            for i in range(0, len(ids), 400):
+                part = ids[i:i + 400]
+                for sid, near in self.db.execute(f'SELECT stop_id, near FROM stops WHERE stop_id IN ({",".join("?" * len(part))})', part):
+                    if near:
+                        out[sid] = near
+        return out
 
     def company_name(self, noc):
         """The bus company's name for a National Operator Code (from the timetable), or ''."""

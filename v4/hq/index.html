@@ -4,9 +4,9 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="theme-color" content="#080e1a"/>
-  <meta name="description" content="TPA v4 HQ map development preview — five empty transport connections"/>
+  <meta name="description" content="Watch the UK's planes, trains and buses on the move on one live map, with the traffic on the roads around them. Free for everyone."/>
   <meta name="referrer" content="no-referrer"/>
-  <title>TPA HQ 4.13.0 — test version</title>
+  <title>TPA · live UK transport map</title>
   <link rel="stylesheet" href="/assets/vendor/leaflet.css"/>
   <link id="tpa-maplibre-css" rel="stylesheet" media="print" href="/assets/vendor/maplibre-gl.css"/>
   <link rel="stylesheet" href="/assets/hq.css"/>
@@ -53,7 +53,7 @@
     <section class="panel search-panel">
       <div class="section-title"><h2>FIND A TARGET</h2><span class="micro">ON MAP</span></div>
       <div class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="Place, station, bus station, flight, train, bus…" aria-label="Find a place or target" autocomplete="off"/></div>
-      <div class="target-list" id="target-list"><p class="empty">Search a UK place. Search fictional MOCK vehicle examples or UK places.</p></div>
+      <div class="target-list" id="target-list"><p class="empty">Find a place, station, bus station, flight, train or bus.</p></div>
     </section>
     <footer class="sidebar-footer"><span class="little-dot"></span> BEVERLEY · EAST YORKSHIRE <span class="separator">/</span> ICON ARTWORK REVIEW <span class="separator">/</span> MOCK ONLY</footer>
   </aside>
@@ -82,7 +82,7 @@
       <div class="glass-chip" id="busstations-chip"><span class="chip-dot green"></span>BUS STATIONS: <strong>EMPTY</strong></div>
     </div>
     <div class="map-controls" aria-label="Map controls"><button type="button" id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button><button type="button" id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button></div>
-    <div class="map-bottom"><div class="preview-stamp">HQ 4.55.0 · TEST VERSION</div><button id="credit-toggle" class="credit-toggle" type="button" aria-expanded="false" aria-controls="map-credit" aria-label="Map and data credits">©</button><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
+    <div class="map-bottom"><div class="preview-stamp">HQ 4.55.0 · TEST VERSION</div><button id="credit-toggle" class="credit-toggle" type="button" aria-expanded="false" aria-controls="map-credit" aria-label="Map and data credits" title="Map and data credits">©</button><div id="map-credit" class="map-credit">© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors</div><div id="zoom-level">ZOOM 11</div></div>
     <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </main>
 </div>
