@@ -307,7 +307,7 @@ async function loadDetails(e,box){
       // 4.71.0 (tester 17 Nov 19:30, a lane closure: "the panel itself didn't answer 'where exactly?'"): the road's number and
       // name from the street map, and the nearest town, in place of only "Main road (trunk)"
       if(e.component==='road'&&row.label==='Road'&&e.position)v.textContent=roadWhere(v.textContent,
-        nearestRoad(e.position.lon,e.position.lat,ROAD_CLASS[v.textContent]||'',window.TPA_MAP_ROADS?.(e.position.lon,e.position.lat)||[]),
+        roadFor(keyOf(e),e.position.lon,e.position.lat,ROAD_CLASS[v.textContent]||'',window.TPA_MAP_ROADS?.(e.position.lon,e.position.lat)||[],map?.getZoom?.()??state.z),
         townNear(e.position.lon,e.position.lat)).slice(0,120);
       // 4.32.0 (owner 14:19 "match ... registration plates to buses"): a number plate looks like one
       if(row.label==='Number plate'&&/^[A-Z0-9 ]{2,10}$/.test(v.textContent))v.classList.add('plate');
@@ -1626,20 +1626,29 @@ function moreImportant(a,b){return (a.city?0:1000)+(a.rank||99)<(b.city?0:1000)+
 const ROAD_CLASS={'Motorway':'motorway','Motorway slip road':'motorway','Main road (trunk)':'trunk','Main road slip road':'trunk',
   'A road':'primary','A road slip road':'primary','B road':'secondary','B road link':'secondary','Local road':'tertiary',
   'Street':'minor','Service road':'service','Track':'track'};
-function nearestRoad(lon,lat,cls,roads){
+function nearestRoad(lon,lat,cls,roads,maxM=80){
   const kx=Math.cos(lat*Math.PI/180)*111195,ky=111195;let best=null,bs=Infinity;
   for(const r of roads||[])for(const l of r.lines||[])for(let i=0;i+1<l.length;i++){
     const ax=(l[i][0]-lon)*kx,ay=(l[i][1]-lat)*ky,vx=(l[i+1][0]-lon)*kx-ax,vy=(l[i+1][1]-lat)*ky-ay;
     const t=Math.max(0,Math.min(1,-(ax*vx+ay*vy)/((vx*vx+vy*vy)||1e-9))),dist=Math.hypot(ax+vx*t,ay+vy*t),score=r.cls===cls?dist:dist*2.5;
     if(score<bs){bs=score;best={ref:r.ref||'',name:r.name||'',metres:Math.round(dist)};}}
-  return bs<=80?best:null;
+  return bs<=maxM?best:null;
+}
+// 4.71.3 (Rob 17 Nov 21:59, Leeds: the same roadworks said "A58(M) Inner Ring Road" zoomed in and only "Motorway" zoomed
+// out): zoomed out, the street map's road lines are simplified and can sit further from the incident, so the reach grows
+// (80 m from zoom 15, 160 m at 13-14, 250 m further out), and a road once found for an incident is kept for the visit.
+const ROAD_FOUND=new Map();
+function roadFor(id,lon,lat,cls,roads,zoom){
+  const maxM=zoom>=15?80:zoom>=13?160:250,found=nearestRoad(lon,lat,cls,roads,maxM);
+  if(found){ROAD_FOUND.set(id,found);if(ROAD_FOUND.size>300)ROAD_FOUND.delete(ROAD_FOUND.keys().next().value);return found;}
+  return ROAD_FOUND.get(id)||null;
 }
 function roadWhere(category,road,town){let t=road?[road.ref,road.name].filter(Boolean).join(' '):(category||'');if(town)t+=(t?', ':'')+'near '+town;return t;}
 function townNear(lon,lat){
   const places=(window.TPA_MAP_PLACES?.()||[]).concat(POI.map(([name,plon,plat])=>({name,lon:plon,lat:plat,city:false})));
   const b=nearestPlace(lat,lon,places);return b&&kmApart(lat,lon,b.lat,b.lon)<=15?b.name:'';
 }
-window.TPA_HQ_ROADS={nearest:(lon,lat,cls,roads)=>nearestRoad(lon,lat,cls,roads),where:(c,r,t)=>roadWhere(c,r,t),town:(lon,lat)=>townNear(lon,lat)};
+window.TPA_HQ_ROADS={nearest:(lon,lat,cls,roads,maxM)=>nearestRoad(lon,lat,cls,roads,maxM),roadFor:(id,lon,lat,cls,roads,zoom)=>roadFor(id,lon,lat,cls,roads,zoom),where:(c,r,t)=>roadWhere(c,r,t),town:(lon,lat)=>townNear(lon,lat)};
 window.TPA_HQ_BUBBLES={nearest:(lat,lon,places)=>nearestPlace(lat,lon,places)?.name||'',moreImportant:(a,b)=>moreImportant(a,b),reach:z=>bubbleReach(z),places:(pl,z)=>bubblePlaces(pl,z).map(p=>p.name)};
 function bubbleWords(g){
   return BUBBLE_LAYERS.filter(id=>g[id]>0).map(id=>g[id].toLocaleString('en-GB')+' '+BUBBLE_WORD[id][g[id]===1?0:1]);
