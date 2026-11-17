@@ -69,6 +69,37 @@ function fitCanvas(gl){
   }catch(e){return false;}
 }
 Object.defineProperty(window,'TPA_FIT_MAP',{value:fitCanvas,writable:false,configurable:false});
+// 4.71.1 (Rob 17 Nov 2026 21:42-21:45, around Dewsbury: part of the street map blank again; a refresh put it right, then
+// it came back). The 4.64.1 check only compares the canvas's own size with its box, so it can't see a canvas that is the
+// right size but left in the wrong place or shrunk by a zoom step, a drawing area the browser cut short, or a lost
+// graphics context. This check looks at what is really on screen: if the street map's canvas doesn't cover the whole map
+// on two checks in a row (not while zooming or dragging), the street map is put back in line with the map. Each time is
+// kept in TPA_MAP_FIXES (newest 20), so the next time it happens we can see which it was.
+const MAP_FIXES=[];
+Object.defineProperty(window,'TPA_MAP_FIXES',{value:()=>MAP_FIXES.slice(),writable:false,configurable:false});
+function coverCheck(map,layer,gl,mem){
+  try{
+    if(document.hidden||map._animatingZoom||layer._zooming||map.dragging?._draggable?._moving||map._panAnim?._inProgress){mem.seen='';return false;}
+    const c=gl.getCanvas(),b=map.getContainer().getBoundingClientRect(),r=c.getBoundingClientRect();
+    if(!b.width||!b.height){mem.seen='';return false;}
+    let ctx=null;try{ctx=gl.painter?.context?.gl||c.getContext('webgl2')||c.getContext('webgl');}catch(_){}
+    const why=[];
+    if(r.left>b.left+2||r.top>b.top+2||r.right<b.right-2||r.bottom<b.bottom-2)
+      why.push('gap '+[r.left-b.left,r.top-b.top,b.right-r.right,b.bottom-r.bottom].map(Math.round).join(','));
+    if(ctx&&ctx.isContextLost&&ctx.isContextLost())why.push('context lost');
+    else if(ctx&&c.width&&c.height&&(ctx.drawingBufferWidth<c.width*0.9||ctx.drawingBufferHeight<c.height*0.9))
+      why.push('drawing area '+ctx.drawingBufferWidth+'x'+ctx.drawingBufferHeight+' of '+c.width+'x'+c.height);
+    const key=why.map(w=>w.split(' ')[0]).join('+');
+    if(!why.length){mem.seen='';return false;}
+    if(mem.seen!==key){mem.seen=key;return false;}   // once could be a moment between frames: act on the second look
+    mem.seen='';
+    if(!why.includes('context lost')){
+      if(typeof layer._resize==='function')layer._resize();else if(typeof layer._update==='function')layer._update();
+      gl.resize();if(typeof gl.triggerRepaint==='function')gl.triggerRepaint();}
+    MAP_FIXES.push({at:new Date().toISOString(),why:why.join('; ')});if(MAP_FIXES.length>20)MAP_FIXES.shift();
+    report('map-canvas-refit','cover',why.join('; '));return true;
+  }catch(e){return false;}
+}
 const ready=Promise.all([loaded(leaflet,()=>!!window.L),css,lib]).then(()=>script(conf.dataset.bridge)).then(()=>script(conf.dataset.vector));
 ready.catch(e=>{report('library-resource-error','vendor-load',e.message);});
 Object.defineProperty(window,'TPA_BASEMAP',{value:Object.freeze({timings:()=>({...timings}),attach(map,opts){
@@ -86,7 +117,7 @@ const finish=()=>{timings.basemapLoaded=performance.now();if(status)status.hidde
 if(gl.loaded())finish();else gl.once('load',finish);
 if(typeof gl.on==='function')gl.on('idle',()=>window.TPA_HQ_MAP_IDLE?.());
 // 4.64.1: check the street map's canvas after it loads, whenever the map settles or the window changes, and every 2 s
-{const fit=()=>fitCanvas(gl);gl.once('load',fit);if(typeof map.on==='function')map.on('resize moveend zoomend',fit);
+{const mem={seen:''},fit=()=>{fitCanvas(gl);coverCheck(map,layer,gl,mem);};gl.once('load',fit);if(typeof map.on==='function')map.on('resize moveend zoomend',fit);
  window.addEventListener('resize',()=>setTimeout(fit,300));setInterval(fit,2000);}
 let loadedOnce=false,switched=false;gl.once('load',()=>{loadedOnce=true;});
 gl.on('error',e=>{
