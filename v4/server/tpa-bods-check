@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""tpa-bods-check (17 Nov 2026, evening): LOOK-ONLY. Why do some BODS downloads take ~31 s or time out at 60 s, when
+most take 1-2 s? (Rob's log 19:13-19:30: 'BODS bulk OK ... 31.5s', '49.3s', 'fetch failed: network-TimeoutError'.)
+
+For the BODS address and the one it sends the download on to: every internet address it has (IPv4 and IPv6), how long
+a connection to each takes (or whether it fails), three times each; then three timed downloads the way the bus engine
+does them. Reads the bus key (TPA_BODS_API_KEY) from /etc/tpa/bus.env (never shown). Changes nothing; writes nothing. About 1-3 minutes."""
+import http.client
+import os
+import socket
+import ssl
+import sys
+import time
+from urllib.parse import urlsplit, urlencode
+
+HOST = 'data.bus-data.dft.gov.uk'
+PATH = '/avl/download/bulk_archive'
+
+
+def say(text=''):
+    print(text, flush=True)
+
+
+def key():
+    try:
+        for line in open('/etc/tpa/bus.env'):
+            line = line.strip()
+            if line.startswith('TPA_BODS_API_KEY='):
+                return line.split('=', 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        pass
+    return os.environ.get('TPA_BODS_API_KEY', '')
+
+
+def addresses(host):
+    out = []
+    try:
+        for fam, _, _, _, sa in socket.getaddrinfo(host, 443, type=socket.SOCK_STREAM):
+            kind = 'IPv6' if fam == socket.AF_INET6 else 'IPv4'
+            if (kind, sa[0]) not in out:
+                out.append((kind, sa[0]))
+    except OSError as exc:
+        say(f'   could not look up {host}: {exc}')
+    return out
+
+
+def connect_time(kind, ip, timeout=12.0):
+    fam = socket.AF_INET6 if kind == 'IPv6' else socket.AF_INET
+    s = socket.socket(fam, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    t0 = time.monotonic()
+    try:
+        s.connect((ip, 443))
+        return f'{time.monotonic() - t0:.2f} s'
+    except OSError as exc:
+        return f'FAILED after {time.monotonic() - t0:.1f} s ({type(exc).__name__})'
+    finally:
+        s.close()
+
+
+def where_it_goes(k):
+    """The address BODS sends the download on to (no download), or ''."""
+    try:
+        c = http.client.HTTPSConnection(HOST, timeout=60, context=ssl.create_default_context())
+        c.request('GET', PATH + '?' + urlencode({'api_key': k}), headers={'User-Agent': 'TPA-bods-check'})
+        r = c.getresponse()
+        loc = r.getheader('Location') or ''
+        r.close(); c.close()
+        return r.status, urlsplit(loc).hostname or ''
+    except Exception as exc:
+        return f'{type(exc).__name__}', ''
+
+
+def main():
+    say('tpa-bods-check (look-only): about 1-3 minutes. Progress shows below; the result comes at the end.')
+    k = key()
+    lines = []
+    hosts = [HOST]
+    say('Asking BODS where the download comes from...')
+    status, nxt = where_it_goes(k) if k else ('no key found', '')
+    lines.append(f'BODS answered: {status}' + (f', download from {nxt}' if nxt else ''))
+    if nxt and nxt != HOST:
+        hosts.append(nxt)
+    for h in hosts:
+        addrs = addresses(h)
+        lines.append(f'{h}: {len(addrs)} addresses')
+        for kind, ip in addrs:
+            say(f'Connecting to {h} {kind} {ip} three times...')
+            times = [connect_time(kind, ip) for _ in range(3)]
+            lines.append(f'   {kind} {ip}: ' + ' | '.join(times))
+    say('Three downloads the way the bus engine does them (this can take up to a minute each)...')
+    try:
+        from urllib.request import Request, urlopen
+        for n in range(3):
+            t0 = time.monotonic()
+            try:
+                req = Request(f'https://{HOST}{PATH}?' + urlencode({'api_key': k}), headers={'User-Agent': 'TPA-bods-check'})
+                with urlopen(req, timeout=60, context=ssl.create_default_context()) as res:
+                    size = len(res.read())
+                lines.append(f'download {n + 1}: {time.monotonic() - t0:.1f} s, {size // 1024} KB')
+            except Exception as exc:
+                lines.append(f'download {n + 1}: FAILED after {time.monotonic() - t0:.1f} s ({type(exc).__name__})')
+            time.sleep(2)
+    except Exception as exc:
+        lines.append(f'downloads not tried: {type(exc).__name__}')
+    say('===== COPY BACK FROM HERE =====')
+    say(time.strftime('%a %d %b %H:%M:%S UTC', time.gmtime()) + ' | tpa-bods-check (look-only)')
+    for line in lines:
+        say(line)
+    say('Nothing was changed.')
+    say('===== COPY BACK TO HERE =====')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())
