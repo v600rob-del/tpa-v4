@@ -45,7 +45,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.18.0'
+VERSION = '4.18.1'
 BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
@@ -435,6 +435,33 @@ def pct(values, p):
     return s[min(len(s) - 1, int(round(p / 100 * (len(s) - 1))))]
 
 
+def served_detail(reads, n, t_from, t_to, grace):
+    """4.18.1 (Rob's 4.18.0 run, 18 Nov 00:50: 1,000 viewers only 76% served, yet reads were fast and the server 35% busy):
+    which layer kept viewers from being served, and how long its longest gap was, so the figure says why."""
+    done, layers = {}, set()
+    for v, layer, t0, t1, ok, poll in reads:
+        layers.add(layer)
+        if ok:
+            done.setdefault((v, layer), []).append((t1, poll))
+    out = {}
+    for layer in sorted(layers):
+        missed, worst, over = 0, 0.0, []
+        for v in range(n):
+            times = sorted(done.get((v, layer), []))
+            if not times:
+                missed += 1
+                continue
+            pace = max(pc for _, pc in times) + grace
+            marks = [t_from] + [t for t, _ in times if t_from <= t <= t_to] + [t_to]
+            gaps = [b - a for a, b in zip(marks, marks[1:])]
+            if any(g > pace for g in gaps):
+                missed += 1
+                over.append(max(gaps) - pace + grace)
+            worst = max(worst, max(gaps))
+        out[layer] = {'missed': missed, 'worst': worst, 'late': pct(over, 50) if over else None}
+    return out
+
+
 def served_share(reads, n, t_from, t_to, grace):
     """4.17.0, rule 1: the share of the n viewers who got a fresh update of every layer at least every (pace + grace)
     seconds from t_from to t_to - counting the wait from t_from to their first update in the window and from their
@@ -526,7 +553,8 @@ async def run_step(n, seconds, base, layers, rnd):
             'served': served_share(stats.reads, n, settled, ended, LIMITS['grace']) if not aborted and ended > settled else 0.0,
             'p50': pct(durations, 50), 'p95': pct(durations, 95), 'fail': fails / len(rows) if rows else 1.0,
             'layers': {k: (pct(v, 50), pct(v, 95), len(v)) for k, v in by_layer.items()}, 'aborted': aborted,
-            'lag95': pct(lag, 95)}
+            'lag95': pct(lag, 95), 'lagmax': max(lag) if lag else None,
+            'why': served_detail(stats.reads, n, settled, ended, LIMITS['grace']) if not aborted and ended > settled else {}}
 
 
 def server_use(before, after):
@@ -655,6 +683,12 @@ async def main_async(args, base, layers):
         print(f"{n:>8} {step['served']:>7.0%} {step['rate']:>7.1f} {fmt_s(step['p50']):>8} {fmt_s(step['p95']):>8} {step['fail']:>7.1%}  "
               f"{fmt_s(lay.get('bus', (None, None))[1]):>6} {fmt_s(lay.get('rail', (None, None))[1]):>6} {fmt_s(lay.get('air', (None, None))[1]):>6} "
               f"{fmt_s(lay.get('traffic', (None, None))[1]):>7} {fmt_s(step['lag95']):>7}  {srv}", flush=True)
+        why = [(k, v) for k, v in step.get('why', {}).items() if v['missed']]
+        if why and step['served'] < 0.99:  # 4.18.1: which layer kept viewers waiting, and the tester's own worst stall
+            print('         not served because of: ' + '; '.join(
+                f"{k} {v['missed']} viewers (longest wait {v['worst']:.1f} s, typically {v['late']:.1f} s over its pace + 2 s)"
+                if v['late'] is not None else f"{k} {v['missed']} viewers (no update at all)" for k, v in why)
+                + (f" · tester's worst stall {step['lagmax']:.1f} s" if step.get('lagmax') is not None else ''), flush=True)
         if tester_behind(step):          # 4.17.0: the pretend crowd, not the server, could not keep up
             tester_stop = True
             print(f"STOPPED at {n} viewers: Cloud Shell (the tester) fell {step['lag95']:.1f} s behind its own timers, so this "
