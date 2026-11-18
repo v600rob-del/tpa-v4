@@ -15,6 +15,8 @@ Pure functions, no engine state: the page will get a mirror of this (like replay
 """
 from __future__ import annotations
 
+import math
+
 EARLY_LIMIT_S = 600.0        # as the stop boards: never more than 10 minutes early
 HORIZON_S = 300.0            # 5 minutes ahead: reports come about once a minute; keeps the tiles small
 AT_STOP_M = 15.0             # a bus this close to a stop is at it (GPS is often 5-20 m out; reports are placed on the line)
@@ -91,3 +93,65 @@ def forecast(t: float, m: float, kn, horizon: float = HORIZON_S):
         if when > t + horizon:
             break
     return out
+
+
+TOWN_HORIZON_S = 150.0       # bus 0.26.0: a town-level path covers 2.5 minutes after the newest report
+TOWN_STEP_M = 50.0           # sampled every 50 m along the route line...
+TOWN_TOLERANCE_M = 8.0       # ...then thinned where the road is straight (no point more than 8 m off the line)
+
+
+def _thin(pts, tol, xy):
+    """Douglas-Peucker on [(t, lon, lat)]: keeps the ends and any point further than tol metres from the chord."""
+    if len(pts) <= 2:
+        return pts
+    ax, ay = xy(pts[0]); bx, by = xy(pts[-1])
+    dx, dy = bx - ax, by - ay
+    L2 = dx * dx + dy * dy
+    worst, at = -1.0, 0
+    for k in range(1, len(pts) - 1):
+        px, py = xy(pts[k])
+        if L2 <= 1e-9:
+            d = ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+        else:
+            u = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+            d = ((px - ax - u * dx) ** 2 + (py - ay - u * dy) ** 2) ** 0.5
+        if d > worst:
+            worst, at = d, k
+    if worst <= tol:
+        return [pts[0], pts[-1]]
+    return _thin(pts[:at + 1], tol, xy)[:-1] + _thin(pts[at:], tol, xy)
+
+
+def town_path(fc, point_at, base_t, horizon_s=TOWN_HORIZON_S, step_m=TOWN_STEP_M, tol_m=TOWN_TOLERANCE_M):
+    """bus 0.26.0 (Rob 18 Nov 06:16: "All levels need to be warm"): the forecast `fc` [(time, metres)] as positions, for the
+    town-level tiles that carry no route line. Returns [[seconds after base_t, lon, lat], ...] from the newest report up to
+    horizon_s after it; between the forecast's own points the bus keeps an even pace, so the path is sampled every step_m
+    along the line and thinned where it is straight. A wait at a stop stays two points at the same place."""
+    if not fc or len(fc) < 2:
+        return None
+    t0 = float(fc[0][0])
+    end = t0 + horizon_s
+    out = []
+    for k in range(len(fc) - 1):
+        (ta, ma), (tb, mb) = fc[k], fc[k + 1]
+        if ta >= end:
+            break
+        if tb > end:                                   # cut the last piece at the horizon
+            mb = ma + (mb - ma) * (end - ta) / (tb - ta)
+            tb = end
+        seg = []
+        n = max(1, int(abs(mb - ma) // step_m))
+        for i in range(n + 1):
+            m = ma + (mb - ma) * i / n
+            t = ta + (tb - ta) * i / n
+            lo, la = point_at(m)
+            seg.append((t, lo, la))
+        if mb > ma:
+            c = math.cos(math.radians(seg[0][2]))
+            seg = _thin(seg, tol_m, lambda q: (q[1] * 111320.0 * c, q[2] * 110540.0))
+        if out and seg and out[-1][0] == seg[0][0]:
+            seg = seg[1:]
+        out.extend(seg)
+    if len(out) < 2:
+        return None
+    return [[round(t - base_t, 1), round(lo, 6), round(la, 6)] for t, lo, la in out]

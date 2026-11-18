@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.25.0'
+ENGINE_VERSION = '0.26.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1655,6 +1655,11 @@ def bus_item(v, hist, now):
             fc = bus_forecast(v, tid, sh, pts[-1])
             if fc:
                 small['f'] = fc
+                # 0.26.0 (Rob 18 Nov 06:16: "All levels need to be warm"): the town tiles carry the same forecast as
+                # positions, so a bus is shown at the same place at every zoom and nothing jumps when zooming in
+                g = forecast.town_path(fc, sh.point_at, int(v['recorded']))
+                if g:
+                    big['g'] = g
     elif ROAD_GLIDE and ROADS['map'] is not None and (made := road_way(v, now)) is not None:
         rsh, rplaced, jumps = made
         pts = keep_recent(rplaced, now)

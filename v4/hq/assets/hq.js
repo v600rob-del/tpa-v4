@@ -1548,7 +1548,44 @@ const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')!=='0',used
 // server knows where they are going, and the individual user should be given a LIVE set of map data"): the server's own
 // forecast is the normal map for timetabled buses (forecast plan Stage 4). ?forecast=0 is the way back to N1 (4.64.0-4.79.0).
 const BUS_FORECAST=(()=>{const q=new URLSearchParams(location.search),m=q.get('motion');
-  return {on:q.get('forecast')!=='0'&&!['c4','c3','replay','n1','compare'].includes(m),prev:new Map(),how:{}};})();
+  return {on:q.get('forecast')!=='0'&&!['c4','c3','replay','n1','compare'].includes(m),prev:new Map(),last:new Map(),how:{}};})();
+// 4.82.0: a town-level forecast path [[seconds after o, lon, lat], ...] as a track from now. Carries on from where the bus
+// is drawn (prev = its last track): drawn ahead of the new path -> waits there (up to 20 s, never backwards); drawn behind
+// -> catches up within 3-30 s (at most 2.5x the time it is behind); more than 150 m off the path -> starts afresh.
+function townPathTrack(g,o,now,prev){
+  if(!Array.isArray(g)||g.length<2)return null;
+  const T=[],P=[];
+  for(const q of g){if(!Array.isArray(q)||q.length!==3||!validNum(q[0])||!validNum(q[1])||!validNum(q[2]))return null;
+    const t=o+q[0];if(T.length&&t<T[T.length-1])return null;T.push(t);P.push([q[1],q[2]]);}
+  const r1=x=>Math.round(x*10)/10,lerp=(a,b,f)=>[a[0]+(b[0]-a[0])*f,a[1]+(b[1]-a[1])*f];
+  const at=t=>{if(t<=T[0])return P[0];const n=T.length;if(t>=T[n-1])return P[n-1];let k=1;while(T[k]<t)k++;
+    return lerp(P[k-1],P[k],(t-T[k-1])/Math.max(1e-9,T[k]-T[k-1]));};
+  const metres=(a,b)=>{const c=Math.cos(a[1]*Math.PI/180);return Math.hypot((b[0]-a[0])*111320*c,(b[1]-a[1])*110540);};
+  const from=t0=>{const pts=[at(t0)],times=[r1(Math.max(now,t0))];for(let k=0;k<T.length;k++)if(T[k]>t0){pts.push(P[k]);times.push(r1(T[k]));}
+    return {pts,times};};
+  const end=now>=T[T.length-1];
+  let drawn=null;
+  if(prev&&Array.isArray(prev.points)&&prev.points.length&&Array.isArray(prev.times)){const pt=prev.points,tt=prev.times;
+    if(now<=tt[0])drawn=pt[0];else if(now>=tt[tt.length-1])drawn=pt[pt.length-1];
+    else{let k=1;while(tt[k]<now)k++;drawn=lerp(pt[k-1],pt[k],(now-tt[k-1])/Math.max(1e-9,tt[k]-tt[k-1]));}}
+  const here=at(now);
+  if(drawn&&metres(drawn,here)>10){
+    let best=Infinity,tp=now;                         // where on the new path the drawn bus is (nearest point, its time)
+    for(let k=1;k<T.length;k++){const a=P[k-1],b=P[k],c=Math.cos(a[1]*Math.PI/180),ax=a[0]*111320*c,ay=a[1]*110540,
+      dx=b[0]*111320*c-ax,dy=b[1]*110540-ay,px=drawn[0]*111320*c-ax,py=drawn[1]*110540-ay,L2=dx*dx+dy*dy,
+      u=L2>1e-9?Math.max(0,Math.min(1,(px*dx+py*dy)/L2)):0,d=Math.hypot(px-u*dx,py-u*dy);
+      if(d<best){best=d;tp=T[k-1]+(T[k]-T[k-1])*u;}}
+    if(best<=150){
+      if(tp>now+0.5){const until=Math.min(tp,now+20);       // drawn ahead: wait where it is until the path catches up
+        const rest=from(until);if(tp<=now+20)return {position:drawn,points:[drawn,drawn,...rest.pts.slice(1)],times:[r1(now),r1(until),...rest.times.slice(1)],waiting:false,how:'waiting'};
+        return {position:drawn,points:[drawn],times:[r1(now)],waiting:true,how:'waiting'};}
+      if(tp<now-0.5&&!end){const join=now+Math.max(3,Math.min(30,(now-tp)*2.5));   // drawn behind: catch up
+        const rest=from(join);return {position:drawn,points:[drawn,...rest.pts],times:[r1(now),...rest.times.map((t,i)=>i?t:r1(join))],waiting:false,how:'catching up'};}
+    }
+  }
+  if(end){const q=P[P.length-1];return {position:q,points:[q],times:[r1(now)],waiting:true,how:'arrived'};}
+  const f=from(now);return {position:f.pts[0],points:f.pts,times:f.times,waiting:false,how:'on time'};
+}
 window.TPA_BUS_FORECAST=()=>({on:BUS_FORECAST.on,kept:BUS_FORECAST.prev.size,how:{...BUS_FORECAST.how}});
 // 4.62.0 (Rob 15 Nov 2026 01:48: live test of the motion study's candidates - TEST ADDRESSES ONLY): ?motion=c4 or
 // ?motion=c3 shows each bus on its route line at its newest report carried on carefully (bus-replay.js freshTrack, the
@@ -1671,7 +1708,9 @@ function smallScreen(){return !KIDS&&(root.clientWidth<=1024||(window.matchMedia
 // shows a patch only ~2 km wide, so at night the few buses of a town bubble were off screen. Bubbles split at 13 on every
 // screen again; phones stay calmer by showing at most PHONE_CAP of a layer, and a tap now centres on where the town's
 // vehicles actually are (their counted squares), not on the town's name.
-function bubbleZoom(){return 13;}
+// 4.82.0 (Rob 18 Nov 06:17: buses and trains "group a bit too quickly"; users "will be zooming in and out a lot"): they
+// separate one level further out, at 12.
+function bubbleZoom(){return 12;}
 const BUBBLES_ON=!KIDS&&new URLSearchParams(location.search).get('bubbles')!=='0';
 const COUNTS={bus:null,rail:null,asked:-1};
 const BUBBLE_WORD={bus:['bus','buses'],rail:['train','trains']};
@@ -1904,6 +1943,14 @@ async function busTileFrame(){
       if(ft){tr=ft;fc=true;BUS_FORECAST.prev.delete(it.i);BUS_FORECAST.prev.set(it.i,{s:it.s,marks:ft.marks});
         BUS_FORECAST.how[ft.how]=(BUS_FORECAST.how[ft.how]||0)+1;
         if(BUS_FORECAST.prev.size>3000)BUS_FORECAST.prev.delete(BUS_FORECAST.prev.keys().next().value);}}
+    // 4.82.0 (bus 0.26.0; Rob 18 Nov 06:12 "the buses started moving, then they JUMPED to where they were meant to be";
+    // 06:16 "All levels need to be warm"): the town tiles (zoom 12-13, no route line) carry the server's forecast as
+    // positions (g), so a bus is at the same place at every zoom from the first second.
+    if(!tr&&!BUS_MOTION.mode&&BUS_FORECAST.on&&!sh&&Array.isArray(it.g)&&validNum(it.o)){
+      const gt=townPathTrack(it.g,it.o,now,BUS_FORECAST.last.get(it.i));
+      if(gt){tr=gt;fc=true;BUS_FORECAST.how['town '+gt.how]=(BUS_FORECAST.how['town '+gt.how]||0)+1;}}
+    if(fc&&tr&&Array.isArray(tr.points)&&Array.isArray(tr.times)){BUS_FORECAST.last.delete(it.i);BUS_FORECAST.last.set(it.i,{points:tr.points,times:tr.times});
+      if(BUS_FORECAST.last.size>3000)BUS_FORECAST.last.delete(BUS_FORECAST.last.keys().next().value);}
     if(!tr&&sh&&Array.isArray(it.r))tr=R.track(sh,it.r,now,delay,kl);
     // 4.58.0 (bus 0.19.0): a bus not on a timetabled route brings its own way along the roads
     if(!tr&&small&&Array.isArray(it.w)&&it.w.length>=2&&Array.isArray(it.r)){try{tr=R.track(roadShape(it),it.r,now,delay,kl,it.jm);}catch(_){tr=null;}}
