@@ -268,8 +268,14 @@ function ownIcon(id){const pair=ICON_PATHS[id]||UI_PATHS[id];if(!pair)return doc
   const path=document.createElementNS('http://www.w3.org/2000/svg','path');path.setAttribute('d',pair[0]);path.setAttribute('fill-rule','evenodd');svg.append(path);
   if(pair[1]){const acc=document.createElementNS('http://www.w3.org/2000/svg','path');acc.setAttribute('d',pair[1]);acc.setAttribute('class','acc');svg.append(acc);}
   return svg;}
+// 4.87.0 (Rob 18 Nov 16:26: "these icons need to be the same as the ones on the board itself please. then it's also a key
+// to the board"): the Tracking layers menu (and the welcome board) show the very pictures the map uses, so the menu is
+// also the map's key. Traffic keeps its wave sign and ships their drawing (neither has a map picture).
+function menuPic(id){const img=el('img','pic-icon menu-pic');img.src=MENU_PIC[id];img.alt='';img.decoding='async';img.draggable=false;
+  img.addEventListener('error',()=>img.replaceWith(ICON_PATHS[id]?ownIcon(id):document.createTextNode(iconFor(id))),{once:true});return img;}
 function ownIconsInPage(){for(const t of document.querySelectorAll('.layer-toggle[data-component]')){const id=t.dataset.component,box=t.querySelector('.layer-icon');
-    if(box&&ICON_PATHS[id]){box.replaceChildren(ownIcon(id));}}
+    if(box&&MENU_PIC[id]){box.classList.add('has-pic');box.replaceChildren(menuPic(id));}
+    else if(box&&ICON_PATHS[id]){box.replaceChildren(ownIcon(id));}}
   const logo=document.querySelector('.brand-plane');if(logo)logo.replaceChildren(ownIcon('air'));}
 // 4.11.0: the kids pictures (our own drawings, with friendly faces). Fixed text, no data inside.
 const KID_ART={
@@ -281,6 +287,7 @@ function kidFlip(e){return e.component==='air'&&e.position?.headingDeg!=null&&e.
 const PIC_ICON=Object.freeze({bus:'/assets/icons/bus.webp',rail:'/assets/icons/train.webp',
   stations:'/assets/icons/trainstation.webp',busstations:'/assets/icons/busstation.webp',
   stops:'/assets/icons/busstop.webp'});   // 4.54.2: the owner's bus stop icon (12 Nov 22:50)   // 4.21.2; 4.54.1: the owner's station icons (12 Nov 21:25)
+const MENU_PIC=Object.freeze({...PIC_ICON,air:'/assets/planes/airliner.webp'});   // 4.87.0: the menu = the map's key (see menuPic)
 // 4.36.0 (owner 11 Nov 00:09-00:11: his own glossy top-down plane icons, "all central to the icon to allow for rotation"):
 // the kind (air engine "variant") -> his picture; a kind the page does not know keeps the stand-in drawing. A plane whose
 // kind is not known shows the airliner. Balloons stay upright (they point no particular way).
@@ -1431,8 +1438,7 @@ const FLAP_WORDS=Object.freeze({map:['LOADING','ARRIVED'],road:['WARMING UP','GR
 const FLAP_SLOW_MS=6500;
 const REDUCE_MOTION=matchMedia('(prefers-reduced-motion: reduce)').matches;
 function prepIcon(id){
-  if(PIC_ICON[id]){const img=el('img','pic-icon');img.src=PIC_ICON[id];img.alt='';img.decoding='async';img.draggable=false;
-    img.addEventListener('error',()=>img.replaceWith(ownIcon(id)),{once:true});return img;}
+  if(MENU_PIC[id])return menuPic(id);   // 4.87.0: the map's own pictures (planes too)
   return (ICON_PATHS[id]||UI_PATHS[id])?ownIcon(id):document.createTextNode(id==='road'?'≋':'');
 }
 function makeFlapBoard(){
