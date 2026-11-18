@@ -109,6 +109,11 @@
       "text": "TPA's own pictures and icons, made for TPA by Rob Burnett. No logos or company colours."
     },
     {
+      "layer": "Plane shapes",
+      "text": "Top-down shapes of the more unusual planes (Spitfire, Hunter, Typhoon and friends) from VRS Custom Markers by rikgale, released free for anyone (CC0). Thank you! Details: /assets/planes/SHAPES-LICENCE.txt",
+      "url": "https://github.com/rikgale/VRSCustomMarkers"
+    },
+    {
       "layer": "Fonts and map software",
       "text": "Barlow fonts (SIL Open Font Licence), Leaflet (BSD-2-Clause) and MapLibre GL JS (BSD-3-Clause).",
       "url": "https://leafletjs.com/"

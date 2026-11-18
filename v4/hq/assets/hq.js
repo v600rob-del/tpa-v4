@@ -292,6 +292,33 @@ const PLANE_PIC=Object.freeze({airliner:'airliner',widebody:'widebody',turboprop
   'coastguard-plane':'coastguardplane','ground-emer':'icon-emer','ground-gnd':'icon-gnd','ground-twr':'icon-twr'});   // 4.45.0
 function planePic(e){if(e.component!=='air')return null;if(e.variant==null)return 'airliner';
   return typeof e.variant==='string'&&Object.hasOwn(PLANE_PIC,e.variant)?PLANE_PIC[e.variant]:null;}
+// 4.84.0 (Rob 18 Nov 12:05-12:20: "having a box round the planes makes them too big"; "keeping our cartoony ones for the
+// airliners ... but using the spitfire and unusual ones especially military"; "a shadow under them to give the impression
+// of height"): planes have no box. A plane whose type code has a free top-down shape (VRS Custom Markers, CC0; see
+// /assets/planes/SHAPES-LICENCE.txt) is drawn as that shape; everything else keeps Rob's own picture. The shapes file
+// is only asked for once planes with a type code arrive (about 48 KB, kept a day).
+let PLANE_SHAPES=null,planeShapesAsked=0;
+function planeShape(e){
+  if(KIDS||e.component!=='air'||typeof e.typeCode!=='string'||isGround(e))return null;
+  if(!PLANE_SHAPES){
+    if(Date.now()-planeShapesAsked>60000){planeShapesAsked=Date.now();
+      fetch('/assets/planes/shapes.json?v=4.84.0').then(r=>r.ok?r.json():null)
+        .then(j=>{if(j&&j.codes&&j.shapes)PLANE_SHAPES=j;}).catch(()=>{});}
+    return null;}
+  const k=Object.hasOwn(PLANE_SHAPES.codes,e.typeCode)?PLANE_SHAPES.codes[e.typeCode]:null;
+  return k&&Object.hasOwn(PLANE_SHAPES.shapes,k)?k:null;}
+function typeShapeSvg(k,e){
+  const s=PLANE_SHAPES.shapes[k],svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
+  svg.setAttribute('viewBox',s.vb);svg.setAttribute('focusable','false');svg.setAttribute('class','type-shape');svg.dataset.shape=k;
+  const p=document.createElementNS('http://www.w3.org/2000/svg','path');p.setAttribute('d',s.d);svg.append(p);
+  if(e.position?.headingDeg!=null)svg.style.transform='rotate('+e.position.headingDeg+'deg)';
+  return svg;}
+// The higher it flies, the further away, softer and fainter its shadow (on the ground: right underneath it).
+function planeShadow(art,ft){
+  if(ft==null){for(const n of ['--shx','--shy','--shb','--sha'])art.style.removeProperty(n);return;}
+  const o=Math.min(1+ft/6500,7);
+  art.style.setProperty('--shx',(o*0.7).toFixed(1)+'px');art.style.setProperty('--shy',o.toFixed(1)+'px');
+  art.style.setProperty('--shb',(1+ft/9000).toFixed(1)+'px');art.style.setProperty('--sha',Math.max(0.45-ft/90000,0.12).toFixed(2));}
 function planeTurn(e){if(e.variant==='ground-twr')return '';
   // 4.45.0: the owner's van and fire engine icons are drawn front-down, so they turn half a turn further
   const extra=e.variant==='ground-emer'||e.variant==='ground-gnd'?180:0;
@@ -331,8 +358,9 @@ function buildArtwork(e){
     if(e.component==='air'&&e.position?.headingDeg!=null)svg.style.transform='rotate('+e.position.headingDeg+'deg)';
     // 4.21.2 (owner 5 Nov 20:11-20:15, option B): buses and trains show the owner's front-on picture inside their frame,
     // so trains no longer need mirroring; the drawing comes back only if the picture cannot load.
-    const plane=planePic(e);
-    if(PIC_ICON[e.component]||plane){const img=document.createElement('img');img.className='pic-icon'+(plane?' plane-pic p-'+plane:'');
+    const plane=planePic(e),shapeKey=planeShape(e);
+    if(shapeKey)icon.append(typeShapeSvg(shapeKey,e));   // 4.84.0: the unusual types' own top-down shape
+    else if(PIC_ICON[e.component]||plane){const img=document.createElement('img');img.className='pic-icon'+(plane?' plane-pic p-'+plane:'');
       img.src=plane?'/assets/planes/'+plane+'.webp':PIC_ICON[e.component];img.alt='';
       if(plane)img.style.transform=planeTurn(e);
       img.decoding='async';img.draggable=false;img.addEventListener('error',()=>img.replaceWith(svg),{once:true});icon.append(img);}
@@ -929,13 +957,16 @@ function markers(){
     const cls=`vehicle-pin review-pin ${e.component} ${e.quality}${e.component==='air'&&isMilitary(e)?' k-military':''}${e.component==='air'&&isService(e)?' k-'+e.variant.split('-')[0]:''}${isGround(e)?' k-ground':''}${active?' selected-pin':''}${pos.est?' est-pos':''}${searching?' searching':''}${glide?' glide':''}${faceLeft?' face-left':''}`;
     // 4.1.11 (owner 31 Oct 22:08: icons "look weirdish, like they are re rendered. They need to stay
     // the same"): an icon is built once and kept; only an aircraft's existing icon turns to its heading.
-    const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id;
+    const art=e.component+'|'+(e.badge||'')+'|'+(e.variant||'')+'|'+e.id+(e.component==='air'?'|'+(planeShape(e)||''):'');   // 4.84.0
     let pin=pins.get(k);
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
     const b=pin.b;pin.e=e;pin.lat=pos.lat;pin.lon=pos.lon;pin.active=active;
-    if(pin.art!==art){b.replaceChildren(buildArtwork(e));pin.art=art;}
+    if(pin.art!==art){b.replaceChildren(buildArtwork(e));pin.art=art;pin.ft=undefined;}
     if(e.component==='air'){const svg=b.querySelector('svg,.plane-pic'),rot=KIDS?kidFlip(e):svg?.classList?.contains('plane-pic')?planeTurn(e):e.position.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';
-      if(svg&&svg.style.transform!==rot)svg.style.transform=rot;}
+      if(svg&&svg.style.transform!==rot)svg.style.transform=rot;
+      // 4.84.0: height shadow, only touched when the height changes
+      const ft=!KIDS&&typeof e.altFt==='number'&&e.altFt>=0?e.altFt:null;
+      if(pin.ft!==ft){pin.ft=ft;const a=b.querySelector('.review-art');if(a)planeShadow(a,ft);}}
     if(b.className!==cls)b.className=cls;
     if(pos.hop){b.classList.remove('hop');void b.offsetWidth;b.classList.add('hop');}
     // 4.83.0: plain words on hover ("stale" was an internal word; a finished train has arrived)
@@ -1478,7 +1509,7 @@ const ids=new Set(),entities=[];for(const e of f.entities){if(!e||typeof e.id!==
 // asked trackers to hide them are left out of the public page; the owner's /full page shows them.
 if(e.private===true&&USER_VIEW)continue;
 const p=e.position;if(p!==null&&(!p||!validNum(p.lon)||!validNum(p.lat)||Math.abs(p.lon)>180||Math.abs(p.lat)>90||(p.headingDeg!=null&&(!validNum(p.headingDeg)||p.headingDeg<0||p.headingDeg>360))))throw Error('Invalid point');const position=p===null?null:{lon:p.lon,lat:p.lat,headingDeg:p.headingDeg??null};
-entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,variant:typeof e.variant==='string'&&/^[a-z0-9-]{1,30}$/.test(e.variant)?e.variant:null,private:e.private===true,position,motion:checkMotion(e.motion,position)});}
+entities.push({component:id,id:e.id,label:e.label,quality:e.quality,observedAt:e.observedAt,badge:typeof e.badge==='string'&&/^[A-Za-z0-9]{1,8}$/.test(e.badge)?e.badge:null,variant:typeof e.variant==='string'&&/^[a-z0-9-]{1,30}$/.test(e.variant)?e.variant:null,private:e.private===true,position,motion:checkMotion(e.motion,position),...(id==='air'&&typeof e.typeCode==='string'&&/^[A-Z0-9]{2,4}$/.test(e.typeCode)?{typeCode:e.typeCode}:{}),...(id==='air'&&Number.isInteger(e.altFt)&&e.altFt>=0&&e.altFt<=60000?{altFt:e.altFt}:{})});/* 4.84.0: type code and height, checked */}
 // 4.0.10 optional extras: a short notice, and a see-through picture layer served
 // only from this socket's own same-origin tile path. Anything else is ignored.
 const notice=typeof f.notice==='string'?f.notice.slice(0,120):'';

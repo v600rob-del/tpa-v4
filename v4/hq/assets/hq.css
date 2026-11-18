@@ -331,16 +331,35 @@ body.vector-ready .vector-map{z-index:4}
 .air-filter button:hover{background:#ffffff09;color:#cfe3f2}
 .air-filter button[aria-pressed="true"]{background:#144359;border-color:#2f7fa3;color:#c9f1ff}
 .air-filter button:focus-visible{outline:2px solid white;outline-offset:1px}
-.marker-layer .review-pin.air.k-military:not(.bus):not(.rail){background:#3d4a2c;color:#d8e6a8;border-color:#8a9a5b}
-.marker-layer .review-pin.air.k-police:not(.bus):not(.rail){background:#14234f;color:#ffe14d;border-color:#ffd23f}
-.marker-layer .review-pin.air.k-ambulance:not(.bus):not(.rail){background:#5c1420;color:#fff;border-color:#ff6b7d}
-.marker-layer .review-pin.air.k-coastguard:not(.bus):not(.rail){background:#6b3204;color:#fff;border-color:#ff9a3c}
+.marker-layer .review-pin.air.k-military:not(.bus):not(.rail){color:#d8e6a8}
+.marker-layer .review-pin.air.k-police:not(.bus):not(.rail){color:#ffe14d}
+.marker-layer .review-pin.air.k-ambulance:not(.bus):not(.rail){color:#fff}
+.marker-layer .review-pin.air.k-coastguard:not(.bus):not(.rail){color:#fff}
 .air-filter{flex-wrap:wrap}
 /* 4.36.0 the owner's plane icons: the size of the old drawing (plane frames do not grow with --pin-s); a widebody bigger (owner 00:11) */
 .marker-layer .review-pin.air .plane-pic{width:34px;height:34px;max-width:none;transition:transform .2s ease}
 .marker-layer .review-pin.air .plane-pic.p-widebody{width:39px;height:39px}
 .marker-layer .review-pin.air .plane-pic.p-light,.marker-layer .review-pin.air .plane-pic.p-glider{width:31px;height:31px}
 @media(prefers-reduced-motion:reduce){.marker-layer .review-pin.air .plane-pic{transition:none}}
+/* 4.84.0 (Rob 18 Nov 12:00-12:20): planes have no box (it made them too big); a thin edge keeps them clear on land and
+   sea, in their service colour for military and emergency planes (the colour the box used to carry). A shadow sits
+   further away the higher the plane flies (--shx/--shy/--shb/--sha, set by planeShadow in hq.js). The clickable area
+   stays the old size. Unusual types are drawn as their own top-down shape (.type-shape). Selected: a round ring. */
+.marker-layer .vehicle-pin.review-pin.air:not(.k-ground):not(.stack-pin){background:transparent;border-color:transparent}
+.marker-layer .vehicle-pin.review-pin.air:not(.k-ground):not(.stack-pin):not(.selected-pin){box-shadow:none}
+.marker-layer .review-pin.air:not(.k-ground) .review-art:not(.kid-art){filter:drop-shadow(0 0 1px #050f19f2) drop-shadow(var(--shx,.7px) var(--shy,1px) var(--shb,1px) rgba(10,25,45,var(--sha,.4)))}
+.marker-layer .review-pin.air.k-military:not(.k-ground) .review-art:not(.kid-art){filter:drop-shadow(0 0 1.3px #4d5a1c) drop-shadow(var(--shx,.7px) var(--shy,1px) var(--shb,1px) rgba(10,25,45,var(--sha,.4)))}
+.marker-layer .review-pin.air.k-police .review-art:not(.kid-art){filter:drop-shadow(0 0 1.3px #ffd23f) drop-shadow(var(--shx,.7px) var(--shy,1px) var(--shb,1px) rgba(10,25,45,var(--sha,.4)))}
+.marker-layer .review-pin.air.k-ambulance .review-art:not(.kid-art){filter:drop-shadow(0 0 1.3px #ff6b7d) drop-shadow(var(--shx,.7px) var(--shy,1px) var(--shb,1px) rgba(10,25,45,var(--sha,.4)))}
+.marker-layer .review-pin.air.k-coastguard .review-art:not(.kid-art){filter:drop-shadow(0 0 1.3px #ff9a3c) drop-shadow(var(--shx,.7px) var(--shy,1px) var(--shb,1px) rgba(10,25,45,var(--sha,.4)))}
+.marker-layer .review-pin.air .type-shape{width:34px;height:34px;overflow:visible;transition:transform .2s ease}
+.marker-layer .review-pin.air .type-shape path{fill:#eef3f7;stroke:#0b1620;stroke-width:1.1px;vector-effect:non-scaling-stroke;paint-order:stroke}
+.marker-layer .review-pin.air.k-military .type-shape path{fill:#8f9f52}
+.marker-layer .review-pin.air.k-police .type-shape path{fill:#25408f}
+.marker-layer .review-pin.air.k-ambulance .type-shape path{fill:#d0262d}
+.marker-layer .review-pin.air.k-coastguard .type-shape path{fill:#e8731a}
+.marker-layer .review-pin.air.selected-pin,.marker-layer .review-pin.air.selected-pin::after{border-radius:50%}
+@media(prefers-reduced-motion:reduce){.marker-layer .review-pin.air .type-shape{transition:none}}
 
 /* 4.39.0: traffic incident and roadworks markers - road-sign style, no frame */
 .marker-layer .review-pin.road{background:transparent;border:0;box-shadow:none;padding:0;width:max(20px,calc(34px*var(--pin-s,1)));height:max(20px,calc(34px*var(--pin-s,1)));border-radius:0}

@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.8.4'
+ENGINE_VERSION = '0.8.5'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -1249,6 +1249,15 @@ def snapshot(view) -> dict:
         kind = plane_kind(a)[0]
         if kind:
             entity['variant'] = kind          # 0.6.1: its own map icon
+        # 0.8.5 (Rob 18 Nov 12:05-12:20, HQ 4.84.0): the map draws unusual types (Spitfire, Hunter, Typhoon...) as their own
+        # top-down shape, and gives every plane a shadow that sits further away the higher it flies. Only what the plane
+        # itself reports; no database look-up here, so the snapshot costs no more to make.
+        if a.get('type'):
+            entity['typeCode'] = a['type'].upper()[:4]
+        if a['ground']:
+            entity['altFt'] = 0
+        elif a['alt'] is not None and 0 <= a['alt'] <= 60000:
+            entity['altFt'] = int(round(a['alt'] / 100.0) * 100)
         if a.get('private'):
             entity['private'] = True          # 0.6.2 (owner 22:32): not drawn on the public page; the owner's /full shows it
         # 0.2.0: speed + track let the map carry the aircraft forward smoothly between
