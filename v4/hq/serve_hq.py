@@ -36,7 +36,7 @@ PLANE_BOX = ('a320','b737','b787','b777','a220','atr72','tutor','prefect','cessn
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js', '/assets/bus-replay.js', '/assets/bus-fresh.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp', '/assets/icons/busstation.webp', '/assets/icons/trainstation.webp', '/assets/icons/busstop.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.74.0'
+HQ_VERSION = '4.74.1'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
@@ -68,6 +68,16 @@ if _po:
     if not _m:
         raise SystemExit('TPA_HQ_PUBLIC_ORIGIN must be exactly https://host.name')
     PUBLIC_ORIGIN, PUBLIC_HOST = _po, _m.group(1)
+# 4.74.1 (LAUNCH, 18 Nov 2026 01:3x: tpalive.co.uk answered "Development preview limited to home LAN"): more public
+# addresses the same front door forwards (TPA_HQ_EXTRA_ORIGINS, space- or comma-separated, each exactly https://host.name)
+EXTRA_ORIGINS = {}
+for _eo in re.split(r'[\s,]+', os.environ.get('TPA_HQ_EXTRA_ORIGINS', '').strip()):
+    if not _eo:
+        continue
+    _m2 = re.fullmatch(r'https://([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+)', _eo)
+    if not _m2:
+        raise SystemExit('TPA_HQ_EXTRA_ORIGINS: each must be exactly https://host.name')
+    EXTRA_ORIGINS[_m2.group(1)] = _eo
 CACHE_DIR = Path(tempfile.gettempdir()) / 'tpa-v4-hq-icons-lan-4.0.8'
 FIXTURE_DIR = os.environ.get('TPA_HQ_FIXTURE_DIR')
 DISABLE_MAP_NETWORK = os.environ.get('TPA_HQ_DISABLE_MAP_NETWORK', '0') == '1'
@@ -448,6 +458,8 @@ def local_request_origin(host, server_port, bound_address='127.0.0.1'):
     if bound_address == '127.0.0.1':
         if PUBLIC_HOST and host == PUBLIC_HOST:
             return PUBLIC_ORIGIN
+        if host in EXTRA_ORIGINS:
+            return EXTRA_ORIGINS[host]
         match=re.fullmatch(r'(127\.0\.0\.1|localhost):([0-9]{1,5})',host)
         if match is None or int(match.group(2))!=server_port:return None
         return f'http://{match.group(1)}:{server_port}'

@@ -68,8 +68,11 @@ tpalive.co.uk {
 		-Server
 	}
 	# owner-only pages are not for visitors (the owner uses the test site); Kids mode is parked
+	# (kit 4.68.1: inside a handle - a bare "respond" runs after the catch-all handle below, so it never answered)
 	@owner path /full /full/* /admin /admin/* /kids /kids/*
-	respond @owner 404
+	handle @owner {
+		respond 404
+	}
 	# test addresses on the page itself go back to the normal map
 	@testq {
 		path / /index.html /user
