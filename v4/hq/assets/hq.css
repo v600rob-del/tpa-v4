@@ -618,3 +618,6 @@ body:has(.tpa-dialog-back:not(.hidden)) .menu-tab{visibility:hidden}
 /* 4.87.0 (Rob 18 Nov 16:26): the menu shows the map's own pictures, so it is also the map's key */
 .layer-toggle .layer-icon.has-pic{background:#0c1824;border:1px solid #2a3b4c;border-radius:6px;display:grid;place-items:center}
 .layer-toggle .layer-icon.has-pic .menu-pic{width:30px;height:30px;object-fit:contain;display:block}
+
+/* 4.89.0 (Rob 18 Nov): Find Geoff */
+.detail-picture.geoff .geoff-tag{z-index:2;text-transform:none;font-size:13px;background:#ffb21e;color:#1a1200;font-weight:800;letter-spacing:.02em;box-shadow:0 2px 8px rgba(0,0,0,.35)}

@@ -1,5 +1,6 @@
 TPA bus pictures (assets/buses/*.webp)
 bus.webp: made by Rob Burnett (TPA) with ChatGPT image generation, 5 Nov 2026: Geoff driving a TPA bus, TPA livery, no operator logos.
 dd.webp, sd.webp, coach.webp, mini.webp: made by Rob Burnett (TPA) with an image tool, 10 Nov 2026: generic double decker,
+geoff.webp: made by Rob Burnett (TPA) with an image tool, 18 Nov 2026: Geoff driving a TPA bus, for "Find Geoff" (one bus per nation each day).
 single decker, coach and minibus; neutral colours, no logos, no lettering.
 OpenAI terms: the output belongs to the user. Sources (full size): v4/design/buses (private).

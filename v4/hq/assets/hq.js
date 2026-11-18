@@ -212,6 +212,13 @@ const RAIL_KINDS=Object.freeze({express: ['M2 12h17c4.5 0 8.3 2.2 10.6 5.6l.6.9c
 // once the timetable says what it is (rail engine 0.8.0 sends picture "c800" etc.). 100x26, facing right; amber = the
 // yellow warning panel. Drawn in-house (v4/design/train-classes), no photos or logos.
 const BUS_PICTURES={dd:'Picture of a double-decker bus',sd:'Picture of a single-decker bus',coach:'Picture of a coach',mini:'Picture of a minibus'};   // 4.29.0
+// 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one bus per nation each day (picked by the server, the same for
+// everyone) has Geoff driving. Only its picture changes, and only in its box; everything else about it stays true.
+let GEOFF={ids:new Set(),date:''};
+async function loadGeoff(){try{const r=await fetch('/api/v4/geoff');if(!r.ok)return;const j=await r.json();
+  if(j&&Array.isArray(j.ids)&&typeof j.date==='string')GEOFF={ids:new Set(j.ids.filter(x=>typeof x==='string').slice(0,8)),date:j.date};}catch(_){}}
+function geoffDay(d){const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(d||'');if(!m)return 'today';
+  return (+m[3])+' '+['January','February','March','April','May','June','July','August','September','October','November','December'][(+m[2])-1];}
 const TRAIN_PHOTOS=new Set(['c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66',   // 4.21.0
   'c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel']);   // 4.24.0 (owner 6 Nov 10:24-10:58): second batch + a generic electric train
 // 4.24.0: the second batch has no drawing of its own; if a picture fails to load, the nearest first-batch drawing stands in
@@ -488,9 +495,11 @@ async function loadDetails(e,box){
     if(e.component==='bus'){const box3=document.createElement('div');box3.className='detail-picture bus photo';
       // 4.30.0 (owner 10 Nov 11:49: "every bus seems to be a double decker"; option A): when the kind is not known, a faded
       // picture with a "Type not known" tag - never a guess dressed up as fact.
-      const known=typeof d.picture==='string'&&Object.hasOwn(BUS_PICTURES,d.picture),kind=known?d.picture:'sd';
-      const img=document.createElement('img');img.src='/assets/buses/'+kind+'.webp';img.alt=known?BUS_PICTURES[kind]:'Picture of a bus (type not known)';img.decoding='async';
-      if(!known){box3.classList.add('unknown');const tag=document.createElement('span');tag.className='pic-tag';tag.textContent='Type not known';box3.append(tag);}
+      const known=typeof d.picture==='string'&&Object.hasOwn(BUS_PICTURES,d.picture),kind=known?d.picture:'sd',geoff=GEOFF.ids.has(e.id);
+      const img=document.createElement('img');img.src=geoff?'/assets/buses/geoff.webp':'/assets/buses/'+kind+'.webp';
+      img.alt=geoff?'Geoff the cat driving a TPA bus':known?BUS_PICTURES[kind]:'Picture of a bus (type not known)';img.decoding='async';
+      if(geoff){box3.classList.add('geoff');const tag=document.createElement('span');tag.className='pic-tag geoff-tag';tag.textContent="You've found Geoff on "+geoffDay(GEOFF.date)+'!';box3.append(tag);}
+      else if(!known){box3.classList.add('unknown');const tag=document.createElement('span');tag.className='pic-tag';tag.textContent='Type not known';box3.append(tag);}
       img.addEventListener('error',()=>box3.remove(),{once:true});box3.append(img);rows.unshift(box3);}
     // 4.43.0 (owner 11 Nov 15:43: "I would like to add plane pictures ... static ones"): TPA's own picture of the plane's type
     // (made by the owner, neutral colours, no logos) on the same light panel as trains and buses; none when the type has
@@ -2789,6 +2798,7 @@ async function loadSiteConfig(){
   startPreparing(!(welcome&&cfg.welcome?.enabled===true&&!seen));   // 4.6.0: returning visitors get the short panel
 }
 if(!KIDS)ownIconsInPage();
+setTimeout(loadGeoff,3000);setInterval(loadGeoff,600000);   // 4.89.0: Find Geoff (a tiny list, every 10 minutes)
 for(const b of document.querySelectorAll('.air-filter button')){
   b.setAttribute('aria-pressed',String(b.dataset.air===airShow));
   b.addEventListener('click',()=>{airShow=b.dataset.air;

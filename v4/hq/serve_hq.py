@@ -37,9 +37,20 @@ PLANE_BOX = ('a320','b737','b787','b777','a220','atr72','tutor','prefect','cessn
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js', '/assets/bus-replay.js', '/assets/bus-fresh.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp', '/assets/icons/busstation.webp', '/assets/icons/trainstation.webp', '/assets/icons/busstop.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
+PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.88.0'
+HQ_VERSION = '4.89.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
+# 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
+# published city files (read only; the bus engine is not asked anything). See geoff.py.
+import geoff as GEOFF_MOD   # noqa: E402
+GEOFF = GEOFF_MOD.Picker(os.environ.get('TPA_HQ_GEOFF_TILES', '').strip() or TILES_DIR or '/run/tpa-bus-tiles',
+                         Path(tempfile.gettempdir()) / 'geoff-today.json')
+def geoff_loop():
+    while True:
+        try:GEOFF.refresh()
+        except Exception as exc:print('Geoff picker:',type(exc).__name__,exc,flush=True)
+        time.sleep(GEOFF_MOD.EVERY)
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
 # 4.13.1 (owner 3 Nov 16:00): or an engine on a PRIVATE network address (the bus engine on its own Ampere server).
@@ -704,6 +715,9 @@ class HQHandler(SimpleHTTPRequestHandler):
             return self.json_reply(200,{'version':HQ_VERSION,'renderer':'Leaflet 1.9.4 + MapLibre GL 5.24.0 + bridge 0.1.4',
                 'source':'OpenFreeMap','mode':'MOCK-icon-review-only','networkDisabled':DISABLE_MAP_NETWORK,
                 'upstreamErrors':dict(ERRORS),'lastFailedResource':dict(LAST_FAILURE),'resourceCounts':dict(RESOURCE_COUNTS),'browser':dict(BROWSER),'browserHistory':list(BROWSER_HISTORY),'vendorCached':{k:(CACHE_DIR/'vendor'/hashlib.sha256(k.encode()).hexdigest()).is_file() for k in VENDOR},'mapLibreAssetCached':(CACHE_DIR/'vendor'/hashlib.sha256('/assets/vendor/maplibre-gl.js'.encode()).hexdigest()).is_file()})
+        if path=='/api/v4/geoff':   # 4.89.0: today's Geoff buses (shared by everyone; a minute in caches)
+            with GEOFF.lock:ans=GEOFF.answer_locked()
+            return self.reply(200,json.dumps(ans,separators=(',',':')).encode('utf8'),'application/json; charset=utf-8','public, max-age=60')
         if path=='/api/v4/manifest':
             def entry(i):
                 if i in PARKED:return {'id':i,'status':'unavailable','parked':True}
@@ -950,6 +964,7 @@ class HQServer(ThreadingHTTPServer):
 
 def serve(port=8775, lan=False):
     address=find_lan_ip() if lan else '127.0.0.1'
+    threading.Thread(target=geoff_loop,daemon=True).start()   # 4.89.0
     with HQServer((address,port),HQHandler) as server:
         url=f'http://{address}:{port}/'
         print('\n'+'='*68,flush=True)
