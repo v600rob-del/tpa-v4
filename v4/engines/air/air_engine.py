@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.9.0'
+ENGINE_VERSION = '0.9.1'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -234,11 +234,12 @@ def fly_pace() -> int:
 # World requests are counted in the same monthly budget, so the UK pace already allows for them.
 # Places near each other share one circle (centres rounded to whole degrees), so viewers looking at the same city share.
 WORLD_GAP_SECONDS = 3 if _fly_test else 30          # shorter only against the test supplier
-WORLD_MIN_GAP = 1 if _fly_test else 10
+WORLD_MIN_GAP = 1 if _fly_test else 5     # 0.9.1: was 10 (UK ~12 a minute + world 12 stays under FlyItalyADSB's 30)
 WORLD_DAILY = max(0, int(os.environ.get('TPA_AIR_WORLD_DAILY', '600') or 600))
 WORLD_RESERVE = 0.10
 WORLD_KEEP_SECONDS = 180       # a place nobody has asked about for this long is forgotten
-WORLD_WANTED_SECONDS = 60      # a place counts as looked at for this long after the last question
+WORLD_WANTED_SECONDS = 15      # a place counts as on screen for this long after the last question (0.9.1: was 60;
+                               # pages ask every 5 s, so places scrolled past drop out quickly and cost nothing)
 WORLD = {'places': {}, 'wanted': {}, 'day': '', 'usedToday': 0, 'lastAt': 0.0, 'requestsThisRun': 0, 'lastError': ''}
 
 
@@ -249,6 +250,21 @@ def world_circle(view):
         return None
     clat, clon, _ = circle_for(view)
     return float(round(clat)), float(round(clon)), MAX_RADIUS_NM
+
+
+def world_covering(view, now: float):
+    """0.9.1: a circle already fetched that covers the whole view (the nearest), so a small move needs no new request."""
+    corners = ((view[0], view[1]), (view[0], view[3]), (view[2], view[1]), (view[2], view[3]))
+    clat, clon = (view[0] + view[2]) / 2, (view[1] + view[3]) / 2
+    best = None
+    for key, place in WORLD['places'].items():
+        if now - place.get('fetchedAt', 0) > WORLD_KEEP_SECONDS:
+            continue
+        if all(nm_between(la, lo, key[0], key[1]) <= key[2] for la, lo in corners):
+            d = nm_between(clat, clon, key[0], key[1])
+            if best is None or d < best[0]:
+                best = (d, key)
+    return best[1] if best else None
 
 
 def world_day_roll(now: float) -> None:
@@ -292,8 +308,9 @@ def world_poller() -> None:
             if now - WORLD['lastAt'] >= WORLD_MIN_GAP and not world_allowed(now):
                 looked = [k for k, t in WORLD['wanted'].items() if now - t <= WORLD_WANTED_SECONDS
                           and now - WORLD['places'].get(k, {}).get('fetchedAt', 0) >= WORLD_GAP_SECONDS]
-                # the place waiting longest goes first
-                due = min(looked, key=lambda k: WORLD['places'].get(k, {}).get('fetchedAt', 0), default=None)
+                # 0.9.1 (Rob 18 Nov 19:50, "a 30 second wait per scroll"): the place asked about most recently - the one on
+                # someone's screen now - goes first (it was the place waiting longest, so places scrolled past came first)
+                due = max(looked, key=lambda k: WORLD['wanted'][k], default=None)
             if due:
                 WORLD['lastAt'] = now
                 WORLD['usedToday'] += 1
@@ -1312,6 +1329,7 @@ def snapshot(view, world=False) -> dict:
         if world and small and ALWAYS_ON:         # 0.9.0: the Easter egg - planes beyond the UK, where the visitor looks
             place = world_circle(view)
             if place:
+                place = world_covering(view, now) or place         # 0.9.1: inside a circle already fetched: use that
                 WORLD['wanted'][place] = now
                 why = world_allowed(now)
                 if why and place not in WORLD['places']:
