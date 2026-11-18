@@ -39,10 +39,12 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.89.0'
+HQ_VERSION = '4.90.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
+import sys as _sys   # 4.90.0: find geoff.py beside this file however serve_hq is loaded (some checks load it from elsewhere)
+if str(Path(__file__).resolve().parent) not in _sys.path: _sys.path.insert(0, str(Path(__file__).resolve().parent))
 import geoff as GEOFF_MOD   # noqa: E402
 GEOFF = GEOFF_MOD.Picker(os.environ.get('TPA_HQ_GEOFF_TILES', '').strip() or TILES_DIR or '/run/tpa-bus-tiles',
                          Path(tempfile.gettempdir()) / 'geoff-today.json')

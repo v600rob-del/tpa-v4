@@ -2431,6 +2431,13 @@ try{
   map.on('moveend',()=>{if(!followPanning)refetchLiveView();});
   map.on('drag',refreshWhileDragging);   // 4.79.0
   map.on('dragstart',()=>{if(follow)stopFollow();});   // 4.10.0: grabbing the map stops following
+  // 4.90.0 (Rob 18 Nov 18:45: "when a dialogue/info box is open for any vehicle, can it auto close when you click on the map
+  // area, unless its doing a follow me?"): a click on empty map closes the box, unless following. Leaflet sends no click after
+  // a drag, and vehicles sit on their own layer so clicking one never reaches the map. Waits 0.3 s so a double-click (zoom) keeps it.
+  let mapClickTimer=0;
+  map.on('click',()=>{clearTimeout(mapClickTimer);if(!state.selected||follow)return;
+    mapClickTimer=setTimeout(()=>{if(!state.selected||follow)return;selected.classList.add('hidden');state.selected=null;paint();},300);});
+  map.on('dblclick',()=>clearTimeout(mapClickTimer));
   // 4.1.2: while the map moves, markers follow it instantly (no gliding lag).
   if(typeof map.on==='function')map.on('movestart zoomstart',()=>{if(followPanning)return;mapMoving=true;for(const p of pins.values())p.b.classList.remove('glide');});
   if(typeof map.on==='function')map.on('moveend zoomend',()=>{if(followPanning)return;mapMoving=false;paint();});
