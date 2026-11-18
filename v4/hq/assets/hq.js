@@ -1544,7 +1544,11 @@ const BUS_TILES={on:new URLSearchParams(location.search).get('tiles')!=='0',used
 // a bus on a timetabled journey is shown about where it is NOW (its forecast, no delay) instead of ~2 min behind; the
 // normal map is unchanged. prev = each bus's last forecast marks, so a new forecast never slides a bus back
 // (bus-replay.js forecastTrack). Counts of how each new frame met the bus: window.TPA_BUS_FORECAST().
-const BUS_FORECAST={on:new URLSearchParams(location.search).get('forecast')==='1',prev:new Map(),how:{}};
+// 4.80.0 (Rob 18 Nov 05:54, after watching ?forecast=1 against the normal map: "forecast one is miles better"; 05:44 "our
+// server knows where they are going, and the individual user should be given a LIVE set of map data"): the server's own
+// forecast is the normal map for timetabled buses (forecast plan Stage 4). ?forecast=0 is the way back to N1 (4.64.0-4.79.0).
+const BUS_FORECAST=(()=>{const q=new URLSearchParams(location.search),m=q.get('motion');
+  return {on:q.get('forecast')!=='0'&&!['c4','c3','replay','n1','compare'].includes(m),prev:new Map(),how:{}};})();
 window.TPA_BUS_FORECAST=()=>({on:BUS_FORECAST.on,kept:BUS_FORECAST.prev.size,how:{...BUS_FORECAST.how}});
 // 4.62.0 (Rob 15 Nov 2026 01:48: live test of the motion study's candidates - TEST ADDRESSES ONLY): ?motion=c4 or
 // ?motion=c3 shows each bus on its route line at its newest report carried on carefully (bus-replay.js freshTrack, the
@@ -1569,7 +1573,7 @@ window.TPA_BUS_MOTION_NOW=()=>{const R=window.TPA_BUS_REPLAY,t=serverNow()/1000,
 // NORMAL address too. Today's replay stays one address away: ?motion=replay (and the other test modes ?motion=c4 / c3 and
 // ?forecast=1 keep their own engines). (4.72.2: N1 at town level too.)
 const BUS_N1=(()=>{const q=new URLSearchParams(location.search),m=q.get('motion'),sh=q.get('show');
-  return {on:!['c4','c3','replay'].includes(m)&&q.get('forecast')!=='1',compare:m==='compare',show:m==='compare'?(['n1','c4','replay'].includes(sh)?sh:'n1'):'n1',
+  return {on:!['c4','c3','replay'].includes(m)&&(m==='n1'||m==='compare'||q.get('forecast')==='0'),compare:m==='compare',show:m==='compare'?(['n1','c4','replay'].includes(sh)?sh:'n1'):'n1',
     engine:null,tState:null,focus:null,lines:new Map(),c4prev:new Map(),now:new Map(),items:[],frames:0,ms:{replay:0,c4:0,n1:0},loading:false};})();
 setTimeout(()=>{if(BUS_N1.on)n1Ready();},0);   // 4.64.0: start fetching N1 at once, so the first bus read already uses it
 function n1Ready(){
