@@ -66,7 +66,7 @@ window.addEventListener('error',e=>{
 window.addEventListener('unhandledrejection',e=>reportBrowser('script-runtime-error','rejection',String(e.reason?.message||e.reason||'Unknown rejection')));
 
 function showNotice(message,warning=false){notice.textContent=message;notice.classList.remove('hidden');notice.classList.toggle('offline',warning);}
-function toast(message){const el=$('toast');el.textContent=message;el.classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add('hidden'),3000);}
+function toast(message,ms){const el=$('toast');el.textContent=message;el.classList.remove('hidden');clearTimeout(toastTimer);toastTimer=setTimeout(()=>el.classList.add('hidden'),ms||3000);}
 function clamp(n,a,b){return Math.max(a,Math.min(b,n));}
 function merc(lon,lat,z){const size=256*2**z,r=clamp(lat,-85.051128,85.051128)*Math.PI/180;return [(lon+180)/360*size,(1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*size];}
 function inverse(px,py,z){const size=256*2**z,y=Math.PI*(1-2*py/size);return {lon:px/size*360-180,lat:180/Math.PI*Math.atan(Math.sinh(y))};}
@@ -98,7 +98,14 @@ function pinScale(z){return (KIDS?1.6:1)*(z<11.5?0.5:z<12.5?0.56:z<13.5?0.64:z<1
 function syncView(){if(map){let c=map.getCenter();state.lon=c.lng;state.lat=c.lat;state.z=map.getZoom();}
   const ps=String(pinScale(state.z));if(markerLayer.style.getPropertyValue('--pin-s')!==ps)markerLayer.style.setProperty('--pin-s',ps);paint();}
 function gotoPlace(lon,lat,z,label){stopFollow();if(map)map.setView([lat,lon],z,{animate:false});state.lon=lon;state.lat=lat;state.z=z;selected.classList.add('hidden');state.selected=null;$('map-place').textContent=(label||'SELECTED LOCATION').toUpperCase();$('sidebar').classList.remove('open');paint();}
-function home(){gotoPlace(HOME.lon,HOME.lat,HOME.z,'BEVERLEY, EAST YORKSHIRE');toast('Home · Beverley, East Yorkshire');}
+// 4.76.0 (Rob 18 Nov 03:47: at night the Beverley start view was empty - "i cant find anything on the map"; he chose
+// "Whole of Britain"): on the real site visitors start on the whole UK (town bubbles everywhere, planes overhead), and Home
+// goes back there. START_UK comes from the server (data-start="uk") for tpalive.co.uk and the test site only.
+const START_UK=document.documentElement.dataset.start==='uk';
+const UK_HOME=[[50.0,-7.6],[58.6,1.8]];   // south-west, north-east: Cornwall and Northern Ireland to Shetland's south and East Anglia
+function fitUK(animate){if(!map||typeof map.fitBounds!=='function')return false;map.fitBounds(UK_HOME,{animate:!!animate,padding:[10,10]});return true;}
+function home(){if(START_UK){if(!fitUK(true))gotoPlace(-2.9,54.3,6,'UNITED KINGDOM');$('map-place').textContent='UNITED KINGDOM';toast('Home · the whole of the UK');return;}
+  gotoPlace(HOME.lon,HOME.lat,HOME.z,'BEVERLEY, EAST YORKSHIRE');toast('Home · Beverley, East Yorkshire');}
 function fitUK(){gotoPlace(-3.0,54.55,5.5,'UNITED KINGDOM');}
 function zoom(delta){if(map)map.setZoom(clamp(map.getZoom()+delta,minZ,18));else{state.z=clamp(state.z+delta,3,17);paint();}}
 function drawFallback(){const {w,h}=dims(),scale=Math.min(2,window.devicePixelRatio||1);if(canvas.width!==Math.round(w*scale)||canvas.height!==Math.round(h*scale)){canvas.width=Math.round(w*scale);canvas.height=Math.round(h*scale);}ctx.setTransform(scale,0,0,scale,0,0);ctx.clearRect(0,0,w,h);if(!state.geo||ready)return;
@@ -2200,6 +2207,7 @@ try{
   map=L.map('vector-map',{zoomControl:false,preferCanvas:true,minZoom:3,maxZoom:18,
     ...(ukBounds?{maxBounds:ukBounds,maxBoundsViscosity:1.0}:{}),
     attributionControl:false}).setView([HOME.lat,HOME.lon],HOME.z);
+  if(START_UK){fitUK(false);$('map-place').textContent='UNITED KINGDOM';const hb=$('home-button')?.querySelector('span');if(hb)hb.textContent='HOME: UK';}   // 4.76.0
   // 4.38.0: zooming out stops once the whole UK box is on screen (a phone stops one step further out than a PC).
   const fitMinZoom=()=>{try{if(!ukBounds||typeof map.getBoundsZoom!=='function')return;minZ=clamp(map.getBoundsZoom(ukBounds,false),3,10);if(typeof map.setMinZoom==='function')map.setMinZoom(minZ);}catch(_){}};
   fitMinZoom();if(typeof map.on==='function')map.on('resize',fitMinZoom);
@@ -2338,7 +2346,13 @@ function openDialog(back){lastFocus=document.activeElement;back.classList.remove
   if(enter&&wait>0){clearTimeout(back._enterTimer);enterWaiting(enter,wait);
     back._enterTimer=setTimeout(()=>{enterReady(enter);enter.focus();},wait*1000);}
   back.querySelector('.tpa-primary:not(.waiting),button:not([disabled]),a')?.focus();}
-function closeDialog(back){back.classList.add('hidden');if(back.id==='tpa-welcome'){try{localStorage.setItem(WELCOME_KEY,'1');}catch(_){}}lastFocus?.focus?.();}
+function closeDialog(back){back.classList.add('hidden');if(back.id==='tpa-welcome'){try{localStorage.setItem(WELCOME_KEY,'1');}catch(_){}nightNote();}lastFocus?.focus?.();}
+// 4.76.0 (Rob 18 Nov 03:47, chose "a friendly night note"): in the small hours (UK time) most buses and trains have stopped,
+// so a friendly line says so once, when the welcome screen closes
+let nightNoted=false;
+function ukHour(){try{return Number(new Date().toLocaleString('en-GB',{timeZone:'Europe/London',hour:'2-digit',hour12:false}))%24;}catch(_){return new Date().getHours();}}
+function nightNote(){if(nightNoted||KIDS)return;const h=ukHour();if(!(h>=0&&h<5))return;nightNoted=true;
+  setTimeout(()=>toast("It's the small hours, so most buses and trains are tucked up for the night. Night buses are still running in the big cities, and planes come and go all night.",12000),1200);}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.tpa-dialog-back:not(.hidden)').forEach(closeDialog);});
 function buildCredits(list){
   const {back,card}=makeDialog('tpa-credits','Data sources & credits');
