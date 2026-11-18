@@ -591,3 +591,5 @@ body:has(.tpa-dialog-back:not(.hidden)) .menu-tab{visibility:hidden}
   .follow-thumb.drawn svg{width:100%;height:auto;fill:#f2f7fb}
   .follow-thumb.drawn svg .acc{fill:var(--amber,#ffc531)}
 }
+/* 4.81.0 (Rob 18 Nov 06:05): an empty search list takes no room */
+.target-list:empty{display:none}.search-panel:has(.target-list:empty){flex:0 0 auto;min-height:0}
