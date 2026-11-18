@@ -569,3 +569,6 @@ html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;pos
 .suggest-mail{display:block;margin-top:4px}
 a.tpa-link-button{display:block;text-align:center;text-decoration:none}
 .welcome-device-note{margin:6px 0 10px;padding:8px 12px;border-left:3px solid #2fc7b5;background:rgba(47,199,181,.08);border-radius:6px;font-size:13px;color:#c9d5e3}
+/* 4.75.2 (Rob 18 Nov 03:40, welcome screen: the menu's little ◀ tab showed on top of it, "looks bad"): the tab sits above
+   the map (z-index 1200) but must never show over a dialog such as the welcome screen */
+body:has(.tpa-dialog-back:not(.hidden)) .menu-tab{visibility:hidden}

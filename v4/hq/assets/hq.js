@@ -1548,7 +1548,7 @@ function n1Ready(){
   if(!BUS_N1.on)return false;
   if(window.TPA_FRESH&&!BUS_N1.engine)BUS_N1.engine=new window.TPA_FRESH.FreshEngine();
   if(BUS_N1.engine)return true;
-  if(!BUS_N1.loading){BUS_N1.loading=true;const s=document.createElement('script');s.src='/assets/bus-fresh.js';s.defer=true;document.head.append(s);}
+  if(!BUS_N1.loading){BUS_N1.loading=true;const s=document.createElement('script');s.src='/assets/bus-fresh.js'+((document.querySelector('script[src^="/assets/hq.js"]')?.getAttribute('src')||'').match(/\?v=[0-9A-Za-z.-]+$/)?.[0]||'');   /* 4.75.1: same version tag as the page */s.defer=true;document.head.append(s);}
   return false;
 }
 function n1Line(sid,sh){                          // N1's own line type, made once from the same route line the page has
@@ -1635,7 +1635,11 @@ const BUBBLE_LAYERS=['bus','rail'],BUBBLE_QUIET=['stations','busstations','stops
 // into separate buses and trains one zoom later (14 instead of 13), and stations come with them; phones also show fewer
 // vehicles at once (PHONE_CAP). Computers are unchanged.
 function smallScreen(){return !KIDS&&(root.clientWidth<=1024||(window.matchMedia&&matchMedia('(pointer:coarse)').matches));}
-function bubbleZoom(){return smallScreen()?14:13;}
+// 4.75.2 (Rob 18 Nov 03:36, on his phone after launch: tapping a town bubble "only shows stations"): at zoom 14 a phone
+// shows a patch only ~2 km wide, so at night the few buses of a town bubble were off screen. Bubbles split at 13 on every
+// screen again; phones stay calmer by showing at most PHONE_CAP of a layer, and a tap now centres on where the town's
+// vehicles actually are (their counted squares), not on the town's name.
+function bubbleZoom(){return 13;}
 const BUBBLES_ON=!KIDS&&new URLSearchParams(location.search).get('bubbles')!=='0';
 const COUNTS={bus:null,rail:null,asked:-1};
 const BUBBLE_WORD={bus:['bus','buses'],rail:['train','trains']};
@@ -1747,7 +1751,7 @@ function drawBubbles(ox,oy){
     if(!g.name){g.lat=g.wl/g.ww;g.lon=g.wn/g.ww;}
     const [x,y]=pixel(g.lon,g.lat);g.x=x-ox;g.y=y-oy;
     const near=kept.find(k=>Math.abs(k.x-g.x)<gapX&&Math.abs(k.y-g.y)<gapY);
-    if(near){near.bus+=g.bus;near.rail+=g.rail;
+    if(near){near.bus+=g.bus;near.rail+=g.rail;near.wl+=g.wl;near.wn+=g.wn;near.ww+=g.ww;
       // 4.67.1: a city names it; 4.67.2 (17 Nov 13:25, live: Leeds and Bradford joined as "Bradford"): of two cities, the
       // more important one on the street map (its own rank: Leeds before Bradford)
       if(g.name&&moreImportant(g,near)){near.name=g.name;near.city=g.city;near.rank=g.rank;near.lat=g.lat;near.lon=g.lon;near.x=g.x;near.y=g.y;}
@@ -1764,7 +1768,7 @@ function drawBubbles(ox,oy){
     btn.append(el('span','',words.join(' · ')));
     btn.setAttribute('aria-label',(title?title+': ':'')+words.join(' and ')+'. Zoom in to see each one.');
     btn.title='Zoom in to see each one';
-    btn.onclick=ev=>{ev.stopPropagation();bubbleTipDone();stopFollow();map.setView([g.lat,g.lon],bubbleZoom());};
+    btn.onclick=ev=>{ev.stopPropagation();bubbleTipDone();stopFollow();map.setView(g.ww>0?[g.wl/g.ww,g.wn/g.ww]:[g.lat,g.lon],bubbleZoom());};
     out.push(btn);}
   // 4.68.0 (tester, 17 Nov 16:09: "I had to try clicking the label to discover what it did"; Rob chose a one-time tip):
   // the first time bubbles show (welcome closed), a short tip under the biggest one on screen, once per browser
