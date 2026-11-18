@@ -1845,21 +1845,35 @@ async function busTileFrame(){
   if(map&&typeof map.getBounds==='function'){const b=map.getBounds();w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();}
   if(n-s>meta.maxSpan){frame.notice='Zoom in to see buses';return frame;}
   const small=n-s<=meta.smallBelowSpan,size=small?meta.small:meta.big,dir=small?'s':'b';
-  const r0=Math.floor(s/size[0]),r1=Math.floor(n/size[0]),c0=Math.floor(w/size[1]),c1=Math.floor(e/size[1]);
-  if((r1-r0+1)*(c1-c0+1)>80)throw Error('too many tiles');
+  // 4.79.0 (Rob 18 Nov 04:41, live: "When i just move around the map by dragging, each of the new buses to my screen then
+  // fetches its information, causing pauses"): the page counts a strip a fifth of the view wide around the screen as
+  // already fetched (fetchedBox, currentBox(0.2)), but buses were only ever collected ON the screen. So after a short drag
+  // the buses in the newly shown strip were missing until the next 10 s check, then popped in. Buses are now collected for
+  // the view plus that same strip (trains already were: viewBox), their route lines arrive before they are on screen, and
+  // frame.covered tells the page exactly what was collected. Buses on screen always come first.
+  let W=w,S=s,E=e,N=n;
+  if(map&&typeof map.getBounds==='function'){const b=map.getBounds().pad(0.2);W=b.getWest();S=b.getSouth();E=b.getEast();N=b.getNorth();}
+  const tileSpan=(s0,w0,n0,e0)=>{const r0=Math.floor(s0/size[0]),r1=Math.floor(n0/size[0]),c0=Math.floor(w0/size[1]),c1=Math.floor(e0/size[1]);return [r0,r1,c0,c1,(r1-r0+1)*(c1-c0+1)];};
+  let span=tileSpan(S,W,N,E);
+  if(span[4]>80){W=w;S=s;E=e;N=n;span=tileSpan(s,w,n,e);}   // a very wide screen: just the view, as before
+  const [r0,r1,c0,c1,count]=span;
+  if(count>80)throw Error('too many tiles');
   const asks=[];for(let r=r0;r<=r1;r++)for(let c=c0;c<=c1;c++)asks.push(tileJSON(`/tiles/bus/${dir}/${r}_${c}.json?r=${slot}`,6000,true));
   const items=new Map();for(const t of await Promise.all(asks))if(Array.isArray(t))for(const it of t)if(it&&typeof it.i==='string'&&!items.has(it.i))items.set(it.i,it);
   // 4.60.0 (bus 0.20.0, owner 14 Nov 00:34): each bus carries its own delay (d) - just far enough behind its reports
   const now=serverNow()/1000,delay0=validNum(meta.delay)?meta.delay:90,dOf=it=>validNum(it.d)&&it.d>=0&&it.d<=600?it.d:delay0;
-  const inView=q=>q[1]>=w&&q[1]<=e&&q[2]>=s&&q[2]<=n;
-  const cy=(s+n)/2,cx=(w+e)/2,chosen=[];
+  const inView=q=>q[1]>=w&&q[1]<=e&&q[2]>=s&&q[2]<=n,inArea=q=>q[1]>=W&&q[1]<=E&&q[2]>=S&&q[2]<=N;
+  const cy=(s+n)/2,cx=(w+e)/2,chosen=[];let onScreen=0;
   for(const it of items.values()){const p=Array.isArray(it.p)?it.p:[];if(!p.length)continue;const last=p[p.length-1];
-    const recent=now-dOf(it)-120;
-    if(!(inView(last)||p.some(q=>q[0]>=recent&&inView(q))||(follow&&follow.comp==='bus'&&it.i===follow.id)))continue;   // 4.64.2: never drop the followed bus
-    chosen.push([(last[2]-cy)**2+(last[1]-cx)**2,it]);}
+    const recent=now-dOf(it)-120,followed=!!(follow&&follow.comp==='bus'&&it.i===follow.id);
+    const seen=inView(last)||p.some(q=>q[0]>=recent&&inView(q))||followed;   // 4.64.2: never drop the followed bus
+    if(!seen&&!(inArea(last)||p.some(q=>q[0]>=recent&&inArea(q))))continue;
+    if(seen)onScreen++;
+    chosen.push([(seen?0:1e9)+(last[2]-cy)**2+(last[1]-cx)**2,it]);}   // on screen first, then the strip around it
   chosen.sort((a,b)=>a[0]-b[0]);
   const max=Number.isInteger(meta.maxPerView)?meta.maxPerView:400;
-  if(chosen.length>max&&!frame.notice)frame.notice=`Showing nearest ${max} · zoom in for all`;
+  if(onScreen>max&&!frame.notice)frame.notice=`Showing nearest ${max} · zoom in for all`;
+  frame.covered=chosen.length>max?{w,s,e,n}:{w:W,s:S,e:E,n:N};   // the strip was cut short: only the screen counts as had
   const pick=chosen.slice(0,max).map(x=>x[1]);
   // route lines for the street view (each fetched once, then kept): wait a little for new ones, never long
   const lines=new Map();
@@ -2054,6 +2068,21 @@ function refetchLiveView(){clearTimeout(refetchTimer);refetchTimer=setTimeout(()
     getComponent(id);
   }
 },300);}   // 4.1.13: was 0.8 s - a new area's vehicles are asked for sooner
+// 4.79.0 (Rob 18 Nov 04:41: dragging "doesnt flow well"): during a long drag the new area stayed empty until the mouse was
+// let go. Buses and trains (ready-made files, no work for the server) are now collected while the map is still being
+// dragged, once the view leaves what was collected - at most about once a second, one ask per layer at a time.
+let dragCheckAt=0;
+function refreshWhileDragging(){
+  const t=performance.now();if(t-dragCheckAt<900)return;dragCheckAt=t;
+  const v=currentBox(0);if(!v)return;
+  for(const id of ['bus','rail']){
+    if(!state.live[id]||state.parked[id]||!(state.status[id]==='ready'||state.status[id]==='stale'))continue;
+    if((seqSent[id]||0)>(seqDone[id]||0)&&t-(lastFetch[id]||0)<3000)continue;   // already asking
+    const b=fetchedBox[id];
+    if(b&&b.complete&&v.w>=b.w&&v.e<=b.e&&v.s>=b.s&&v.n<=b.n)continue;
+    getComponent(id);
+  }
+}
 // 4.1.0: each live layer is asked again at the pace its engine suggests (nextPollAfterMs),
 // only while the page is visible; a reply older than one already shown is ignored.
 const pollTimers=Object.create(null),lastFetch=Object.create(null),seqSent=Object.create(null),seqDone=Object.create(null),fetchedBox=Object.create(null);
@@ -2092,7 +2121,9 @@ async function getComponent(id){
     {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length){speedMark(id+' shown');hasItems[id]=true;}}
     if(seq<(seqDone[id]||0))return;
     seqDone[id]=seq;
-    fetchedBox[id]=box?{...box,complete:!f.notice}:null;
+    // 4.79.0: a tile frame says exactly what it collected (busTileFrame: the view and the strip round it)
+    const cov=raw&&raw.covered&&[raw.covered.w,raw.covered.s,raw.covered.e,raw.covered.n].every(validNum)?raw.covered:null;
+    fetchedBox[id]=box?{...(cov?{w:cov.w,s:cov.s,e:cov.e,n:cov.n}:box),complete:!f.notice}:null;
     if(state.live[id])schedulePoll(id,f.pollMs);
     noteNewFrame(f,serverNow(),freshStart[id]);freshStart[id]=false;
     // Once a new manifest has removed a component, ignore late responses.
@@ -2246,6 +2277,7 @@ try{
   map.on('zoomend',zoomAnimEnd);
   map.on('zoomend',applyOverlayOpacity);
   map.on('moveend',()=>{if(!followPanning)refetchLiveView();});
+  map.on('drag',refreshWhileDragging);   // 4.79.0
   map.on('dragstart',()=>{if(follow)stopFollow();});   // 4.10.0: grabbing the map stops following
   // 4.1.2: while the map moves, markers follow it instantly (no gliding lag).
   if(typeof map.on==='function')map.on('movestart zoomstart',()=>{if(followPanning)return;mapMoving=true;for(const p of pins.values())p.b.classList.remove('glide');});
