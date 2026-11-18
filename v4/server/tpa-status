@@ -89,6 +89,17 @@ if [[ -n "$host" ]]; then
 else
     echo "web      not set up yet - run: sudo tpa-setup"; ok=0
 fi
+# kit 4.69 (after launch, Rob 18 Nov 2026 01:36: "why is it still mentioning the test site?"): the public site too, asked
+# of our own server directly (the same answer Cloudflare gets) - the live map with no password, and its privacy page
+if grep -q '^tpalive.co.uk {' /etc/tpa-web/Caddyfile 2>/dev/null; then
+    code="$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' --resolve "tpalive.co.uk:443:127.0.0.1" "https://tpalive.co.uk/")"
+    pcode="$(curl -s --max-time 8 -o /dev/null -w '%{http_code}' --resolve "tpalive.co.uk:443:127.0.0.1" "https://tpalive.co.uk/privacy")"
+    if [[ "$code" == 200 && "$pcode" == 200 ]]; then
+        echo "public   https://tpalive.co.uk/ is LIVE: the map, no password (good); privacy page OK"
+    else
+        echo "public   https://tpalive.co.uk/ answered HTTP $code (map), $pcode (privacy page) - should both be 200"; ok=0
+    fi
+fi
 echo
 [[ $ok == 1 ]] && echo "ALL GOOD" || echo "SOMETHING NEEDS ATTENTION (see above)"
 [[ $ok == 1 ]]

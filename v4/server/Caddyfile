@@ -28,10 +28,11 @@
 	# kit 4.66 (rail 1.6.0, Rob 16 Nov 2026 07:25 "let's proceed"): ready-made train files, written by the train engine every
 	# 10 s into /run/tpa-rail-tiles/rail (in memory), handed out the same way. Caddy tries the longer path first.
 	# kit 4.68: the privacy page and share picture on the test site too (same files as the public site)
-	@public path /robots.txt /sitemap.xml /privacy /privacy.html /share.jpg
+	@public path /robots.txt /sitemap.xml /privacy /privacy.html /help /help.html /share.jpg /404.html
 	handle @public {
 		root * /opt/tpa/public
 		rewrite /privacy /privacy.html
+		rewrite /help /help.html
 		file_server
 	}
 	handle_path /tiles/rail/* {
@@ -69,9 +70,9 @@ tpalive.co.uk {
 	}
 	# owner-only pages are not for visitors (the owner uses the test site); Kids mode is parked
 	# (kit 4.68.1: inside a handle - a bare "respond" runs after the catch-all handle below, so it never answered)
-	@owner path /full /full/* /admin /admin/* /kids /kids/*
+	@owner path /full /full/* /admin /admin/* /kids /kids/* /suggestions /suggestions/*
 	handle @owner {
-		respond 404
+		error 404
 	}
 	# test addresses on the page itself go back to the normal map
 	@testq {
@@ -80,10 +81,11 @@ tpalive.co.uk {
 	}
 	redir @testq / 302
 	# privacy page, share picture, robots file and sitemap (search engines)
-	@public path /robots.txt /sitemap.xml /privacy /privacy.html /share.jpg
+	@public path /robots.txt /sitemap.xml /privacy /privacy.html /help /help.html /share.jpg /404.html
 	handle @public {
 		root * /opt/tpa/public
 		rewrite /privacy /privacy.html
+		rewrite /help /help.html
 		file_server
 	}
 	handle_path /tiles/rail/* {
@@ -103,8 +105,29 @@ tpalive.co.uk {
 			precompressed gzip
 		}
 	}
+	# kit 4.69 (tidy-up after launch): a friendly "page not found" for addresses people type (not for the map's own data)
+	@pages not path /api/* /assets/* /tiles/* /basemap/* /data/* /hq-* /styles/* /fonts/* /sprites/* /natural_earth/*
+	handle @pages {
+		reverse_proxy 127.0.0.1:8778 {
+			@missing status 404
+			handle_response @missing {
+				root * /opt/tpa/public
+				rewrite * /404.html
+				file_server {
+					status 404
+				}
+			}
+		}
+	}
 	handle {
 		reverse_proxy 127.0.0.1:8778
+	}
+	handle_errors 404 {
+		root * /opt/tpa/public
+		rewrite * /404.html
+		file_server {
+			status 404
+		}
 	}
 }
 

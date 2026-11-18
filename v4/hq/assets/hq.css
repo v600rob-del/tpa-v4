@@ -558,3 +558,14 @@ html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;pos
    above its town (arrow pointing down) when another bubble is just below */
 .town-bubble strong.near{font-weight:600;font-style:italic;opacity:.85}
 .bubble-tip.above::before{top:auto;bottom:-6px;border-top:6px solid #ffb21e;border-bottom:0}
+
+/* 4.75.0 suggestions box */
+.suggest-card{max-width:440px}
+.suggest-text{margin:0 0 10px;color:#c9d5e3}
+.suggest-kind,.suggest-box{width:100%;background:#0b1422;color:#edf3f9;border:1px solid #2a3c52;border-radius:8px;padding:8px 10px;font:inherit;margin-bottom:10px}
+.suggest-box{resize:vertical;min-height:110px}
+.suggest-trap{position:absolute;left:-9999px;width:1px;height:1px;opacity:0}
+.suggest-status{min-height:1.4em;margin:8px 0;color:#2fc7b5}
+.suggest-mail{display:block;margin-top:4px}
+a.tpa-link-button{display:block;text-align:center;text-decoration:none}
+.welcome-device-note{margin:6px 0 10px;padding:8px 12px;border-left:3px solid #2fc7b5;background:rgba(47,199,181,.08);border-radius:6px;font-size:13px;color:#c9d5e3}

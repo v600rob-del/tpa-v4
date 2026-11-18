@@ -29,6 +29,7 @@ import tempfile
 import math
 import threading
 import time
+import html as htmllib
 
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road', 'stations', 'stops', 'busstations')   # 4.52.0: stations and their live boards; 4.53.0: bus stops; 4.54.0: bus stations
@@ -36,7 +37,7 @@ PLANE_BOX = ('a320','b737','b787','b777','a220','atr72','tutor','prefect','cessn
 PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js', '/assets/bus-replay.js', '/assets/bus-fresh.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp', '/assets/icons/busstation.webp', '/assets/icons/trainstation.webp', '/assets/icons/busstop.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.74.1'
+HQ_VERSION = '4.75.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
@@ -468,6 +469,77 @@ def local_request_origin(host, server_port, bound_address='127.0.0.1'):
     return f'http://{bound_address}:{server_port}'
 
 
+# 4.75.0 (Rob 18 Nov 2026 00:44-00:47: an anonymous suggestions box): what visitors send is kept on the server, one line
+# each ({at, kind, text}), never their address. Guards: a hidden field robots fill in, the form open a few seconds, at most
+# SUGGEST_PER_HOUR from one visitor (kept in memory only, by a scrambled form of the address Cloudflare/Caddy pass on)
+# and SUGGEST_PER_DAY in all. The owner reads them at /suggestions on the password-protected test site only.
+SUGGEST_FILE = Path(os.environ.get('TPA_HQ_SUGGEST_FILE') or (Path(tempfile.gettempdir()) / 'tpa-suggestions.jsonl'))
+SUGGEST_PER_HOUR, SUGGEST_PER_DAY, SUGGEST_MAX = 5, 300, 1000
+SUGGEST_SEEN = {}
+SUGGEST_DAY = {'day': '', 'n': 0}
+SUGGEST_LOCK = threading.Lock()
+
+
+def suggest_accept(obj, who, now=None):
+    """(status, message): 200 saved, 400 not a suggestion, 429 too many."""
+    now = time.time() if now is None else now
+    if not isinstance(obj, dict):
+        return 400, 'bad'
+    text, kind = obj.get('text'), obj.get('kind')
+    if obj.get('website'):                       # the hidden field: only robots fill it in - pretend it worked
+        return 200, 'ok'
+    if not isinstance(text, str) or not isinstance(kind, str) or kind not in ('idea', 'problem', 'other'):
+        return 400, 'bad'
+    text = ''.join(ch for ch in text if ch == '\n' or (ch.isprintable() and ch not in '\x0b\x0c')).strip()[:SUGGEST_MAX]
+    if len(text) < 3:
+        return 400, 'bad'
+    if not isinstance(obj.get('openMs'), (int, float)) or obj['openMs'] < 2500:   # typed and sent in under 2.5 s: a robot
+        return 200, 'ok'
+    key = hashlib.sha256(('tpa-suggest|' + (who or '')).encode()).hexdigest()[:16]
+    with SUGGEST_LOCK:
+        day = time.strftime('%Y-%m-%d', time.gmtime(now))
+        if SUGGEST_DAY['day'] != day:
+            SUGGEST_DAY.update(day=day, n=0)
+        recent = [t for t in SUGGEST_SEEN.get(key, []) if now - t < 3600]
+        if len(recent) >= SUGGEST_PER_HOUR or SUGGEST_DAY['n'] >= SUGGEST_PER_DAY:
+            return 429, 'too many'
+        recent.append(now)
+        SUGGEST_SEEN[key] = recent
+        if len(SUGGEST_SEEN) > 5000:
+            SUGGEST_SEEN.clear()
+        SUGGEST_DAY['n'] += 1
+        try:
+            SUGGEST_FILE.parent.mkdir(parents=True, exist_ok=True)
+            with open(SUGGEST_FILE, 'a', encoding='utf-8') as f:
+                f.write(json.dumps({'at': time.strftime('%Y-%m-%d %H:%M', time.localtime(now)), 'kind': kind, 'text': text},
+                                   ensure_ascii=False) + '\n')
+        except OSError:
+            return 503, 'not saved'
+    return 200, 'ok'
+
+
+def suggestions_page():
+    try:
+        lines = SUGGEST_FILE.read_text(encoding='utf-8').splitlines()
+    except OSError:
+        lines = []
+    rows = []
+    for ln in reversed(lines[-500:]):
+        try:
+            o = json.loads(ln)
+        except ValueError:
+            continue
+        word = {'idea': 'Idea', 'problem': 'Looks wrong', 'other': 'Other'}.get(o.get('kind'), 'Other')
+        rows.append(f"<li><b>{htmllib.escape(word)}</b> <small>{htmllib.escape(str(o.get('at', '')))}</small><br>"
+                    f"{htmllib.escape(str(o.get('text', ''))).replace(chr(10), '<br>')}</li>")
+    body = ''.join(rows) or '<li>No suggestions yet.</li>'
+    return ('<!doctype html><html lang="en-GB"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<title>TPA suggestions</title><style>body{background:#05080e;color:#edf3f9;font:16px/1.5 system-ui,Arial,sans-serif;'
+            'max-width:760px;margin:0 auto;padding:24px}li{margin:0 0 16px;padding:10px 14px;background:#0a111c;border-radius:8px;'
+            'list-style:none}small{color:#8597ad}b{color:#ffb21e}ul{padding:0}</style></head><body>'
+            f'<h1>Suggestions from visitors ({len(rows)})</h1><p>Newest first. Only you can see this page.</p><ul>{body}</ul></body></html>').encode('utf-8')
+
+
 def allowed_preview_client(client_address, bound_address):
     """No public clients: loopback for legacy tests, or same /24 private LAN."""
     try:
@@ -769,6 +841,15 @@ class HQHandler(SimpleHTTPRequestHandler):
             except Exception as exc:
                 record_error('openfreemap',sanitized_error(exc),relative[:160])
                 return self.send_error(502,'Map resource unavailable; check hq-map-status')
+        # 4.75.0: the owner's list of suggestions - only on the password-protected test site's address
+        if path=='/suggestions':
+            if not PUBLIC_HOST or self.headers.get('Host','')!=PUBLIC_HOST:return self.send_error(404,'Not here')
+            raw=suggestions_page()
+            self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(raw)))
+            self.send_header('Cache-Control','no-store');self._cache_set=True;self.end_headers()
+            try:self.wfile.write(raw)
+            except (BrokenPipeError,ConnectionResetError):pass
+            return
         if path=='/' and DEFAULT_VIEW=='user':
             raw=(ROOT/'index.html').read_bytes().replace(b'<html ',b'<html data-default-view="user" ',1)
             self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(raw)))
@@ -783,6 +864,8 @@ class HQHandler(SimpleHTTPRequestHandler):
     def do_POST(self):
         # Minimal local-only diagnostics: fixed error codes, no user-generated
         # text, no coordinates, no credentials and no content persistence.
+        if urlsplit(self.path).path == '/api/v4/suggest':
+            return self.post_suggest()
         if urlsplit(self.path).path != '/hq-browser-diagnostic':
             return self.send_error(405,'Read-only HQ')
         bound_address=self.server.server_address[0]
@@ -813,6 +896,20 @@ class HQHandler(SimpleHTTPRequestHandler):
             BROWSER_HISTORY.append({'code':code,'stage':stage,'detail':detail})
         return self.json_reply(200,{'accepted':True})
     do_PUT=do_DELETE=do_PATCH=lambda self:self.send_error(405,'Read-only HQ')
+    def post_suggest(self):   # 4.75.0
+        bound_address=self.server.server_address[0]
+        if not allowed_preview_client(self.client_address[0],bound_address) or local_request_origin(self.headers.get('Host',''),self.server.server_port,bound_address) is None:
+            return self.send_error(403,'Not here')
+        if self.headers.get('Content-Type','').split(';')[0].strip()!='application/json':
+            return self.json_reply(415,{'ok':False})
+        try:
+            n=int(self.headers.get('Content-Length','0'))
+            if n<=0 or n>6000:return self.json_reply(413,{'ok':False})
+            obj=json.loads(self.rfile.read(n).decode('utf-8'))
+        except (TypeError,ValueError,UnicodeDecodeError):return self.json_reply(400,{'ok':False})
+        who=(self.headers.get('CF-Connecting-IP') or (self.headers.get('X-Forwarded-For') or '').split(',')[0]).strip()
+        status,_=suggest_accept(obj,who)
+        return self.json_reply(status,{'ok':status==200})
     def do_HEAD(self):return self.send_error(405,'Read-only HQ')
     def log_message(self,fmt,*args):
         if not self.path.startswith('/basemap/openfreemap/'):super().log_message(fmt,*args)

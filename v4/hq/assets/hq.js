@@ -81,7 +81,7 @@ function sheetHeight(){return isPhone()&&!selected.classList.contains('hidden')?
 function focusY(h){const s=sheetHeight();return s?Math.max(60,(h-s)/2):h/2;}      // where a followed vehicle is kept
 // numeric stop codes (NaPTAN, e.g. "(22000624)") mean nothing to a passenger; "(Stop RD)" and "(Bay 22)" stay
 function tidyName(s){return String(s).replace(/\s\((?=[0-9A-Z]*\d{4})[0-9A-Z]{6,14}\)/g,'');}
-function phoneCap(z){return z<13?PHONE_CAP_OUT:PHONE_CAP;}
+function phoneCap(z){return z<bubbleZoom()?PHONE_CAP_OUT:PHONE_CAP;}
 window.TPA_HQ_PHONE={tidyName:s=>tidyName(s),cap:z=>phoneCap(z),join:()=>PHONE_JOIN};
 function pixel(lon,lat){if(map){let p=map.latLngToContainerPoint([lat,lon]);return [p.x,p.y];}
 const d=dims(),p=merc(lon,lat,state.z),c=merc(state.lon,state.lat,state.z);return [p[0]-c[0]+d.w/2,p[1]-c[1]+d.h/2];}
@@ -789,7 +789,8 @@ function infoText(e,est){
 }
 // Phone-sized screens show at most this many vehicles per layer (engines already send the
 // ones nearest the middle of the view first); hundreds of overlapping icons can't be read.
-const PHONE_CAP=150,PHONE_CAP_OUT=60,PHONE_JOIN=1.6;   // 4.51.0: zoomed out (below 13) on a phone, at most 60 of each layer; grouped sooner
+const PHONE_CAP=100,PHONE_CAP_OUT=60,PHONE_JOIN=1.6;   // 4.75.0: 150 -> 100 (calmer phones)
+   // 4.51.0: zoomed out (below 13) on a phone, at most 60 of each layer; grouped sooner
 let glideOK=new Set();
 // 4.1.7 (owner 31 Oct: "when you zoom in or out the icons stay where they were until you stop and
 // then move to their positions, giving the feeling of a mad scramble"):
@@ -1628,14 +1629,20 @@ function roadShape(it){
 // of the vehicles, so the page cannot count them itself). Railway stations, bus stations and stops wait for zoom 13 too.
 // Names: the street map's own city and town labels (cities only when far out). Bubbles that would overlap join the bigger.
 // ?bubbles=0 is the old way; without fresh counts (e.g. an engine without them) every vehicle is drawn as before.
-const BUBBLE_BELOW_ZOOM=13,BUBBLE_LAYERS=['bus','rail'],BUBBLE_QUIET=['stations','busstations','stops'];
+const BUBBLE_LAYERS=['bus','rail'],BUBBLE_QUIET=['stations','busstations','stops'];
+// 4.75.0 (Rob 18 Nov 00:47: "cutting down on the detail on the phones and tablets to still offer a very usable experience
+// but not an overcrowded one"): on phones and tablets (a touch screen, or 1,024 px wide or less) the town bubbles split
+// into separate buses and trains one zoom later (14 instead of 13), and stations come with them; phones also show fewer
+// vehicles at once (PHONE_CAP). Computers are unchanged.
+function smallScreen(){return !KIDS&&(root.clientWidth<=1024||(window.matchMedia&&matchMedia('(pointer:coarse)').matches));}
+function bubbleZoom(){return smallScreen()?14:13;}
 const BUBBLES_ON=!KIDS&&new URLSearchParams(location.search).get('bubbles')!=='0';
 const COUNTS={bus:null,rail:null,asked:-1};
 const BUBBLE_WORD={bus:['bus','buses'],rail:['train','trains']};
 let bubbleSig='';
 const bubbleBox=document.createElement('div');bubbleBox.className='bubble-layer';markerLayer.append(bubbleBox);
 async function fetchCounts(){
-  if(!BUBBLES_ON||!map||map.getZoom()>=BUBBLE_BELOW_ZOOM)return;
+  if(!BUBBLES_ON||!map||map.getZoom()>=bubbleZoom())return;
   const slot=Math.floor(serverNow()/10000);if(COUNTS.asked===slot)return;COUNTS.asked=slot;
   await Promise.all(BUBBLE_LAYERS.map(async id=>{
     try{const c=await tileJSON(`/tiles/${id}/counts.json?r=${slot}`,4000,true);
@@ -1643,7 +1650,7 @@ async function fetchCounts(){
 }
 setInterval(fetchCounts,2000);setTimeout(fetchCounts,300);
 function countsFresh(id){const c=COUNTS[id];return !!c&&serverNow()/1000-c.at<=60;}
-function bubbleLayer(id){return BUBBLES_ON&&!!map&&map.getZoom()<BUBBLE_BELOW_ZOOM&&BUBBLE_LAYERS.includes(id)&&countsFresh(id);}
+function bubbleLayer(id){return BUBBLES_ON&&!!map&&map.getZoom()<bubbleZoom()&&BUBBLE_LAYERS.includes(id)&&countsFresh(id);}
 function bubblesShowing(){return BUBBLE_LAYERS.some(bubbleLayer);}
 // while its town bubbles show, a layer's vehicles are not downloaded at all (the browser's biggest saving zoomed out) -
 // unless one of them is chosen or followed, which stays on the map
@@ -1757,7 +1764,7 @@ function drawBubbles(ox,oy){
     btn.append(el('span','',words.join(' · ')));
     btn.setAttribute('aria-label',(title?title+': ':'')+words.join(' and ')+'. Zoom in to see each one.');
     btn.title='Zoom in to see each one';
-    btn.onclick=ev=>{ev.stopPropagation();bubbleTipDone();stopFollow();map.setView([g.lat,g.lon],BUBBLE_BELOW_ZOOM);};
+    btn.onclick=ev=>{ev.stopPropagation();bubbleTipDone();stopFollow();map.setView([g.lat,g.lon],bubbleZoom());};
     out.push(btn);}
   // 4.68.0 (tester, 17 Nov 16:09: "I had to try clicking the label to discover what it did"; Rob chose a one-time tip):
   // the first time bubbles show (welcome closed), a short tip under the biggest one on screen, once per browser
@@ -2286,6 +2293,33 @@ function welcomeParade(){
   return strip;
 }
 let lastFocus=null;
+// 4.75.0 (Rob 18 Nov 2026 00:44: "a suggestions box that people can either anonymously write, or be directed to our email"):
+// a short form, saved on our server with no name needed (POST /api/v4/suggest), plus an "email us" link for a reply.
+// Spam guard: a hidden field people never fill in, and the form must have been open a few seconds.
+function buildSuggest(){
+  const {back,card}=makeDialog('tpa-suggest','Got an idea? Tell us');card.classList.add('suggest-card');
+  const intro=el('p','suggest-text','Ideas, likes, dislikes or something that looks wrong: we read everything. No name needed.');
+  const kind=el('select','suggest-kind');kind.setAttribute('aria-label','What is it about?');
+  for(const [v,t] of [['idea','An idea'],['problem','Something looks wrong'],['other','Something else']]){const o=el('option','',t);o.value=v;kind.append(o);}
+  const text=el('textarea','suggest-box');text.maxLength=1000;text.rows=5;text.placeholder='Type here…';text.setAttribute('aria-label','Your suggestion');
+  const trap=el('input','suggest-trap');trap.type='text';trap.tabIndex=-1;trap.autocomplete='off';trap.setAttribute('aria-hidden','true');trap.name='website';
+  const status=el('p','suggest-status');status.setAttribute('role','status');
+  const send=el('button','tip-button suggest-send','Send');send.type='button';
+  let opened=0;
+  send.onclick=async()=>{const t=text.value.trim();if(t.length<3){status.textContent='Please type a little more first.';return;}
+    send.disabled=true;status.textContent='Sending…';
+    try{const r=await fetch('/api/v4/suggest',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({kind:kind.value,text:t.slice(0,1000),website:trap.value,openMs:Math.round(performance.now()-opened)})});
+      if(r.ok){text.value='';status.textContent='Thank you! It has reached us.';}
+      else status.textContent=r.status===429?'Thanks, we have plenty from you for now. Please try again later.':'Sorry, that didn\'t send. Please try again, or email us.';}
+    catch(_){status.textContent='Sorry, that didn\'t send. Please try again, or email us.';}
+    send.disabled=false;};
+  const mail=el('a','tpa-link-button suggest-mail','Or email us if you would like a reply');mail.href='mailto:enquiries@tpalive.co.uk?subject=TPA%20suggestion';
+  const close=el('button','tpa-link-button support-close','Close');close.type='button';close.onclick=()=>closeDialog(back);
+  card.append(intro,kind,text,trap,send,status,mail,close);
+  back.addEventListener('tpa-open',()=>{opened=performance.now();});
+  return back;
+}
 function makeDialog(id,title){
   const back=el('div','tpa-dialog-back hidden');back.id=id;
   const card=el('div','tpa-dialog');card.setAttribute('role','dialog');card.setAttribute('aria-modal','true');
@@ -2352,6 +2386,8 @@ function buildWelcome(w,tip,credits){
   // on the right - and smaller type throughout.
   const cols=el('div','welcome-cols'),main=el('div','welcome-main'),side=el('div','welcome-side');cols.append(main,side);card.append(cols);
   for(const line of (Array.isArray(w?.lines)?w.lines.slice(0,8):[])){const t=str(line,300);if(t)main.append(el('p','tpa-dialog-line',t));}
+  // 4.75.0 (Rob 18 Nov 00:47): a quick note, on phones and tablets only
+  if(smallScreen())main.append(el('p','welcome-device-note',"TPA works best on a computer, where there's room to see everything. Phones and tablets work well too, with a little less detail on screen, and we're making them even better."));
   for(const sec of (Array.isArray(w?.sections)?w.sections.slice(0,4):[])){
     const head=str(sec?.heading,60),items=(Array.isArray(sec?.items)?sec.items.slice(0,6):[]).map(t=>str(t,240)).filter(Boolean);
     if(!head||!items.length)continue;
@@ -2522,7 +2558,12 @@ async function loadSiteConfig(){
   const support=KIDS?null:buildSupport(cfg.tip,cfg.support);
   // 4.74.0 (launch, Rob 18 Nov 2026 01:24-01:26): the plain-English privacy page
   const privacyLink=KIDS?null:el('a','tpa-link-button','Privacy');if(privacyLink){privacyLink.href='/privacy';privacyLink.target='_blank';privacyLink.rel='noopener';privacyLink.id='privacy-link';}
-  about.append(...[title,support?null:tipControl(cfg.tip),creditsBtn,welcomeBtn,privacyLink].filter(Boolean));
+  // 4.75.0 (tidy-up after launch, Rob 18 Nov 01:50): the help guide and the suggestions box
+  const helpLink=KIDS?null:el('a','tpa-link-button','How to use TPA');if(helpLink){helpLink.href='/help';helpLink.target='_blank';helpLink.rel='noopener';helpLink.id='help-link';}
+  const suggest=KIDS?null:buildSuggest();
+  const suggestBtn=suggest?el('button','tpa-link-button','Got an idea? Tell us'):null;
+  if(suggestBtn){suggestBtn.type='button';suggestBtn.id='suggest-button';suggestBtn.onclick=()=>{suggest.dispatchEvent(new Event('tpa-open'));openDialog(suggest);};}
+  about.append(...[title,support?null:tipControl(cfg.tip),helpLink,suggestBtn,creditsBtn,welcomeBtn,privacyLink].filter(Boolean));
   $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
   if(support){const entry=el('button','support-entry','☕ '+(str(cfg.support?.entry,30)||'Support TPA'));entry.type='button';entry.id='support-button';
     entry.setAttribute('aria-haspopup','dialog');entry.onclick=()=>openDialog(support);
