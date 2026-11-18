@@ -216,7 +216,14 @@ class FreshEngine{
         if(pr.dist<=P.continuityM){d={...d,key:path.key,m:pr.m,aheadSince:null};B.switched=true;}else{d=null;hop=true;why='new path ('+(B.prevKind||'?')+'>'+path.kind+')';}
       }
       B.prevKind=path.kind;
-      if(!d){d={key:path.key,m:tg.m,v:tg.v,aheadSince:null,pos:null};B.d=d;d.pos=path.line.at(d.m);d.jump=hop;d.how=tg.how;if(hop&&!this.planning)this.stats.hops[why]=(this.stats.hops[why]||0)+1;continue;}
+      // 1.2 (HQ 4.78.0, Rob 18 Nov 04:17, Birmingham: "Buses took over 20 seconds before they started to move"; a 707 coach
+      // stood 42 s): a bus with no timetable line (it follows the roads, or a straight step) was first drawn AT its newest
+      // report, with nothing ahead to drive along, so it stood until the next report came in. It now starts at its report
+      // before that and drives on to the newest at its own pace - where it would be anyway had the page been open a while.
+      let m0=tg.m;
+      if(!d&&!path.predictive&&path.fx.length>=2){const mp=path.fx[path.fx.length-2][1],mn=path.fx[path.fx.length-1][1];
+        if(mn-mp>1&&mn-mp<=P.jumpGap&&!path.hops.some(([a,b])=>a<mn&&b>mp))m0=mp;}
+      if(!d){d={key:path.key,m:m0,v:m0<tg.m?Math.min(P.vmaxAbs,tg.glideV||0):tg.v,aheadSince:null,pos:null};B.d=d;d.pos=path.line.at(d.m);d.jump=hop;d.how=tg.how;if(hop&&!this.planning)this.stats.hops[why]=(this.stats.hops[why]||0)+1;continue;}
       B.d=d;d.jump=false;
       let goal=tg.m;
       // a stretch it can't be drawn along: go up to its start, then fade across
