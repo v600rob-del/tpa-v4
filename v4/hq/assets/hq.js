@@ -1647,7 +1647,10 @@ function bubbleSkips(id){const skip=bubbleLayer(id)&&state.selected?.component!=
 // was the empty bubble one, which "covered" the bigger zoomed-out view, so zooming in asked for nothing until the next 10 s
 // round. A layer that was in bubbles is asked again as soon as it leaves them.
 const BUBBLE_SKIPPED=Object.create(null);
-function bubbleQuiet(id){return BUBBLE_QUIET.includes(id)&&bubblesShowing();}
+// 4.73.0 (tester 17 Nov ~19:30: the close-up round York station was too busy; Rob 18 Nov 00:19 "all"): bus stop icons wait
+// for zoom 15 (stations and bus stations still show from 13); a chosen stop stays
+const STOPS_FROM_ZOOM=15;
+function bubbleQuiet(id){if(id==='stops'&&BUBBLES_ON&&map&&map.getZoom()<STOPS_FROM_ZOOM)return true;return BUBBLE_QUIET.includes(id)&&bubblesShowing();}
 function countInView(id){
   const c=COUNTS[id];if(!c||!map)return 0;const b=map.getBounds(),S=b.getSouth(),N=b.getNorth(),W=b.getWest(),E=b.getEast();let n=0;
   for(const [r,col,k] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(lat>=S&&lat<=N&&lon>=W&&lon<=E)n+=k;}
@@ -2126,14 +2129,24 @@ let stationAsk=0,stationTimer=0;
 // list stayed open after a choice): "Searching…" until the stations have answered, and the list closes once one is chosen.
 function stationSearchable(){return ['busstations','stations'].some(c=>state.live[c]&&!state.parked[c]&&state.visible[c]);}
 function closeResults(){stationAsk++;clearTimeout(stationTimer);$('target-list').replaceChildren();}
+// 4.73.0 (17 Nov 22:45: "Hull Paragon" found nothing - the station list calls it "Hull"): people type the name they know,
+// often with extra words. If the full words find nothing, try again without "station"/"railway"/"interchange"-type words,
+// then with the last word dropped, one at a time (never below one real word); "kings" also tried as "king's".
+function searchVariants(q){const out=[q],add=v=>{v=v.replace(/\s+/g,' ').trim();if(v.length>=2&&!out.includes(v))out.push(v);};
+  add(q.replace(/\b([a-z]{2,}[^s\W])s\b/g,"$1's"));   // "kings cross" -> "king's cross"
+  const plain=q.replace(/\b(railway|rail|train|bus|coach)?\s*(station|stn|interchange)\b/g,' ').replace(/\b(the|railway)\b/g,' ');add(plain);
+  let w=plain.replace(/\s+/g,' ').trim().split(' ');while(w.length>1){w=w.slice(0,-1);if(w.join(' ').length>=3)add(w.join(' '));}
+  return out.slice(0,5);}
 function stationSearch(q){clearTimeout(stationTimer);const ask=++stationAsk;
   if(q.length<2)return;
   stationTimer=setTimeout(async()=>{
     const out=$('target-list');let found=false;
     for(const [comp,word] of [['busstations','Bus station'],['stations','Station']]){
     if(!state.live[comp]||state.parked[comp]||!state.visible[comp])continue;
-    try{const r=await fetch('/api/v4/components/'+comp+'/search?q='+encodeURIComponent(q.slice(0,60)));if(!r.ok)continue;
-      const d=await r.json();if(ask!==stationAsk)return;if(!Array.isArray(d.results)||!d.results.length)continue;
+    try{let d=null;
+      for(const v of searchVariants(q)){const r=await fetch('/api/v4/components/'+comp+'/search?q='+encodeURIComponent(v.slice(0,60)));if(!r.ok)break;
+        d=await r.json();if(ask!==stationAsk)return;if(Array.isArray(d.results)&&d.results.length)break;}
+      if(!d||!Array.isArray(d.results)||!d.results.length)continue;
       found=true;out.querySelector('p.empty')?.remove();out.querySelectorAll('.station-result.'+comp).forEach(n=>n.remove());
       const first=out.firstChild;
       for(const x of d.results.slice(0,8)){
