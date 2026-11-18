@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.7.0'
+ENGINE_VERSION = '1.7.1'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -2245,7 +2245,10 @@ def publish_round() -> dict:
         add(entity, (t['lat'], t['lon']), stretch_box(t), False)
     for b in booked_now:
         add(timetable_entity(b, now), b['at'], timetable_box(b), True)
-    live = {id(r) for r in ROUTES.values() if r}
+    # 1.7.1 (Rob's copy-back 18 Nov 16:37: "ERROR RuntimeError: dictionary changed size during iteration"): route_loop adds
+    # routes under LOCK, so they are read under LOCK too (a route landing mid-read failed the whole round)
+    with LOCK:
+        live = {id(r) for r in ROUTES.values() if r}
     for k in [k for k in THINNED if k not in live]:
         del THINNED[k]
     for k in [k for k in ITEM_MEMO if k not in seen]:
