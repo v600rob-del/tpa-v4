@@ -169,9 +169,11 @@ class Picker:
             for n in NATIONS:
                 cur = picks.get(n)
                 if cur and cur.get('id') in live:
-                    cur['seen'] = now
-                    continue
-                if cur and now - float(cur.get('seen', 0)) < KEEP_MISSING:
+                    if nation(*live[cur['id']]) == n:
+                        cur['seen'] = now
+                        continue
+                    # 4.91.0 (Rob 18 Nov 19:37): it has left its nation (a coach to or from Belfast): choose again there
+                elif cur and now - float(cur.get('seen', 0)) < KEEP_MISSING:
                     continue                                   # not in the files just now; give it time
                 if n in best:
                     picks[n] = {'id': best[n][1], 'seen': now, 'since': now}
