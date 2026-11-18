@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.26.0'
+ENGINE_VERSION = '0.26.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -187,7 +187,7 @@ ROADS = {'map': None, 'licence': '', 'source': ''}
 # route needed ~3,200 road-map squares at once; with 350 kept, 93% of "road legs" time (~36 of every 60
 # processor-seconds in the daytime) went on fetching squares again and again - 9.04 ms a drive against 0.56 ms at 800 MB
 # (0.65 at 600, 3.29 at 400, 0.53 with everything kept). The least recently used squares are still thrown out at the limit.
-ROAD_MEMORY_MB = max(20, int(os.environ.get('TPA_BUS_ROAD_CACHE_MB', '800') or 800))
+ROAD_MEMORY_MB = max(20, int(os.environ.get('TPA_BUS_ROAD_CACHE_MB', '1600') or 1600))   # 0.26.1: was 800 (full all day; py-spy 18 Nov 17:44: re-reading thrown-out road pieces = 17% of publishing). Estimate errs 10-25% high; bus engine ~3.7 GB of its 6 GB with 800
 PATHS: dict = {}             # bus key -> (report time, motion or None)
 PLACED: dict = {}            # 0.5.7: bus key -> (report time, [lon, lat] on its road, or None)
 KEEP_LEFT_M = 2.0            # 0.5.7: buses drawn on the left-hand side of two-way roads (UK traffic keeps left)
@@ -1512,10 +1512,16 @@ def _folder(path: Path) -> Path:
     return path
 
 
+# 0.26.1 (Rob 18 Nov 17:44, py-spy on the live engine at the evening peak): compressing the bus files was 14% of all
+# publishing time (gzip level 6, 4,500-8,000 changed files a round). Level 1: about 3.3x faster on a 700 KB London file,
+# packed about 15% bigger - fine for Cloudflare and visitors. Setting: TPA_BUS_TILE_GZIP (1-9).
+TILE_GZIP_LEVEL = min(9, max(1, int(os.environ.get('TPA_BUS_TILE_GZIP', '1') or 1)))
+
+
 def _tile_write(path: Path, text: str) -> int:
     """Write path and path.gz in full, then swap them in (a visitor never gets half a file). Bytes packed."""
     raw = text.encode('utf-8')
-    packed = gzip.compress(raw, 6, mtime=0)
+    packed = gzip.compress(raw, TILE_GZIP_LEVEL, mtime=0)
     for target, data in ((path, raw), (path.with_name(path.name + '.gz'), packed)):
         tmp = target.with_name('.' + target.name + '.tmp')
         with open(tmp, 'wb') as fh:
@@ -3756,6 +3762,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'lastFetchSeconds': TIMING['fetch'], 'roadPathMs': TIMING['pathMs'],
                                         'roadCacheMB': round(ROADS['map'].bytes / 1e6) if ROADS['map'] else 0,
                                         'roadCacheLimitMB': round(ROADS['map'].max_bytes / 1e6) if ROADS['map'] else 0,
+                                        'roadTileLoads': ROADS['map'].tile_loads if ROADS['map'] else 0,   # 0.26.1: road pieces read from disk since start (fewer = the memory is big enough)
                                         'measure': measure_summary(STATE['vehicles'], now),
                                         'timetable': STATE.get('timetable'), 'timetableDetail': STATE.get('timetableDetail'),
                                         'timetableUpdate': STATE.get('timetableUpdate'), 'timetableError': STATE.get('timetableError'),
