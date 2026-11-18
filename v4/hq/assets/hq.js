@@ -113,7 +113,9 @@ ctx.fillStyle='#e8eeea';for(const shape of state.geo.land){if(shape.length<3)con
 ctx.strokeStyle='#86acb1';ctx.lineWidth=1;for(const seg of state.geo.coastlines){ctx.beginPath();seg.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.stroke();}
 for(const [name,lon,lat] of POI){const [x,y]=pixel(lon,lat);if(x<0||x>w||y<0||y>h)continue;if(state.z<7&&!['Beverley','Hull','York','Leeds','London','Edinburgh','Glasgow','Cardiff','Belfast'].includes(name))continue;ctx.font='600 12px system-ui';ctx.strokeStyle='#e8eeea';ctx.lineWidth=3;ctx.strokeText(name,x+5,y-5);ctx.fillStyle='#2b555c';ctx.fillText(name,x+5,y-5);}}
 // 4.34.0 (owner 10 Nov 22:32: "a button to filter between normal and just military, or both"); kept in this browser
-let airShow=(()=>{try{const v=localStorage.getItem('tpa-air-show');return ['all','normal','military','services'].includes(v)?v:'all';}catch(_){return 'all';}})();
+// 4.83.0 (Rob 18 Nov 10:30, ticked: a visitor who once chose "Military" saw only a few planes on every later visit): the
+// planes filter is no longer remembered; every visit starts on All (an old remembered choice is removed).
+let airShow='all';try{localStorage.removeItem('tpa-air-show');}catch(_){}
 // 4.35.0 (owner 23:21): police / air ambulance / coastguard under a filter of their own, and in "All" (and Non-military)
 function isMilitary(e){return e.variant==='military'||(typeof e.variant==='string'&&e.variant.startsWith('mil-'));}
 function isService(e){return typeof e.variant==='string'&&/^(police|ambulance|coastguard)(-plane)?$/.test(e.variant);}
@@ -141,6 +143,22 @@ function listEntities(){return IDS.flatMap(id=>{
 // The selected or followed vehicle never fades away (its box stays useful); it keeps searching.
 const LATE={},LATE_GRACE_MS=Number(window.TPA_HQ_TEST_LATE_GRACE_MS)||120000,SEARCH_MS=Number(window.TPA_HQ_TEST_SEARCH_MS)||60000,SEARCHING=new Map();let GONE=new Set();   // (the TEST values: tests only)
 window.TPA_HQ_SEARCHING=()=>({searching:[...SEARCHING.keys()].filter(k=>!GONE.has(k)),gone:[...GONE],late:{...LATE}});
+// 4.83.0 (Rob ticked 18 Nov 10:30): a train at the end of its journey has simply arrived - no "checking for its latest
+// update" or "stale" for it
+// 4.83.0 (Rob ticked 18 Nov 10:30 "Hide non-UK buses"): National Express's Dublin coaches come through the same national
+// feed. Only the island of Ireland needs a test: there, only Northern Ireland (a rough outline) is the UK.
+const NI_OUTLINE=[[-5.43,54.40],[-5.45,55.25],[-6.10,55.40],[-6.95,55.25],[-7.25,55.08],[-7.40,54.95],[-7.55,54.75],[-7.90,54.70],
+  [-8.17,54.47],[-7.85,54.21],[-7.55,54.12],[-7.25,54.20],[-7.00,54.40],[-6.65,54.07],[-6.27,54.10],[-6.10,54.00],[-5.90,54.05]];
+function inUK(lon,lat){
+  if(!(lon<-5.9&&lat>51.3&&lat<55.45)||(lon>-6.0&&lat>55.2))return true;   // not the island of Ireland (Kintyre, Cornwall, Wales stay)
+  let inside=false;for(let i=0,j=NI_OUTLINE.length-1;i<NI_OUTLINE.length;j=i++){const [xi,yi]=NI_OUTLINE[i],[xj,yj]=NI_OUTLINE[j];
+    if((yi>lat)!==(yj>lat)&&lon<(xj-xi)*(lat-yi)/(yj-yi)+xi)inside=!inside;}
+  return inside;
+}
+// 4.83.0 (Rob ticked "No stop letters in titles"): "Bus 14 to City Square F" -> "Bus 14 to City Square" (the box still says
+// which stop); a letter, a letter and number, or "Stand C" at the very end
+function busTitle(l){const s=String(l||'Bus').slice(0,160),m=s.match(/^(.* to .+?)\s+(?:(?:Stand|Stop|Bay)\s+)?[A-Z]{1,2}\d{0,2}$/);return m?m[1]:s;}
+function finishedTrain(e){return !!e&&e.component==='rail'&&/ · terminated at /.test(String(e.label||''));}
 function isLost(e){const own=e.layerLate===undefined?e.quality:e.ownQuality;return own==='stale'||(e.layerLate!==undefined&&e.layerLate>LATE_GRACE_MS);}
 // 4.72.1 (Rob 17 Nov 23:47, Hull: "as soon as i opened I have pulsing" - a train that had finished at Hull, a train being carried
 // on to Cottingham, a quiet bus): only a vehicle that is SITTING STILL with old information searches. One that has finished
@@ -806,14 +824,14 @@ function infoText(e,est){
   if(e.component==='stations')return 'Railway station'+(e.badge?' · code '+e.badge:'');   // 4.52.0
   if(e.component==='stops')return 'Bus stop'+(e.badge?' '+e.badge:'')+' · live times where buses are seen';   // 4.53.0
   if(e.component==='busstations')return ({coach:'Coach station',interchange:'Interchange'}[e.variant]||'Bus station')+' · live times where buses are seen';   // 4.54.0
-  if(e.motion&&e.motion.mode==='timed'&&e.motion.fresh)return 'Approx position from its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.62.0 test modes; 4.77.0 (owner 18 Nov 03:58): "approx position from last doodah" reads friendlier than "About here now"
-  if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'Approx position from its timetable and its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.61.0
-  if(e.motion&&e.motion.mode==='timed'&&!e.motion.delay)return 'Approx position from its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.64.0 (N1, no line ahead)
-  if(e.motion&&e.motion.mode==='timed')return 'Approx position from its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');
+  if(e.motion&&e.motion.mode==='timed'&&e.motion.fresh)return 'Approx position from its last report at '+seen+(e.quality==='stale'&&!finishedTrain(e)?' · checking for its latest update':'');   // 4.62.0 test modes; 4.77.0 (owner 18 Nov 03:58): "approx position from last doodah" reads friendlier than "About here now"
+  if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'Approx position from its timetable and its last report at '+seen+(e.quality==='stale'&&!finishedTrain(e)?' · checking for its latest update':'');   // 4.61.0
+  if(e.motion&&e.motion.mode==='timed'&&!e.motion.delay)return 'Approx position from its last report at '+seen+(e.quality==='stale'&&!finishedTrain(e)?' · checking for its latest update':'');   // 4.64.0 (N1, no line ahead)
+  if(e.motion&&e.motion.mode==='timed')return 'Approx position from its last report at '+seen+(e.quality==='stale'&&!finishedTrain(e)?' · checking for its latest update':'');
   // 4.77.0 (owner 18 Nov 03:59: "same rule for planes and trains"): every carried-on position reads "Approx position from its last report at ..."
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
-  if(est)return 'Approx position from its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');
-  return (e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · checking for its latest update':'');
+  if(est)return 'Approx position from its last report at '+seen+(e.quality==='stale'&&!finishedTrain(e)?' · checking for its latest update':'');
+  return (e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'&&!finishedTrain(e)?' · checking for its latest update':'');
 }
 // Phone-sized screens show at most this many vehicles per layer (engines already send the
 // ones nearest the middle of the view first); hundreds of overlapping icons can't be read.
@@ -920,7 +938,8 @@ function markers(){
       if(svg&&svg.style.transform!==rot)svg.style.transform=rot;}
     if(b.className!==cls)b.className=cls;
     if(pos.hop){b.classList.remove('hop');void b.offsetWidth;b.classList.add('hop');}
-    const title=prefix+e.label+' · '+(pos.est?'estimated position':e.quality);
+    // 4.83.0: plain words on hover ("stale" was an internal word; a finished train has arrived)
+    const title=prefix+e.label+' · '+(finishedTrain(e)?'arrived':pos.est?'estimated position':e.quality==='stale'?'waiting for its next report':e.quality==='observed'?'reported position':'estimated position');
     if(b.title!==title){b.title=title;b.setAttribute('aria-label',prefix+e.label+' '+(pos.est?'estimated position':e.quality)+(active?' selected':''));}
     if(b.getAttribute('aria-pressed')!==String(active))b.setAttribute('aria-pressed',String(active));
     // Moved with a transform (no page re-layout), which phones handle on the graphics chip.
@@ -1809,7 +1828,7 @@ function drawBubbles(ox,oy){
   places=bubblePlaces(places,z);
   const groups=new Map();
   for(const id of BUBBLE_LAYERS){if(!bubbleLayer(id)||!state.visible[id])continue;const c=COUNTS[id];
-    for(const [r,col,n] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(!inside(lat,lon)||!(n>0))continue;
+    for(const [r,col,n] of c.c){const lat=(r+0.5)*c.cell,lon=(col+0.5)*c.cell;if(!inside(lat,lon)||!(n>0)||!inUK(lon,lat))continue;
       let best=nearestPlace(lat,lon,places),near='';
       // 4.70.0 (Rob chose 17 Nov 19:11): a square too far from any place to be its own is "near" the nearest one
       if(best&&kmApart(lat,lon,best.lat,best.lon)>bubbleReach(z)){near=best.name;best=null;}
@@ -1828,8 +1847,16 @@ function drawBubbles(ox,oy){
       if(g.name&&moreImportant(g,near)){near.name=g.name;near.city=g.city;near.rank=g.rank;near.lat=g.lat;near.lon=g.lon;near.x=g.x;near.y=g.y;}
       continue;}
     kept.push(g);}
+  // 4.83.0 (Rob ticked "One bubble per name": "near Edinburgh" showed 3 times at the UK view): bubbles with the same name
+  // within 120 km of each other are one bubble (the bigger keeps its place; a tap goes to the middle of all of them)
+  const merged=[],byTitle=new Map();
+  for(const g of kept){const t=g.name||(g.near?'near '+g.near:'');
+    const c0=g.ww>0?[g.wl/g.ww,g.wn/g.ww]:[g.lat,g.lon],k=t?(byTitle.get(t)||[]).find(o=>kmApart(c0[0],c0[1],o.c[0],o.c[1])<=120):null;
+    if(k){k.g.bus+=g.bus;k.g.rail+=g.rail;k.g.wl+=g.wl;k.g.wn+=g.wn;k.g.ww+=g.ww;continue;}
+    if(t){if(!byTitle.has(t))byTitle.set(t,[]);byTitle.get(t).push({g,c:c0});}
+    merged.push(g);}
   const out=[];
-  for(const g of kept){
+  for(const g of merged){
     if(g.x<-80||g.y<-40||g.x>d.w+80||g.y>d.h+40)continue;
     const words=bubbleWords(g);if(!words.length)continue;
     const btn=document.createElement('button');btn.type='button';btn.className='town-bubble'+(g.bus+g.rail>=100?' big':'');
@@ -1908,6 +1935,7 @@ async function busTileFrame(){
   const inView=q=>q[1]>=w&&q[1]<=e&&q[2]>=s&&q[2]<=n,inArea=q=>q[1]>=W&&q[1]<=E&&q[2]>=S&&q[2]<=N;
   const cy=(s+n)/2,cx=(w+e)/2,chosen=[];let onScreen=0;
   for(const it of items.values()){const p=Array.isArray(it.p)?it.p:[];if(!p.length)continue;const last=p[p.length-1];
+    if(!inUK(last[1],last[2]))continue;   // 4.83.0
     const recent=now-dOf(it)-120,followed=!!(follow&&follow.comp==='bus'&&it.i===follow.id);
     const seen=inView(last)||p.some(q=>q[0]>=recent&&inView(q))||followed;   // 4.64.2: never drop the followed bus
     if(!seen&&!(inArea(last)||p.some(q=>q[0]>=recent&&inArea(q))))continue;
@@ -1974,7 +2002,7 @@ async function busTileFrame(){
       BUS_MOTION.now.set(it.i,{london,kind,marks:fr?tr.marks:null,r:!fr&&kind==='route'?it.r:null,d:delay,s:it.s||''});
       const k=(london?'london':'elsewhere')+' '+kind+(fr?' fresh':' replay');BUS_MOTION.buses[k]=(BUS_MOTION.buses[k]||0)+1;BUS_MOTION.points+=tr.points.length;}
     const r6=v=>Math.round(v*1e6)/1e6,pos=tr.position;
-    frame.entities.push({id:it.i,label:String(it.l||'Bus').slice(0,160),badge:it.b||null,
+    frame.entities.push({id:it.i,label:busTitle(it.l),badge:it.b||null,
       position:{lon:r6(pos[0]),lat:r6(pos[1]),headingDeg:null},quality:now-it.o>300?'stale':'observed',observedAt:iso(it.o),
       motion:{mode:'timed',points:tr.points.map(q=>[r6(q[0]),r6(q[1])]),times:tr.times,delaySeconds:fc||fr||n1d?0:delay,forecast:fc,fresh:fr}});}
   if(BUS_MOTION.mode){BUS_MOTION.frames++;BUS_MOTION.ms+=performance.now()-t0;}
@@ -2704,7 +2732,7 @@ async function loadSiteConfig(){
 if(!KIDS)ownIconsInPage();
 for(const b of document.querySelectorAll('.air-filter button')){
   b.setAttribute('aria-pressed',String(b.dataset.air===airShow));
-  b.addEventListener('click',()=>{airShow=b.dataset.air;try{localStorage.setItem('tpa-air-show',airShow);}catch(_){}
+  b.addEventListener('click',()=>{airShow=b.dataset.air;
     for(const o of document.querySelectorAll('.air-filter button'))o.setAttribute('aria-pressed',String(o===b));paint();});}
 paint();discover();beginMap();setInterval(discover,30000);
 // 4.0.11: also check every 10 s, but only while a live layer is still connecting.

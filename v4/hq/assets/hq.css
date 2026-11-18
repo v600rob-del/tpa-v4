@@ -523,7 +523,7 @@ html:not(.kids-view) body.credits-open .map-bottom>.map-credit{display:block;pos
   max-width:min(92vw,560px);white-space:normal;text-align:right;line-height:1.45;cursor:pointer}
 
 /* 4.67.0 (Rob 16-17 Nov): town bubbles below zoom 13 - one per town, "Leeds · 312 buses · 48 trains"; tap to zoom in */
-.bubble-layer{position:absolute;left:0;top:0;width:0;height:0}   /* before the icons, so planes stay on top */
+.bubble-layer{position:absolute;left:0;top:0;width:0;height:0;z-index:4}   /* 4.83.0 (Rob ticked): town bubbles above the planes */
 .marker-layer.zoom-anim .bubble-layer{opacity:0}
 .town-bubble{position:absolute;left:0;top:0;pointer-events:auto;display:flex;flex-direction:column;align-items:center;gap:1px;
   padding:5px 10px;border-radius:13px;background:#0b1626ee;border:1.5px solid #2fc7b5;color:#fff;cursor:pointer;white-space:nowrap;
@@ -593,3 +593,5 @@ body:has(.tpa-dialog-back:not(.hidden)) .menu-tab{visibility:hidden}
 }
 /* 4.81.0 (Rob 18 Nov 06:05): an empty search list takes no room */
 .target-list:empty{display:none}.search-panel:has(.target-list:empty){flex:0 0 auto;min-height:0}
+/* 4.83.0 (Rob ticked "Taller search list"): results get room for about 7 before scrolling */
+.search-panel{flex:0 0 auto;min-height:0}.target-list:not(:empty){min-height:230px;max-height:330px}
