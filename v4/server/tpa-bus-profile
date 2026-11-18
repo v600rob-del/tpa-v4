@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""tpa-bus-profile - LOOK-ONLY: where the bus engine spends its processor time (Rob 18 Nov 2026, 17:34: "definitely
+number 1 for now").
+
+Why: at the evening peak most bus publishing rounds take 3-4 s, but the round after each download takes about 20 s,
+so the map sometimes waits ~20 s for fresh buses. The engine's own tallies leave ~13,000 of ~20,000 publishing
+processor-seconds unexplained (forecasts, town paths, writing files). This samples the running engine to split them.
+
+What it does:
+1. If py-spy (a well-known read-only Python sampler) is not installed, fetches the official wheel for this machine
+   from PyPI, checks its SHA-256, and puts the single py-spy program in /usr/local/bin. (Remove: sudo rm /usr/local/bin/py-spy)
+2. Samples tpa-bus for 60 s, 50 times a second, with --nonblocking: the engine is never paused or changed.
+3. Prints a short summary between COPY BACK markers.
+
+Run on the server (needs sudo for sampling):
+  curl -fsSL https://raw.githubusercontent.com/v600rob-del/tpa-v4/<commit>/v4/server/tpa-bus-profile | sudo python3 -
+"""
+import collections
+import hashlib
+import io
+import json
+import os
+import platform
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+import zipfile
+
+SECONDS = 60
+RATE = 50
+# The parts of a publishing round, in the order they are called (bus_engine.py 0.26.0)
+PARTS = [
+    ('bus_item', 'making each bus\'s map entry (all of the below)'),
+    ('follow_bus', 'placing a new report on its route (matching)'),
+    ('forecast_knots', 'journey forecast set-up (once a journey)'),
+    ('bus_forecast', 'forecast for the street view'),
+    ('town_path', 'forecast for the town view (added 18 Nov)'),
+    ('keep_recent', 'recent reports kept'),
+    ('road_way', 'buses moved along roads (no timetable match)'),
+    ('_tiles_for', 'choosing which files a bus goes in'),
+    ('step_delay', 'per-bus delay'),
+    ('measure_off_route', 'off-route measuring (a sample)'),
+    ('unplaced_reason', 'why a bus was not placed'),
+    ('_tile_write', 'writing files'),
+    ('write_counts', 'counts file'),
+    ('dumps', 'turning entries into text (json)'),
+]
+
+
+def say(*a):
+    print(*a, flush=True)
+
+
+def install_py_spy():
+    spy = shutil.which('py-spy') or ('/usr/local/bin/py-spy' if os.path.exists('/usr/local/bin/py-spy') else None)
+    if spy:
+        return spy
+    say('Installing py-spy (look-only measuring tool) from PyPI ...')
+    arch = platform.machine()
+    meta = json.load(urllib.request.urlopen('https://pypi.org/pypi/py-spy/json', timeout=30))
+    ver = meta['info']['version']
+    wheels = [f for f in meta['releases'].get(ver, []) if f['filename'].endswith('.whl') and arch in f['filename']
+              and 'manylinux' in f['filename'] and 'musl' not in f['filename']]
+    if not wheels:
+        say(f'No py-spy {ver} for this machine ({arch}); nothing installed.')
+        return None
+    w = wheels[0]
+    data = urllib.request.urlopen(w['url'], timeout=120).read()
+    if hashlib.sha256(data).hexdigest() != w['digests']['sha256']:
+        say('Download check failed (SHA-256 mismatch); nothing installed.')
+        return None
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        member = next((n for n in z.namelist() if n.endswith('/scripts/py-spy') or n == 'py-spy'), None)
+        if not member:
+            say('py-spy program not found in the download; nothing installed.')
+            return None
+        with open('/usr/local/bin/py-spy', 'wb') as out:
+            out.write(z.read(member))
+    os.chmod('/usr/local/bin/py-spy', 0o755)
+    say(f'py-spy {ver} installed ({w["filename"]})')
+    return '/usr/local/bin/py-spy'
+
+
+def name_of(frame: str) -> str:
+    return frame.split(' (', 1)[0].strip()
+
+
+def summarise(lines):
+    stacks = []
+    for line in lines:
+        line = line.rstrip('\n')
+        if not line or ' ' not in line:
+            continue
+        stack, _, n = line.rpartition(' ')
+        if not n.isdigit():
+            continue
+        frames = [f for f in stack.split(';') if f]
+        stacks.append(([name_of(f) for f in frames], frames, int(n)))
+    total = sum(n for _, _, n in stacks)
+    if not total:
+        say('No samples were taken (was the bus engine running?).')
+        return
+    say(f'Samples: {total} (busy moments only; 50 a second for {SECONDS} s).')
+    say('')
+    say('Whole bus engine, busy time by job:')
+    jobs = [('publish_round', 'publishing files'), ('fetch_once', 'downloading buses'), ('add_motion', 'after download'),
+            ('measure_guesses', 'after download (measuring)'), ('road_legs', 'road legs (outside publishing)'),
+            ('snapshot', 'answers to visitors'), ('snapshot_fast', 'answers to visitors'), ('save_memory', 'saving'),
+            ('stop_board', 'stop boards'), ('station_board', 'station boards')]
+    by_job = collections.Counter()
+    for names, _, n in stacks:
+        job = next((label for fn, label in jobs if fn in names), 'other')
+        by_job[job] += n
+    for job, n in by_job.most_common():
+        say(f'  {100 * n / total:5.1f}%  {job}')
+    pub = [(names, frames, n) for names, frames, n in stacks if 'publish_round' in names]
+    ptotal = sum(n for _, _, n in pub)
+    say('')
+    if not ptotal:
+        say('No samples inside publishing.')
+        return
+    say(f'Inside publishing ({ptotal} samples), share of publishing time (parts can sit inside each other):')
+    for fn, label in PARTS:
+        n = sum(c for names, _, c in pub if fn in names)
+        if n:
+            say(f'  {100 * n / ptotal:5.1f}%  {fn:18s} {label}')
+    say('')
+    say('Inside publishing, the 15 busiest lines of code (where the time is actually spent):')
+    leaf = collections.Counter()
+    for names, frames, n in pub:
+        f = frames[-1]
+        fname, _, where = f.partition(' (')
+        leaf[f'{fname} ({os.path.basename(where.rstrip(")"))})'] += n
+    for f, n in leaf.most_common(15):
+        say(f'  {100 * n / ptotal:5.1f}%  {f}')
+    say('')
+    say('Inside publishing, the busiest functions including what they call (top 15, bus engine files only):')
+    incl = collections.Counter()
+    for names, frames, n in pub:
+        seen = set()
+        for f in frames:
+            fname, _, where = f.partition(' (')
+            base = os.path.basename(where.split(':', 1)[0])
+            if base.startswith(('bus_', 'forecast', 'road', 'replay', 'timetable')) and fname not in seen \
+                    and fname not in ('wrapped', 'publish_worker', 'publish_round'):
+                seen.add(fname)
+                incl[f'{fname} ({base})'] += n
+    for f, n in incl.most_common(15):
+        say(f'  {100 * n / ptotal:5.1f}%  {f}')
+
+
+def main():
+    say('===== COPY BACK FROM HERE =====')
+    try:
+        if os.geteuid() != 0:
+            say('Please run with sudo.')
+            return
+        spy = install_py_spy()
+        if not spy:
+            return
+        pid = subprocess.check_output(['systemctl', 'show', '-p', 'MainPID', '--value', 'tpa-bus'], text=True).strip()
+        if not pid or pid == '0':
+            say('The bus engine (tpa-bus) is not running; nothing measured.')
+            return
+        say(f'Sampling the bus engine (process {pid}) for {SECONDS} s without pausing it ...')
+        out = tempfile.NamedTemporaryFile(prefix='tpa-bus-profile-', suffix='.txt', delete=False).name
+        p = subprocess.Popen([spy, 'record', '--pid', pid, '--duration', str(SECONDS), '--rate', str(RATE),
+                              '--nonblocking', '--format', 'raw', '--output', out],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        for i in range(1, SECONDS // 10 + 1):
+            time.sleep(10)
+            if p.poll() is not None:
+                break
+            say(f'  ... {10 * i} of {SECONDS} seconds')
+        try:
+            _, err = p.communicate(timeout=60)
+        except subprocess.TimeoutExpired:
+            p.kill()
+            _, err = p.communicate()
+        if p.returncode not in (0, None) and not os.path.getsize(out):
+            say('py-spy stopped early: ' + (err or '').strip().splitlines()[-1:][0] if (err or '').strip() else 'py-spy stopped early.')
+            return
+        with open(out) as fh:
+            summarise(fh.readlines())
+        os.unlink(out)
+    except Exception as exc:  # look-only: report, never crash halfway without the markers
+        say(f'Stopped: {type(exc).__name__}: {exc}')
+    finally:
+        say('===== COPY BACK TO HERE =====')
+
+
+if __name__ == '__main__':
+    main()
