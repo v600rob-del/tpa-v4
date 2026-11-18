@@ -438,6 +438,17 @@ async function loadDetails(e,box){
     const keepScroll=[selected.scrollTop,box.querySelector('.board-list')?.scrollTop||0];
     box.replaceChildren(...rows);
     selected.scrollTop=keepScroll[0];const bl=box.querySelector('.board-list');if(bl)bl.scrollTop=keepScroll[1];
+    // 4.77.0: the small picture beside Follow me! is the same picture as the big one (kept, not rebuilt, when it is unchanged)
+    const th=selected.querySelector('.follow-thumb'),tp=box.querySelector('.detail-picture');
+    if(th){const img=tp?.querySelector('img'),svg=tp?.querySelector('svg'),key=img?img.getAttribute('src'):svg?'svg:'+(d.picture||''):'';
+      if(th.dataset.key!==key){th.dataset.key=key;th.replaceChildren();
+        if(img){const s2=document.createElement('img');s2.src=img.getAttribute('src');s2.alt='';s2.decoding='async';
+          s2.addEventListener('error',()=>{th.hidden=true;},{once:true});th.append(s2);}
+        else if(svg)th.append(svg.cloneNode(true));}
+      const plate=selected.querySelector('.follow-plate');
+      if(plate){const v=box.querySelector('.detail-value.plate')||[...box.querySelectorAll('.detail-label')].find(x=>/^(Number plate|Registration)$/.test(x.textContent.trim()))?.nextElementSibling;
+        const txt=(v?.textContent||'').trim();plate.textContent=txt;plate.hidden=!txt||txt.length>12||/not known/i.test(txt);plate.classList.toggle('air',e.component==='air');}
+      th.hidden=!key;th.className='follow-thumb '+e.component+(tp?.classList.contains('unknown')?' unknown':'')+(svg&&!img?' drawn':'');}
   }catch(err){}
   // the next stop changes as the vehicle moves: ask again while it stays selected (a station's board: every 30 s)
   detailsTimer=setTimeout(()=>{if(state.selected&&state.selected.id===e.id&&box.isConnected)loadDetails(e,box);},e.component==='stations'||e.component==='stops'||e.component==='busstations'?30000:20000);
@@ -600,7 +611,16 @@ function selectEntity(e){
   grab.onclick=ev=>{ev.stopPropagation();setOpen(!selected.classList.contains('open'));};setOpen(false);
   selected.classList.toggle('station-box',e.component==='stations'||e.component==='stops'||e.component==='busstations');   // 4.52.0: a wider box for a departure board
   // 4.71.0 (tester 17 Nov 19:30: "easy to miss ... a long way down"): Follow me! straight under the name
-  selected.replaceChildren(...[grab,h,info,fb,more,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
+  // 4.77.0 (owner 18 Nov 03:56, on his phone: "a small pic of the bus next to follow me would look nice"): a small copy of
+  // the vehicle's picture beside Follow me!, filled in when its details arrive. Shown on phones in the short panel only (the
+  // big picture is further down there); hidden when the panel is pulled up and the big one is in view.
+  $('toast')?.classList.add('hidden');   // 4.77.0: a note (such as the night note) never sits over the vehicle's panel
+  const frow=fb?el('div','follow-row'):null;
+  // 4.77.0 (owner 18 Nov 04:02: "one of the most wow bits of info is the registration number"): the number plate (a plane's
+  // registration) under the small picture, when it is known
+  if(frow){const fp=el('span','follow-pic'),th=el('span','follow-thumb'),pl=el('span','follow-plate');th.hidden=true;pl.hidden=true;
+    th.setAttribute('aria-hidden','true');fp.append(th,pl);frow.append(fb,fp);}
+  selected.replaceChildren(...[grab,h,info,frow,more,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
   if(isPhone())requestAnimationFrame(()=>keepAboveSheet(e));
   $('map-place').textContent=e.label.toUpperCase();paint();
   loadDetails(e,more);
@@ -786,12 +806,13 @@ function infoText(e,est){
   if(e.component==='stations')return 'Railway station'+(e.badge?' · code '+e.badge:'');   // 4.52.0
   if(e.component==='stops')return 'Bus stop'+(e.badge?' '+e.badge:'')+' · live times where buses are seen';   // 4.53.0
   if(e.component==='busstations')return ({coach:'Coach station',interchange:'Interchange'}[e.variant]||'Bus station')+' · live times where buses are seen';   // 4.54.0
-  if(e.motion&&e.motion.mode==='timed'&&e.motion.fresh)return 'About here now · carried on from its last report at '+seen+' (estimate)'+(e.quality==='stale'?' · checking for its latest update':'');   // 4.62.0 test modes
-  if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'About here now · worked out from its timetable and its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.61.0
-  if(e.motion&&e.motion.mode==='timed'&&!e.motion.delay)return 'Following its reported journey · last reported '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.64.0 (N1, no line ahead)
-  if(e.motion&&e.motion.mode==='timed')return 'Following its reported journey'+(e.motion.delay?' about '+(e.motion.delay>=90?Math.round(e.motion.delay/60*2)/2+' min':e.motion.delay+' s'):'')+' behind · last reported '+seen+(e.quality==='stale'?' · checking for its latest update':'');
+  if(e.motion&&e.motion.mode==='timed'&&e.motion.fresh)return 'Approx position from its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.62.0 test modes; 4.77.0 (owner 18 Nov 03:58): "approx position from last doodah" reads friendlier than "About here now"
+  if(e.motion&&e.motion.mode==='timed'&&e.motion.forecast)return 'Approx position from its timetable and its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.61.0
+  if(e.motion&&e.motion.mode==='timed'&&!e.motion.delay)return 'Approx position from its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');   // 4.64.0 (N1, no line ahead)
+  if(e.motion&&e.motion.mode==='timed')return 'Approx position from its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');
+  // 4.77.0 (owner 18 Nov 03:59: "same rule for planes and trains"): every carried-on position reads "Approx position from its last report at ..."
   if(state.frames[e.component]?.scheduled&&e.quality==='estimated')return 'Timetable position · not live';   // 4.25.0
-  if(est)return 'Estimated position · last reported '+seen+(e.quality==='stale'?' · checking for its latest update':'');
+  if(est)return 'Approx position from its last report at '+seen+(e.quality==='stale'?' · checking for its latest update':'');
   return (e.quality==='observed'?'Reported position at ':'Last reported at ')+seen+(e.quality==='stale'?' · checking for its latest update':'');
 }
 // Phone-sized screens show at most this many vehicles per layer (engines already send the
@@ -2352,7 +2373,7 @@ function closeDialog(back){back.classList.add('hidden');if(back.id==='tpa-welcom
 let nightNoted=false;
 function ukHour(){try{return Number(new Date().toLocaleString('en-GB',{timeZone:'Europe/London',hour:'2-digit',hour12:false}))%24;}catch(_){return new Date().getHours();}}
 function nightNote(){if(nightNoted||KIDS)return;const h=ukHour();if(!(h>=0&&h<5))return;nightNoted=true;
-  setTimeout(()=>toast("It's the small hours, so most buses and trains are tucked up for the night. Night buses are still running in the big cities, and planes come and go all night.",12000),1200);}
+  setTimeout(()=>!state.selected&&toast("It's the small hours, so most buses and trains are tucked up for the night. Night buses are still running in the big cities, and planes come and go all night.",12000),1200);}
 document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelectorAll('.tpa-dialog-back:not(.hidden)').forEach(closeDialog);});
 function buildCredits(list){
   const {back,card}=makeDialog('tpa-credits','Data sources & credits');

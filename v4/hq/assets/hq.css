@@ -572,3 +572,22 @@ a.tpa-link-button{display:block;text-align:center;text-decoration:none}
 /* 4.75.2 (Rob 18 Nov 03:40, welcome screen: the menu's little ◀ tab showed on top of it, "looks bad"): the tab sits above
    the map (z-index 1200) but must never show over a dialog such as the welcome screen */
 body:has(.tpa-dialog-back:not(.hidden)) .menu-tab{visibility:hidden}
+
+/* 4.77.0 (owner 18 Nov 03:56): a small picture of the vehicle beside Follow me!, on phones in the short panel only */
+.follow-row{display:flex;align-items:center;gap:12px}
+.map-selection .follow-row>button.follow-button{align-self:center}
+.follow-thumb,.follow-pic{display:none}
+@media(max-width:760px){
+  .map-selection:not(.open):not(.kids-bubble) .follow-thumb:not([hidden]){display:grid;place-items:center;width:84px;aspect-ratio:9/5;padding:3px;border-radius:7px;
+    border:1px solid #cfd8e3;background:radial-gradient(ellipse at 50% 35%,#ffffff 0,#eef2f7 60%,#dfe5ed 100%);overflow:hidden;flex:0 0 auto}
+  .map-selection:not(.open):not(.kids-bubble) .follow-pic{display:flex;flex-direction:column;align-items:center;gap:4px}
+  .follow-plate{padding:1px 7px;border-radius:3px;background:#f7d117;color:#111;border:1px solid #111;font:700 12px/1.3 'Barlow Semi Condensed',Barlow,sans-serif;letter-spacing:.08em;white-space:nowrap}
+  .follow-plate.air{background:#0e2037;color:#f2f7fb;border-color:#6f8aa0}
+  .follow-plate[hidden]{display:none}
+  .follow-thumb img{display:block;width:100%;height:100%;object-fit:contain}
+  .follow-thumb.bus img,.follow-thumb.air img{mix-blend-mode:multiply}
+  .follow-thumb.unknown img{filter:grayscale(1) contrast(.7);opacity:.38}
+  .map-selection:not(.open):not(.kids-bubble) .follow-thumb.drawn:not([hidden]){background:#0e2037;border-color:var(--line-2,#365e72)}
+  .follow-thumb.drawn svg{width:100%;height:auto;fill:#f2f7fb}
+  .follow-thumb.drawn svg .acc{fill:var(--amber,#ffc531)}
+}
