@@ -22,7 +22,7 @@ const VIEW_ASKED=new URLSearchParams(location.search).get('view');
 const FULL_VIEW=!KIDS&&(location.pathname==='/full'||VIEW_ASKED==='full');
 const USER_VIEW=KIDS||(!FULL_VIEW&&(location.pathname==='/user'||VIEW_ASKED==='user'||document.documentElement.dataset.defaultView==='user'));
 if(KIDS){document.documentElement.classList.add('kids-view');}
-if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':'TPA · live UK transport map';
+if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':'TPA · Live UK trains, buses and planes on one map';
   const h=document.querySelector('.search-panel h2');if(h)h.textContent='FIND A PLACE';
   const m=document.querySelector('.search-panel .micro');if(m)m.textContent='';}
 const HOME={lon:-0.423,lat:53.842,z:11};
@@ -2520,7 +2520,9 @@ async function loadSiteConfig(){
   if(welcomeBtn){welcomeBtn.type='button';welcomeBtn.id='welcome-button';welcomeBtn.onclick=()=>openDialog(welcome);}
   // 4.57.0: the coffee link now lives in the Support TPA panel (entry at the top of the menu), not twice in the menu
   const support=KIDS?null:buildSupport(cfg.tip,cfg.support);
-  about.append(...[title,support?null:tipControl(cfg.tip),creditsBtn,welcomeBtn].filter(Boolean));
+  // 4.74.0 (launch, Rob 18 Nov 2026 01:24-01:26): the plain-English privacy page
+  const privacyLink=KIDS?null:el('a','tpa-link-button','Privacy');if(privacyLink){privacyLink.href='/privacy';privacyLink.target='_blank';privacyLink.rel='noopener';privacyLink.id='privacy-link';}
+  about.append(...[title,support?null:tipControl(cfg.tip),creditsBtn,welcomeBtn,privacyLink].filter(Boolean));
   $('sidebar').insertBefore(about,document.querySelector('.sidebar-footer'));
   if(support){const entry=el('button','support-entry','☕ '+(str(cfg.support?.entry,30)||'Support TPA'));entry.type='button';entry.id='support-button';
     entry.setAttribute('aria-haspopup','dialog');entry.onclick=()=>openDialog(support);

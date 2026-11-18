@@ -1,0 +1,9 @@
+# TPA - live UK trains, buses and planes on one map. Search engines are welcome to the pages;
+# the data files change every few seconds and are not worth reading.
+User-agent: *
+Disallow: /api/
+Disallow: /tiles/
+Disallow: /basemap/
+Allow: /
+
+Sitemap: https://tpalive.co.uk/sitemap.xml
