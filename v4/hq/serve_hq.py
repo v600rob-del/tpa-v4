@@ -38,7 +38,7 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.84.0'
+HQ_VERSION = '4.85.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
@@ -282,7 +282,12 @@ def bbox_query(query):
         k, _, v = part.partition('=')
         if k in ('west', 'south', 'east', 'north') and re.fullmatch(r'-?\d{1,3}(\.\d{1,7})?', v):
             values[k] = v
-    return '?' + '&'.join(f'{k}={values[k]}' for k in ('west', 'south', 'east', 'north')) if len(values) == 4 else ''
+    if len(values) != 4:
+        return ''
+    # 4.85.0 (Rob 18 Nov 13:20, the plane Easter egg): one more plain flag may go along - world=1, "this visitor has
+    # unlocked planes beyond the UK". Engines that don't know it ignore it.
+    flag = '&world=1' if re.search(r'(?:^|&)world=1(?:&|$)', query or '') else ''
+    return '?' + '&'.join(f'{k}={values[k]}' for k in ('west', 'south', 'east', 'north')) + flag
 
 
 # 4.13.0 (owner 1 Nov 21:00 load test: 25 viewers fine, 50 too many; 3 Nov "lets go" on shared areas):
@@ -318,6 +323,7 @@ def area_query(query):
         return ''
     v = dict(part.split('=') for part in q[1:].split('&'))
     w, s, e, n = (float(v[k]) for k in ('west', 'south', 'east', 'north'))
+    flag = '&world=1' if v.get('world') == '1' else ''      # 4.85.0: kept apart in the shared answers too
     if not (s < n and w < e):
         return q
     g = min(4.0, max(1 / 1024, 2.0 ** math.floor(math.log2(max(n - s, 1e-4) / 4))))
@@ -337,7 +343,7 @@ def area_query(query):
     w2, e2 = max(-180.0, math.floor(w / gl + tol) * gl), min(180.0, math.ceil(e / gl - tol) * gl)
     # 4.55.0 (owner 13 Nov 13:23, go-live rule 1): the square size goes to the engine too, so an engine can answer from
     # squares it has already prepared (the bus engine does from 0.15.0); engines that don't know cell= ignore it
-    return f'?west={w2:.4f}&south={s2:.4f}&east={e2:.4f}&north={n2:.4f}&cell={g!r}'
+    return f'?west={w2:.4f}&south={s2:.4f}&east={e2:.4f}&north={n2:.4f}&cell={g!r}' + flag
 
 
 LONG_SHARE_SECONDS = 8.0   # 4.50.0: the most an answer is shared for

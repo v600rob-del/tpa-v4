@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.8.5'
+ENGINE_VERSION = '0.9.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -221,6 +221,98 @@ def fly_pace() -> int:
     _, month_end = month_now()
     per_round = PER_ROUND * max(60.0, month_end - time.time()) / left
     return max(FLY_POLL_SECONDS, math.ceil(per_round))
+
+
+# 0.9.0 (Rob 18 Nov 13:20, the plane Easter egg: "something somewhere that unlocks the uk only view, as our adsb coverage
+# should be global"; he chose "wherever you look", this visit only): a page that has the egg unlocked asks with world=1.
+# Then, if its view reaches beyond the two UK circles, the engine also fetches one circle (up to 250 nm) round that
+# place from FlyItalyADSB, rationed so the UK never suffers:
+# - FlyItalyADSB only (never ADSB.lol, whose 500-a-day limit is the UK's backup);
+# - one look-round per place every WORLD_GAP_SECONDS, and all places together at most one every WORLD_MIN_GAP seconds
+#   (6 a minute at most; the UK uses about 12 of the 30 a minute allowed);
+# - at most WORLD_DAILY requests a day, and none at all once less than WORLD_RESERVE of the month's allowance is left.
+# World requests are counted in the same monthly budget, so the UK pace already allows for them.
+# Places near each other share one circle (centres rounded to whole degrees), so viewers looking at the same city share.
+WORLD_GAP_SECONDS = 3 if _fly_test else 30          # shorter only against the test supplier
+WORLD_MIN_GAP = 1 if _fly_test else 10
+WORLD_DAILY = max(0, int(os.environ.get('TPA_AIR_WORLD_DAILY', '600') or 600))
+WORLD_RESERVE = 0.10
+WORLD_KEEP_SECONDS = 180       # a place nobody has asked about for this long is forgotten
+WORLD_WANTED_SECONDS = 60      # a place counts as looked at for this long after the last question
+WORLD = {'places': {}, 'wanted': {}, 'day': '', 'usedToday': 0, 'lastAt': 0.0, 'requestsThisRun': 0, 'lastError': ''}
+
+
+def world_circle(view):
+    """The shared circle for a view (centre rounded to whole degrees), or None when the UK circles already cover it."""
+    if all(any(nm_between(c[0], c[1], la, lo) <= c[2] for c in NATIONAL)
+           for la, lo in ((view[0], view[1]), (view[0], view[3]), (view[2], view[1]), (view[2], view[3]))):
+        return None
+    clat, clon, _ = circle_for(view)
+    return float(round(clat)), float(round(clon)), MAX_RADIUS_NM
+
+
+def world_day_roll(now: float) -> None:
+    """Call with LOCK held."""
+    day = time.strftime('%Y-%m-%d', time.gmtime(now))
+    if WORLD['day'] != day:
+        WORLD.update(day=day, usedToday=0)
+
+
+def world_allowed(now: float) -> str:
+    """'' when a world request may be made now, otherwise why not (words for the map). Call with LOCK held."""
+    world_day_roll(now)
+    if not FLY_KEY:
+        return 'World planes need the FlyItalyADSB key'
+    if WORLD['usedToday'] >= WORLD_DAILY or budget_left() < FLY_BUDGET * WORLD_RESERVE:
+        return 'World planes are resting until tomorrow'
+    if now < SRC['fly']['cooldownUntil']:
+        return 'World planes paused for a moment'
+    return ''
+
+
+def world_aircraft(now: float) -> list:
+    """Every plane from the places looked at recently. Call with LOCK held."""
+    out = []
+    for key, place in list(WORLD['places'].items()):
+        if now - WORLD['wanted'].get(key, 0) > WORLD_KEEP_SECONDS:
+            WORLD['places'].pop(key, None)
+            continue
+        out.extend(place['aircraft'])
+    return out
+
+
+def world_poller() -> None:
+    while True:
+        time.sleep(1)
+        now = time.time()
+        with LOCK:
+            for key in [k for k, t in WORLD['wanted'].items() if now - t > WORLD_KEEP_SECONDS]:
+                WORLD['wanted'].pop(key, None)
+            due = None
+            if now - WORLD['lastAt'] >= WORLD_MIN_GAP and not world_allowed(now):
+                looked = [k for k, t in WORLD['wanted'].items() if now - t <= WORLD_WANTED_SECONDS
+                          and now - WORLD['places'].get(k, {}).get('fetchedAt', 0) >= WORLD_GAP_SECONDS]
+                # the place waiting longest goes first
+                due = min(looked, key=lambda k: WORLD['places'].get(k, {}).get('fetchedAt', 0), default=None)
+            if due:
+                WORLD['lastAt'] = now
+                WORLD['usedToday'] += 1
+                WORLD['requestsThisRun'] += 1
+        if not due:
+            continue
+        part = fetch_part(due, 'fly')
+        with LOCK:
+            if part is None:
+                WORLD['lastError'] = SRC['fly']['lastError']
+                continue
+            got = {a['hex']: a for a in part[1]}
+            old = WORLD['places'].get(due, {}).get('aircraft', [])
+            for a in old:                               # as for the UK: a plane missing from one answer fades as usual
+                if a['hex'] not in got and now - a['reported'] <= DROP_AFTER:
+                    got[a['hex']] = a
+            WORLD['places'][due] = {'aircraft': list(got.values()), 'fetchedAt': now}
+            WORLD['lastError'] = ''
+        print(f'World planes OK: {len(got)} aircraft within {due[2]} nm of {due[0]:.0f},{due[1]:.0f}', flush=True)
 
 
 WAKE = threading.Event()
@@ -676,6 +768,8 @@ def details(entity_id: str) -> dict:
     hexid = entity_id[4:] if entity_id.startswith('air:') else ''
     with LOCK:
         a = next((x for x in STATE['aircraft'] if x['hex'] == hexid), None)
+        if a is None:                            # 0.9.0: a plane from a world look-round
+            a = next((x for p in WORLD['places'].values() for x in p['aircraft'] if x['hex'] == hexid), None)
     if a is None:
         out['note'] = 'This aircraft is no longer being picked up.'
         return out
@@ -1205,7 +1299,7 @@ def label_for(a) -> str:
     return ' · '.join(parts)
 
 
-def snapshot(view) -> dict:
+def snapshot(view, world=False) -> dict:
     now = time.time()
     span = view[2] - view[0] if view is not None else None
     small = span is not None and span <= (WIDE_VIEW_SPAN if ALWAYS_ON else MAX_VIEW_SPAN)
@@ -1215,6 +1309,21 @@ def snapshot(view) -> dict:
     with LOCK:
         aircraft, fetched, circle, source = STATE['aircraft'], STATE['fetchedAt'], STATE['circle'], STATE['source']
         h, notice = health(now)
+        if world and small and ALWAYS_ON:         # 0.9.0: the Easter egg - planes beyond the UK, where the visitor looks
+            place = world_circle(view)
+            if place:
+                WORLD['wanted'][place] = now
+                why = world_allowed(now)
+                if why and place not in WORLD['places']:
+                    notice = notice or why
+            extra = world_aircraft(now)
+            if extra:
+                merged = {a['hex']: a for a in aircraft}
+                for a in extra:
+                    if a['hex'] not in merged or a['reported'] > merged[a['hex']]['reported']:
+                        merged[a['hex']] = a
+                aircraft = list(merged.values())
+                fetched = fetched or now
     received = fetched or now
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
@@ -1323,18 +1432,22 @@ class Handler(BaseHTTPRequestHandler):
                                       'requestsThisRun': v['requests'], 'pollingEverySeconds': pace(k)} for k, v in SRC.items()}
                 sources['FlyItalyADSB'].update(keyConfigured=bool(FLY_KEY), month=BUDGET['month'], usedThisMonth=BUDGET['used'],
                                                monthlyBudget=FLY_BUDGET)
+                world_day_roll(now)
+                world = {'usedToday': WORLD['usedToday'], 'dailyMax': WORLD_DAILY, 'placesKept': len(WORLD['places']),
+                         'placesLookedAt': len(WORLD['wanted']), 'requestsThisRun': WORLD['requestsThisRun'],
+                         'lastError': WORLD['lastError'], 'resting': world_allowed(now)}
                 return self.reply(200, {'component': COMPONENT, 'engine': 'tpa-air-engine', 'engineVersion': ENGINE_VERSION,
                                         'contractVersion': CONTRACT, 'live': True, 'health': h, 'notice': notice,
                                         'source': NAMES.get(STATE['source'], ''), 'sources': sources,
                                         'keyConfigured': bool(KEY), 'lastError': main_src['lastError'],
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'aircraftInLastDownload': len(STATE['aircraft']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
-                                        'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
+                                        'world': world, 'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
                                         'slowLevel': main_src['slowLevel'], 'pollingEverySeconds': pace(ORDER[0]),
                                         'standingData': {'ready': bool(STANDING['path']), 'builtAt': iso(STANDING['builtAt']) if STANDING['builtAt'] else None,
                                                          'error': STANDING['error'], 'rows': STANDING['rows']}})
         if split.path == '/snapshot':
-            return self.reply(200, snapshot(parse_bbox(split.query)))
+            return self.reply(200, snapshot(parse_bbox(split.query), (parse_qs(split.query).get('world') or [''])[0] == '1'))
         if split.path == '/types':               # 0.8.1: the daily count of plane types (look-only)
             try:
                 days = int((parse_qs(split.query).get('days') or ['14'])[0])
@@ -1359,6 +1472,8 @@ def main() -> None:
     budget_load()
     types_load()
     threading.Thread(target=poller, daemon=True).start()
+    if ALWAYS_ON:
+        threading.Thread(target=world_poller, daemon=True).start()     # 0.9.0: the Easter egg's world planes
     if DATA_DIR:
         threading.Thread(target=standing_keeper, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:

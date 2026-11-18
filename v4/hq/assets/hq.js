@@ -319,6 +319,22 @@ function planeShadow(art,ft){
   const o=Math.min(1+ft/6500,7);
   art.style.setProperty('--shx',(o*0.7).toFixed(1)+'px');art.style.setProperty('--shy',o.toFixed(1)+'px');
   art.style.setProperty('--shb',(1+ft/9000).toFixed(1)+'px');art.style.setProperty('--sha',Math.max(0.45-ft/90000,0.12).toFixed(2));}
+// 4.85.0 (Rob 18 Nov 13:20, the plane Easter egg: "something somewhere that unlocks the uk only view, as our adsb
+// coverage should be global"; he chose: click the TPA plane logo 5 times, planes "wherever you look", this visit only).
+// Unlocked, the map may leave the UK box and the planes engine is asked with world=1: it then also fetches planes round
+// wherever the visitor looks (rationed by the engine). Nothing is saved: a refresh or a new visit is the UK again.
+// Five more clicks lock it again. Not advertised anywhere.
+let WORLD_PLANES=false,UK_LIMITS=null,eggClicks=[];
+function setWorldPlanes(on){
+  if(!map||WORLD_PLANES===on)return;
+  WORLD_PLANES=on;
+  try{if(typeof map.setMaxBounds==='function')map.setMaxBounds(on?null:UK_LIMITS);}catch(_){}
+  delete fetchedBox.air;if(state.live.air)getComponent('air');
+  if(on)toast('✈ World planes unlocked! Scroll anywhere on Earth and zoom in to see the planes there. Click the logo 5 more times to go back to the UK.',10000);
+  else{const c=map.getCenter();if(!inBox(c.lng,c.lat,UK_BOX))home();toast('Back to the UK planes',4000);}}
+function inBox(lon,lat,b){return lat>=b.south&&lat<=b.north&&lon>=b.west&&lon<=b.east;}
+function eggClick(){const t=Date.now();eggClicks=eggClicks.filter(x=>t-x<3000);eggClicks.push(t);
+  if(eggClicks.length>=5){eggClicks=[];setWorldPlanes(!WORLD_PLANES);}}
 function planeTurn(e){if(e.variant==='ground-twr')return '';
   // 4.45.0: the owner's van and fire engine icons are drawn front-down, so they turn half a turn further
   const extra=e.variant==='ground-emer'||e.variant==='ground-gnd'?180:0;
@@ -2227,7 +2243,7 @@ async function getComponent(id){
     if(id==='bus'&&BUS_TILES.on){try{raw=await busTileFrame();BUS_TILES.used=true;}catch(_){raw=null;BUS_TILES.used=false;}}
     // 4.65.0: trains the same way (rail 1.6.0); the old per-visitor answer stays as the way back (?railtiles=0, or files missing/old)
     if(id==='rail'&&RAIL_TILES.on){try{raw=await railTileFrame();RAIL_TILES.used=true;}catch(_){raw=null;RAIL_TILES.used=false;}}
-    const f=checkFrame(id,raw||await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}`,1200000,6000));
+    const f=checkFrame(id,raw||await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}${id==='air'&&WORLD_PLANES?'&world=1':''}`,1200000,6000));   // 4.85.0
     {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length){speedMark(id+' shown');hasItems[id]=true;}}
     if(seq<(seqDone[id]||0))return;
     seqDone[id]=seq;
@@ -2378,6 +2394,7 @@ try{
   // 4.38.0: zooming out stops once the whole UK box is on screen (a phone stops one step further out than a PC).
   const fitMinZoom=()=>{try{if(!ukBounds||typeof map.getBoundsZoom!=='function')return;minZ=clamp(map.getBoundsZoom(ukBounds,false),3,10);if(typeof map.setMinZoom==='function')map.setMinZoom(minZ);}catch(_){}};
   fitMinZoom();if(typeof map.on==='function')map.on('resize',fitMinZoom);
+  UK_LIMITS=ukBounds;document.querySelector('.sidebar .brand-mark')?.addEventListener('click',eggClick);   // 4.85.0: the plane Easter egg
   L.control.attribution({position:'bottomright',prefix:false}).addTo(map);
   state.renderer='leaflet-waiting';
   // 4.1.7: a plain drag only shifts the icon layer (cheap); the icons are fully re-placed at most
