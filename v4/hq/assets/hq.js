@@ -1533,7 +1533,7 @@ window.TPA_BUS_MOTION_NOW=()=>{const R=window.TPA_BUS_REPLAY,t=serverNow()/1000,
 // this runs (BUS_N1.on is false) and the page is exactly 4.62.0. Zoomed out (city tiles) every mode keeps today's replay.
 // 4.64.0 (Rob 15 Nov 2026 21:07: "lets get n1 moving. It has proved its worthiness"): N1 is now how buses move on the
 // NORMAL address too. Today's replay stays one address away: ?motion=replay (and the other test modes ?motion=c4 / c3 and
-// ?forecast=1 keep their own engines). Zoomed out (city tiles) every address still keeps the replay.
+// ?forecast=1 keep their own engines). (4.72.2: N1 at town level too.)
 const BUS_N1=(()=>{const q=new URLSearchParams(location.search),m=q.get('motion'),sh=q.get('show');
   return {on:!['c4','c3','replay'].includes(m)&&q.get('forecast')!=='1',compare:m==='compare',show:m==='compare'?(['n1','c4','replay'].includes(sh)?sh:'n1'):'n1',
     engine:null,tState:null,focus:null,lines:new Map(),c4prev:new Map(),now:new Map(),items:[],frames:0,ms:{replay:0,c4:0,n1:0},loading:false};})();
@@ -1820,7 +1820,11 @@ async function busTileFrame(){
     await Promise.race([Promise.all(want.map(sid=>busLine(meta.build,sid).then(sh=>lines.set(sid,sh)))),new Promise(ok=>setTimeout(ok,2500))]);}
   const t0=BUS_MOTION.mode?performance.now():0;if(BUS_MOTION.mode)BUS_MOTION.now.clear();
   let n1Plan=null;                                   // 4.63.0 test addresses only (BUS_N1.on false on every other address)
-  if(BUS_N1.on&&small&&n1Ready()){const a=performance.now();try{n1Plan=n1Frame(now,pick,lines);}catch(err){n1Plan=null;console.warn('N1',err);}
+  // 4.72.2 (Rob 18 Nov 00:04, X47 at Beverley: "this bus moved 3 times around the same area"): town level (city tiles, zoom 13)
+  // kept the replay ~1.5 min behind while street level showed N1 "now", so a bus jumped between the two at every zoom change.
+  // N1 now runs at town level too: city tiles carry each bus's reports (no route line), so N1 uses a route line it already
+  // knows for that route (borrowed), else goes to the newest report - about "now", the same place at every zoom.
+  if(BUS_N1.on&&n1Ready()){const a=performance.now();try{n1Plan=n1Frame(now,pick,lines);}catch(err){n1Plan=null;console.warn('N1',err);}
     BUS_N1.ms.n1+=performance.now()-a;BUS_N1.frames++;if(BUS_N1.compare){BUS_N1.now.clear();BUS_N1.items=pick;}}
   for(const it of pick){
     const tA=n1Plan?performance.now():0;
