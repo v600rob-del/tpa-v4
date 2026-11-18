@@ -45,7 +45,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.18.2'
+VERSION = '4.18.3'
 BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
@@ -547,6 +547,7 @@ async def run_step(n, seconds, base, layers, rnd):
     wd = asyncio.create_task(watchdog())
     lt = asyncio.create_task(tester_lag())
     await spawn()
+    spawned = time.monotonic()        # 4.18.3: when the last viewer actually opened its page
     try:
         await asyncio.wait_for(stop.wait(), max(0.0, seconds - (time.monotonic() - started)))
     except asyncio.TimeoutError:
@@ -558,7 +559,11 @@ async def run_step(n, seconds, base, layers, rnd):
     if any(isinstance(r, PermissionError) for r in results):
         raise PermissionError('password not accepted')
     elapsed = ended - started
-    settled = started + ramp + 3                                   # every viewer has asked for its first update by now
+    # 4.18.3 (Rob's 4.18.2 run, 18 Nov 01:12: at 1,000, 198/68/55 viewers "waited" up to 15 s for planes/buses/trains while
+    # no read took over 1.2 s): the clock started at ramp + 3 s, but opening 1,000 pages one every 15 ms takes longer than
+    # the planned 15 s on Cloud Shell, so the last viewers to open were counted as waiting before their page even existed.
+    # The clock now starts 3 s after the LAST viewer really opened its page.
+    settled = max(started + ramp, spawned) + 3                     # every viewer has asked for its first update by now
     rows = [r for r in stats.rows if r[0] >= started + ramp]       # the settled part of the step
     if not rows:
         rows = stats.rows
@@ -573,7 +578,7 @@ async def run_step(n, seconds, base, layers, rnd):
             'served': served_share(stats.reads, n, settled, ended, LIMITS['grace']) if not aborted and ended > settled else 0.0,
             'p50': pct(durations, 50), 'p95': pct(durations, 95), 'fail': fails / len(rows) if rows else 1.0,
             'layers': {k: (pct(v, 50), pct(v, 95), len(v)) for k, v in by_layer.items()}, 'aborted': aborted,
-            'lag95': pct(lag, 95), 'lagmax': max(lag) if lag else None,
+            'lag95': pct(lag, 95), 'lagmax': max(lag) if lag else None, 'spawn': spawned - started,
             'why': served_detail(stats.reads, n, settled, ended, LIMITS['grace']) if not aborted and ended > settled else {}}
 
 
@@ -709,7 +714,8 @@ async def main_async(args, base, layers):
                 f"{k} {v['missed']} viewers (longest wait {v['worst']:.1f} s, typically {v['late']:.1f} s over its pace + 2 s;"
                 f" 1 in 100 reads took {fmt_s(v['p99'])}, slowest {fmt_s(v['slowest'])})"
                 if v['late'] is not None else f"{k} {v['missed']} viewers (no update at all)" for k, v in why)
-                + (f" · tester's worst stall {step['lagmax']:.1f} s" if step.get('lagmax') is not None else ''), flush=True)
+                + (f" · tester's worst stall {step['lagmax']:.1f} s" if step.get('lagmax') is not None else '')
+                + (f" · all {n} pages open after {step['spawn']:.0f} s" if step.get('spawn') else ''), flush=True)
         if tester_behind(step):          # 4.17.0: the pretend crowd, not the server, could not keep up
             tester_stop = True
             print(f"STOPPED at {n} viewers: Cloud Shell (the tester) fell {step['lag95']:.1f} s behind its own timers, so this "
