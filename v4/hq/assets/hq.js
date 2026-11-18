@@ -41,7 +41,12 @@ const POI=[
 ['Glasgow',-4.252,55.864],['Aberdeen',-2.094,57.149],['Dundee',-2.974,56.462],['Inverness',-4.226,57.477],
 ['Stirling',-3.935,56.116],['Perth',-3.432,56.395],['Belfast',-5.930,54.597],['Derry',-7.311,54.997]
 ];
-const state={live:Object.fromEntries(IDS.map(id=>[id,false])),notice:Object.fromEntries(IDS.map(id=>[id,''])),overlays:Object.create(null),parked:Object.fromEntries(IDS.map(id=>[id,false])),lon:HOME.lon,lat:HOME.lat,z:HOME.z,visible:Object.fromEntries(IDS.map(id=>[id,true])),status:Object.fromEntries(IDS.map(id=>[id,'not_installed'])),frames:Object.create(null),geo:null,selected:null,renderer:'loading',mapErrors:0};
+// 4.73.1 (Rob 18 Nov 00:30: "bus stops off as default, but turn onable in the tracking layers ... they overcomplicate the
+// screen for the users who wont need them"): these layers start switched off; a visitor who switches one on keeps it on
+// in that browser (and off again if they switch it off).
+const OFF_AT_START=['stops'];
+function layerOnAtStart(id){if(!OFF_AT_START.includes(id))return true;try{return localStorage.getItem('tpa-layer-on-'+id)==='1';}catch(_){return false;}}
+const state={live:Object.fromEntries(IDS.map(id=>[id,false])),notice:Object.fromEntries(IDS.map(id=>[id,''])),overlays:Object.create(null),parked:Object.fromEntries(IDS.map(id=>[id,false])),lon:HOME.lon,lat:HOME.lat,z:HOME.z,visible:Object.fromEntries(IDS.map(id=>[id,layerOnAtStart(id)])),status:Object.fromEntries(IDS.map(id=>[id,'not_installed'])),frames:Object.create(null),geo:null,selected:null,renderer:'loading',mapErrors:0};
 let map=null,ready=false,toastTimer=0,pending=false,pan=null;
 const selected=$('map-selection');
 const markerLayer=document.createElement('div');markerLayer.className='marker-layer';root.append(markerLayer);
@@ -2072,7 +2077,7 @@ function setParked(id,parked){
   if(state.parked[id]===parked)return;
   state.parked[id]=parked;
   const toggle=$(id+'-toggle'),row=toggle.closest('.layer-toggle');
-  toggle.disabled=parked;toggle.checked=!parked;state.visible[id]=!parked;
+  toggle.disabled=parked;toggle.checked=!parked&&layerOnAtStart(id);state.visible[id]=toggle.checked;
   row.classList.toggle('parked',parked);
   row.setAttribute('aria-disabled',parked?'true':'false');
   row.title=parked?'Coming soon':'';
@@ -2161,7 +2166,9 @@ function stationSearch(q){clearTimeout(stationTimer);const ask=++stationAsk;
     }catch(_){}}
     if(ask===stationAsk&&!found){const p=out.querySelector('p.empty.searching');if(p){p.classList.remove('searching');p.textContent='Nothing found by that name.';}}
   },250);}
-for(const id of IDS){$(id+'-toggle').addEventListener('change',()=>{state.visible[id]=$(id+'-toggle').checked;paint();});}
+for(const id of IDS){$(id+'-toggle').checked=state.visible[id];$(id+'-toggle').addEventListener('change',()=>{state.visible[id]=$(id+'-toggle').checked;
+  if(OFF_AT_START.includes(id))try{localStorage.setItem('tpa-layer-on-'+id,state.visible[id]?'1':'0');}catch(_){}
+  paint();});}
 function clock(){$('localclock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false});}clock();setInterval(clock,1000);
 $('home-button').onclick=home;$('zoom-in').onclick=()=>zoom(1);$('zoom-out').onclick=()=>zoom(-1);$('menu-button').onclick=()=>setMenu(!$('sidebar').classList.contains('open'));$('sidebar-close').onclick=()=>setMenu(false);$('sidebar-backdrop').onclick=()=>setMenu(false);$('search').addEventListener('input',e=>search(e.target.value));
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){$('sidebar').classList.remove('open');selected.classList.add('hidden');}});

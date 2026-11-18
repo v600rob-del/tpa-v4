@@ -21,6 +21,10 @@ cut short if, in any 10 seconds, more than 20% of requests fail. If Cloud Shell 
 column, over 0.5 s), the step measured the tester, not the server, and the run stops there. The result says how
 many people were PROVEN to get the TPA standard, and what that means in visitors a day.
 
+4.18.0 (Rob 18 Nov 2026 00:19, "we need to get this ready for live"): the viewers behave like today's page (HQ 4.73.0):
+below zoom 13 buses and trains are town bubbles - the page reads each layer's meta.json and counts.json every 10 s and
+no squares at all (hq.js fetchCounts / bubbleSkips). --no-bubbles is the old way (squares at every zoom).
+
 Options: --steps 10,25,50 --seconds 90 --host test.tpalive.co.uk --no-server-stats --yes
 (--url http://127.0.0.1:8778 and TPA_LOADTEST_PASSWORD are for the builders' own tests.)
 """
@@ -41,7 +45,7 @@ import sys
 import time
 import urllib.parse
 
-VERSION = '4.17.1'
+VERSION = '4.18.0'
 BANNER_FROM, BANNER_TO = '===== COPY BACK FROM HERE =====', '===== COPY BACK TO HERE ====='
 # 4.13.2 (owner 3 Nov 19:54): no traffic pictures unless --traffic - the load tests had used most of the month's
 # TomTom allowance (7,122 of 12,000 by 3 Nov)
@@ -54,6 +58,9 @@ BUS_API = False
 # 4.16.0 (rail 1.6.0 + HQ 4.65.0, Rob 16 Nov 2026 07:25): the page reads trains from ready-made files too
 # (/tiles/rail/meta.json, then the squares covering the screen). --rail-api brings back the old per-viewer train answer.
 RAIL_API = False
+# 4.18.0: below zoom 13 the page shows town bubbles (HQ 4.67+): counts.json, no squares. --no-bubbles: squares at every zoom.
+BUBBLES = True
+BUBBLE_BELOW_ZOOM = 13
 DEFAULT_STEPS = [10, 25, 50, 100, 250, 500, 1000]
 CITIES = [('York', 53.959, -1.082), ('Hull', 53.744, -0.333), ('Leeds', 53.797, -1.547), ('Manchester', 53.479, -2.244),
           ('London', 51.507, -0.128), ('Birmingham', 52.480, -1.899), ('Nottingham', 52.954, -1.150), ('Newcastle', 54.973, -1.613),
@@ -214,6 +221,9 @@ async def bus_tiles(pool, lat, lon, z, stats, lines_seen):
         poll = max(5.0, min(60.0, float(meta.get('every') or 10)))
     except Exception:
         poll = 10.0
+    if BUBBLES and z < BUBBLE_BELOW_ZOOM:              # 4.18.0: town bubbles - counts only, no squares
+        ok, _ = await pool.get(f'/tiles/bus/counts.json?r={slot}', 'bus', stats)
+        return ok, poll
     w, s, e, n = view_box(lat, lon, z)
     if n - s > meta.get('maxSpan', 99):
         return True, poll                             # zoomed too far out: the page shows no buses
@@ -276,6 +286,9 @@ async def rail_tiles(pool, lat, lon, z, stats):
         poll = max(5.0, min(60.0, float(meta.get('every') or 10)))
     except Exception:
         poll = 10.0
+    if BUBBLES and z < BUBBLE_BELOW_ZOOM:              # 4.18.0: town bubbles - counts only, no squares
+        ok, _ = await pool.get(f'/tiles/rail/counts.json?r={slot}', 'rail', stats)
+        return ok, poll
     w, s, e, n = page_box(lat, lon, z)
     if n - s > meta.get('maxSpan', 4):
         return True, poll                             # zoomed too far out: the page says "Zoom in to see trains"
@@ -681,8 +694,11 @@ def main():
                    help='buses the old way (each viewer asks the server), as before HQ 4.56 - for comparison only')
     p.add_argument('--rail-api', action='store_true',
                    help='trains the old way (each viewer asks the server), as before HQ 4.65 - for comparison only')
+    p.add_argument('--no-bubbles', dest='bubbles', action='store_false',
+                   help='squares at every zoom, as before the town bubbles (HQ 4.67) - for comparison only')
     args = p.parse_args()
-    global TRAFFIC, SERVER, BUS_API, RAIL_API
+    global TRAFFIC, SERVER, BUS_API, RAIL_API, BUBBLES
+    BUBBLES = args.bubbles
     TRAFFIC = args.traffic
     BUS_API = args.bus_api
     RAIL_API = args.rail_api
