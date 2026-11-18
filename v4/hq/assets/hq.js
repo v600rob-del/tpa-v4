@@ -1384,12 +1384,17 @@ function prepWanted(id){
   if(id==='map')return true;
   if(!state.live[id]||state.parked[id]||!state.visible[id])return false;
   if(state.status[id]!=='ready'&&state.status[id]!=='stale')return false;     // not answering: don't hold anyone up
-  if(id==='road'){const o=state.frames.road?.overlay;return !!o&&state.z>=o.minZoom;}
+  if(id==='road')return !!state.frames.road?.overlay;   // 4.86.0: zoomed out too (see prepReady)
   return true;
 }
 function prepReady(id){
   if(id==='map')return 'street map drawn' in SPEED.first||state.renderer==='fallback'||state.renderer==='leaflet-degraded';
-  if(id==='road')return 'traffic shown' in SPEED.first;
+  // 4.86.0 (Rob 18 Nov 16:06 "the traffic layer always says delayed on the start screen"): since 4.76.0 visits start on
+  // the whole UK, further out than the traffic colours' zoom, so 'traffic shown' could never happen there and the board
+  // said DELAYED after 6.5 s although the traffic engine had answered. Zoomed out, an engine that answered 'ready' is ready;
+  // zoomed in, the colours must really be on the map. A slow or quiet engine still says DELAYED.
+  if(id==='road'){const o=state.frames.road?.overlay;
+    return 'traffic shown' in SPEED.first||(!!o&&state.z<o.minZoom&&state.status.road==='ready'&&(SPEED.ask.road?.n||0)>0);}
   return (SPEED.ask[id]?.n||0)>0;
 }
 function makeReadyList(){

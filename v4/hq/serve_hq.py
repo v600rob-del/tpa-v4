@@ -38,7 +38,7 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.85.0'
+HQ_VERSION = '4.86.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.0.10: engines are separate programs on this PC. TPA_HQ_ENGINES maps a socket
 # to a loopback engine, e.g. "road=http://127.0.0.1:8782,bus=http://127.0.0.1:8781".
