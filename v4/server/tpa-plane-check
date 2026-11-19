@@ -3,7 +3,7 @@
 (Rob 19 Nov 2026 13:40, a CV-22 Osprey shown as "V22", "Military helicopter", a Chinook picture and flight "00000000":
 "We are still getting a few recognition issues ... with this seperate site being for enthusiasts I want to get this bit
 more detailed".) Reads only TPA's own air engine (127.0.0.1:8783): every plane over the UK once, and its box.
-No FlyItalyADSB requests; changes nothing. Run: curl ... | sudo python3 -"""
+Plus ONE FlyItalyADSB request to count which fields planes send; changes nothing. Run: curl ... | sudo python3 -"""
 import collections
 import json
 import re
@@ -66,4 +66,26 @@ for what, rows in sorted(problems.items(), key=lambda kv: -len(kv[1])):
         print(f'   ... and {len(rows) - 25} more')
 print('\nType codes shown with no name (most planes first):')
 print('   ' + ', '.join(f'{c} x{n}' for c, n in bare_codes.most_common(60)))
-print('\nDone. Nothing was changed.')
+# What extra fields do planes send (for an enthusiasts' box)? One FlyItalyADSB request (key from /etc/tpa/air.env, never
+# printed): of the month's 300,000.
+try:
+    key = ''
+    for line in open('/etc/tpa/air.env', encoding='utf8'):
+        m = re.match(r'\s*TPA_FLYITALY_API_KEY\s*=\s*"?([^"\s]+)', line)
+        if m:
+            key = m.group(1)
+    req = urllib.request.Request('https://api.flyitalyadsb.com/api/aircraft/v2/lat/52.3/lon/-2.2/dist/250/',
+                                 headers={'X-Api-Key': key, 'Accept': 'application/json',
+                                          'User-Agent': 'TPA-plane-check-look (+mailto:tpaprojectuk@gmail.com)'})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        ac = json.loads(r.read()).get('ac') or []
+    have = collections.Counter(k for a in ac for k, v in a.items() if v not in (None, '', []))
+    print(f'\nFields planes send (of {len(ac)} planes in the England circle):')
+    print('   ' + ', '.join(f'{k} {100 * n // max(1, len(ac))}%' for k, n in sorted(have.items(), key=lambda kv: -kv[1])))
+    mils = [a for a in ac if int(a.get('dbFlags') or 0) & 1]
+    if mils:
+        hm = collections.Counter(k for a in mils for k, v in a.items() if v not in (None, '', []))
+        print(f'   military ({len(mils)}): ' + ', '.join(f'{k} {100 * n // len(mils)}%' for k, n in sorted(hm.items(), key=lambda kv: -kv[1])))
+except Exception as exc:
+    print('\n(field count skipped:', type(exc).__name__, getattr(exc, 'code', ''), ')')
+print('\nDone. Nothing was changed (one plane-data request was made).')
