@@ -39,7 +39,7 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.94.0'
+HQ_VERSION = '4.95.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
@@ -779,8 +779,10 @@ class HQHandler(SimpleHTTPRequestHandler):
                     raw,_=engine_get(parts[4],'/details?'+urlencode({'id':want}),262144,10)   # 4.52.0: a station board is bigger and may wait for the board service
                     d=json.loads(raw)
                     # 4.33.0 (owner 10 Nov 21:24): up to 24 rows; a row marked 'more' goes behind "More details"
-                    rows=[{'label':str(r.get('label',''))[:30],'value':str(r.get('value',''))[:120],**({'more':True} if r.get('more') is True else {})}
-                          for r in (d.get('rows') or [])[:24] if isinstance(r,dict)]
+                    # 4.95.0: up to 48, and a row marked 'pro' (the enthusiasts' extras: shown only on /planes)
+                    rows=[{'label':str(r.get('label',''))[:30],'value':str(r.get('value',''))[:120],**({'more':True} if r.get('more') is True else {}),
+                           **({'pro':True} if r.get('pro') is True else {})}
+                          for r in (d.get('rows') or [])[:48] if isinstance(r,dict)]
                     body={'component':parts[4],'id':want,'rows':rows}
                     if isinstance(d.get('note'),str):body['note']=d['note'][:160]
                     if isinstance(d.get('picture'),str) and re.fullmatch(r'[a-z0-9-]{1,30}',d['picture']):body['picture']=d['picture']   # 4.16.0
@@ -788,6 +790,12 @@ class HQHandler(SimpleHTTPRequestHandler):
                     if isinstance(d.get('photo'),str) and re.fullmatch(r'[a-z0-9-]{1,30}',d['photo']):
                         body['photo']=d['photo']
                         if isinstance(d.get('photoName'),str):body['photoName']=d['photoName'][:60]
+                    # 4.95.0 (air 0.11.0): a plane's last 10 minutes, [lon, lat] pairs (the planes page draws it)
+                    if isinstance(d.get('trail'),list):
+                        tr=[[round(float(q[0]),5),round(float(q[1]),5)] for q in d['trail'][:200]
+                            if isinstance(q,list) and len(q)==2 and all(isinstance(v,(int,float)) and not isinstance(v,bool) for v in q)
+                            and abs(q[0])<=180 and abs(q[1])<=90]
+                        if len(tr)>=2:body['trail']=tr
                     # 4.23.0 (owner 6 Nov 09:40): generic journey - one sentence and the stops in order, each done / here / due
                     if isinstance(d.get('summary'),str) and d['summary'].strip():body['summary']=d['summary'][:200]
                     for k in ('doing','progress'):                     # 4.33.0: what a plane is doing, how far along it is

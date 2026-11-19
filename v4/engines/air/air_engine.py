@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.10.0'
+ENGINE_VERSION = '0.11.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -352,6 +352,16 @@ def clean(text, limit: int) -> str:
     return re.sub(r'[\x00-\x1f\x7f]+', ' ', str(text or '')).strip()[:limit]
 
 
+def callsign(text) -> str:
+    """0.11.0 (Rob 19 Nov 13:40, a CV-22 shown as flight "00000000"; the 13:46 check also found "@@@@@@@@"): a callsign
+    that is one character over and over, or has anything but letters, numbers, spaces and dashes, is no callsign.
+    Real airport vehicle names ("LEADER 6", "CUTTER 3") stay."""
+    c = clean(text, 10).upper()
+    if not c or re.fullmatch(r'(.)\1*', c.replace(' ', '')) or not re.fullmatch(r'[A-Z0-9][A-Z0-9 -]*', c):
+        return ''
+    return c
+
+
 def nm_between(lat1, lon1, lat2, lon2) -> float:
     p1, p2 = math.radians(lat1), math.radians(lat2)
     dp, dl = p2 - p1, math.radians(lon2 - lon1)
@@ -401,7 +411,7 @@ def parse(payload: dict, fetched: float) -> list[dict]:
         flags = int(finite(a.get('dbFlags')) or 0)
         out.append({'hex': hexid, 'lat': round(lat, 5), 'lon': round(lon, 5), 'speed': speed,
                     'heading': round(heading % 360, 1) if heading is not None else None,
-                    'flight': clean(a.get('flight'), 10), 'reg': clean(a.get('r'), 12), 'type': clean(a.get('t'), 8),
+                    'flight': callsign(a.get('flight')), 'reg': clean(a.get('r'), 12), 'type': clean(a.get('t'), 8),
                     'ground': alt == 'ground', 'alt': int(alt) if finite(alt) is not None else None,
                     'reported': fetched - age,
                     # 0.5.0: shown only when the plane is clicked
@@ -416,7 +426,12 @@ def parse(payload: dict, fetched: float) -> list[dict]:
                     'ias': finite(a.get('ias')), 'tas': finite(a.get('tas')),
                     'selAlt': finite(a.get('nav_altitude_mcp', a.get('nav_altitude_fms'))),
                     'source': clean(a.get('type'), 12).lower(),
-                    'turnRate': finite(a.get('track_rate'))})   # 0.10.0: degrees a second, when the plane sends it
+                    'turnRate': finite(a.get('track_rate')),   # 0.10.0: degrees a second, when the plane sends it
+                    # 0.11.0 (Rob 19 Nov 13:44, for the planes page): flight data the plane sends, shown only on /planes
+                    'mach': finite(a.get('mach')), 'windDir': finite(a.get('wd')), 'windKt': finite(a.get('ws')),
+                    'oat': finite(a.get('oat')), 'tat': finite(a.get('tat')), 'navHeading': finite(a.get('nav_heading')),
+                    'qnh': finite(a.get('nav_qnh')), 'roll': finite(a.get('roll')), 'altGeom': finite(a.get('alt_geom')),
+                    'navModes': [clean(m, 12) for m in a.get('nav_modes') or [] if isinstance(m, str)][:8]})
     return out
 
 
@@ -440,6 +455,8 @@ def context():
 TURN_MAX = 8.0           # degrees a second: anything faster is a bad reading
 TURN_SECONDS = 15        # the map turns a plane for at most this long after its report, then carries it on straight
 TURNS = {}               # hex -> the last report's time and heading, and the turn seen arriving at it
+TRAIL_SECONDS = 600      # 0.11.0 (Rob 19 Nov 13:44, "Trail behind the selected plane"): the last 10 minutes of reports
+TRAILS = {}              # hex -> [(time, lon, lat), ...]
 
 
 def note_turns(aircraft, now: float) -> None:
@@ -456,9 +473,18 @@ def note_turns(aircraft, now: float) -> None:
         if not prev or t > prev['t']:
             TURNS[a['hex']] = {'t': t, 'h': h, 'seen': seen}
         a['seenTurn'] = seen
+    for a in aircraft:                                 # 0.11.0: trails (a report only once, oldest dropped)
+        tr = TRAILS.setdefault(a['hex'], [])
+        if not tr or a['reported'] - tr[-1][0] >= 2:
+            tr.append((a['reported'], a['lon'], a['lat']))
+            while tr and now - tr[0][0] > TRAIL_SECONDS:
+                tr.pop(0)
     if len(TURNS) > 5000:
         for k in [k for k, v in TURNS.items() if now - v['t'] > 300]:
             TURNS.pop(k, None)
+    if len(TRAILS) > 3000:
+        for k in [k for k, v in TRAILS.items() if not v or now - v[-1][0] > TRAIL_SECONDS]:
+            TRAILS.pop(k, None)
 
 
 def turn_rate(a):
@@ -696,13 +722,20 @@ def note_demand(view=None) -> None:
     WAKE.set()
 
 
-WANTED = {'airlines': 'airline', 'airports': 'airport', 'routes': 'route', 'aircraft': 'aircraft'}
+WANTED = {'airlines': 'airline', 'airports': 'airport', 'routes': 'route', 'aircraft': 'aircraft',
+          'model-type': 'model', 'code-blocks': 'block', 'countries': 'country'}   # 0.11.0: the last three
 SCHEMA = """
     CREATE TABLE airline(icao TEXT PRIMARY KEY, name TEXT, iata TEXT);
     CREATE TABLE airport(icao TEXT PRIMARY KEY, name TEXT, iata TEXT, place TEXT, country TEXT, lat REAL, lon REAL);
     CREATE TABLE route(callsign TEXT PRIMARY KEY, number TEXT, airline TEXT, airports TEXT);
-    CREATE TABLE aircraft(hex TEXT PRIMARY KEY, reg TEXT, model TEXT, operator TEXT, private INTEGER, year TEXT, type TEXT, maker TEXT);"""
-STANDING_FILE = 'standing-v2.sqlite'     # 0.6.2: v2 adds the maker; the old file is used until the new one is built
+    CREATE TABLE aircraft(hex TEXT PRIMARY KEY, reg TEXT, model TEXT, operator TEXT, private INTEGER, year TEXT, type TEXT, maker TEXT);
+    CREATE TABLE model(icao TEXT PRIMARY KEY, maker TEXT, model TEXT, engines TEXT, engine_type TEXT, species TEXT, wake TEXT, active INTEGER);
+    CREATE TABLE block(start INTEGER, finish INTEGER, mil INTEGER, country TEXT);
+    CREATE INDEX block_start ON block(start);
+    CREATE TABLE country(iso TEXT PRIMARY KEY, name TEXT);"""
+# 0.6.2: v2 adds the maker; 0.11.0: v3 adds type names (model-type), the ICAO code blocks (country, military) and country
+# names - all in the same Virtual Radar Server download (CC0). The older file is used until the new one is built.
+STANDING_FILE = 'standing-v3.sqlite'
 
 
 def build_standing(stream, out_path: str) -> dict:
@@ -730,6 +763,22 @@ def build_standing(stream, out_path: str) -> dict:
                 elif kind == 'route' and g('Callsign'):
                     db.execute('INSERT OR REPLACE INTO route VALUES (?,?,?,?)',
                                (g('Callsign', 10).upper(), g('Number', 8), g('AirlineCode', 4).upper(), g('AirportCodes', 60).upper()))
+                elif kind == 'model' and g('ICAO'):
+                    # several rows per code (names, makers): the first active one wins, an inactive one only fills a gap
+                    act = 1 if g('IsActive') == '1' else 0
+                    db.execute('INSERT INTO model VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(icao) DO UPDATE SET maker=excluded.maker, '
+                               'model=excluded.model, engines=excluded.engines, engine_type=excluded.engine_type, species=excluded.species, '
+                               'wake=excluded.wake, active=excluded.active WHERE model.active=0 AND excluded.active=1',
+                               (g('ICAO', 5).lstrip('-').upper(), g('Manufacturer'), g('Model'), g('Engines', 3), g('EngineTypeCode', 1),
+                                g('SpeciesCode', 1), g('WakeTurbulenceCode', 1), act))
+                elif kind == 'block' and g('Start'):
+                    try:
+                        db.execute('INSERT INTO block VALUES (?,?,?,?)', (int(g('Start', 6), 16), int(g('Finish', 6), 16),
+                                                                         1 if g('IsMilitary') == '1' else 0, g('CountryISO2', 2).upper()))
+                    except ValueError:
+                        continue
+                elif kind == 'country' and g('ISO'):
+                    db.execute('INSERT OR REPLACE INTO country VALUES (?,?)', (g('ISO', 2).upper(), g('Name')))
                 elif kind == 'aircraft' and g('ICAO'):
                     db.execute('INSERT OR REPLACE INTO aircraft VALUES (?,?,?,?,?,?,?,?)', (g('ICAO', 6).lower(), g('Registration', 12), g('ManufacturerAndModel'),
                                g('Operator'), 1 if g('IsPrivateOperator') == '1' else 0, g('YearBuilt', 4), g('ModelICAO', 4).upper(), g('Manufacturer', 60)))
@@ -748,8 +797,9 @@ def build_standing(stream, out_path: str) -> dict:
 def standing_keeper() -> None:
     """Keeps the standing data at most a month old; tries again a day later if a download fails."""
     path = os.path.join(DATA_DIR, STANDING_FILE)
-    old = os.path.join(DATA_DIR, 'standing.sqlite')
-    if not os.path.exists(path) and os.path.exists(old):
+    old = next((o for o in (os.path.join(DATA_DIR, 'standing-v2.sqlite'), os.path.join(DATA_DIR, 'standing.sqlite'))
+                if os.path.exists(o)), '')
+    if not os.path.exists(path) and old:
         STANDING.update(path=old, builtAt=os.path.getmtime(old))      # routes and names keep working while v2 is built
     while True:
         age = time.time() - os.path.getmtime(path) if os.path.exists(path) else None
@@ -783,6 +833,54 @@ def lookup(sql: str, args: tuple):
             db.close()
     except sqlite3.Error:
         return None
+
+
+MODEL_CACHE = {'path': '', 'models': {}, 'blocks': None, 'countries': {}}
+
+
+def _standing_cache():
+    if MODEL_CACHE['path'] != STANDING['path']:
+        MODEL_CACHE.update(path=STANDING['path'], models={}, blocks=None, countries={})
+    return MODEL_CACHE
+
+
+def model_of(code: str):
+    """0.11.0: (maker, model, engines, engine type, species, wake) for a type code, from the standing data, or None."""
+    code = (code or '').upper()
+    if not code:
+        return None
+    c = _standing_cache()['models']
+    if code not in c:
+        if len(c) > 5000:
+            c.clear()
+        c[code] = lookup('SELECT maker, model, engines, engine_type, species, wake FROM model WHERE icao=?', (code,))
+    return c[code]
+
+
+def block_of(hexid: str):
+    """0.11.0: (country name, military?) of the ICAO code block an aircraft address is in (the most specific block)."""
+    try:
+        n = int((hexid or '').lstrip('~'), 16)
+    except ValueError:
+        return None
+    c = _standing_cache()
+    if c['blocks'] is None:
+        c['blocks'] = []
+        if STANDING['path']:
+            try:
+                db = sqlite3.connect(f"file:{STANDING['path']}?mode=ro", uri=True, timeout=2)
+                try:
+                    c['blocks'] = db.execute('SELECT start, finish, mil, country FROM block ORDER BY finish - start').fetchall()
+                    c['countries'] = dict(db.execute('SELECT iso, name FROM country').fetchall())
+                finally:
+                    db.close()
+            except sqlite3.Error:
+                c['blocks'] = []
+    for start, finish, mil, iso in c['blocks']:
+        if start <= n <= finish:
+            name = c['countries'].get(iso, '') if iso not in ('ZZ', '') else ''
+            return (name, bool(mil)) if name or mil else None
+    return None
 
 
 def airport_name(icao: str) -> str:
@@ -826,6 +924,24 @@ def route_plausible(lat, lon, stops) -> bool:
         spots.append(row)
     return any(off_route_nm(lat, lon, spots[i], spots[i + 1]) <= ROUTE_SLACK_NM for i in range(len(spots) - 1))
 
+
+# 0.11.0: autopilot modes as the plane sends them
+MODE_WORDS = {'autopilot': 'Autopilot', 'vnav': 'VNAV', 'althold': 'Altitude hold', 'approach': 'Approach', 'lnav': 'LNAV',
+              'tcas': 'TCAS'}
+# 0.11.0 (Rob 19 Nov 13:44, "Squawk meanings"): UK SSR codes with a fixed meaning (CAA UK SSR Code Allocation Plan, AIP
+# ENR 1.6 / NATS digital dataset; checked 19 Nov 2026 against two copies). Emergencies are shown by the Emergency row.
+SQUAWK_UK = {'7000': 'Conspicuity code: not under a radar service (usually flying visually)',
+             '2000': 'Entering UK airspace without a code yet, or on instruments without one given',
+             '7001': 'Military fast jet at low level, or climbing out of low level',
+             '7002': 'Flying in a danger area', '7003': 'Red Arrows, transiting or displaying',
+             '7004': 'Aerobatics or display flying', '7005': 'High-energy manoeuvres',
+             '7006': 'Military operations in a temporary reserved area', '7010': 'Flying circuits at an aerodrome',
+             '7400': 'Unmanned aircraft that has lost its control link', '0000': 'Transponder data unreliable',
+             '0006': 'British Transport Police air support', '0020': 'Air ambulance (HEMS)',
+             '0024': 'Radar flight evaluation or calibration', '0030': 'Pilot unsure of position (FIR lost)',
+             '0032': 'Police air support', '0033': 'Parachute dropping',
+             '0034': 'Towing: banner, target or glider, or trailing an aerial', '0035': 'Selected helicopter flight',
+             '0036': 'Helicopter pipeline or powerline inspection', '0037': 'Royal flight (helicopter)'}
 
 COMPASS = ['north', 'north-east', 'east', 'south-east', 'south', 'south-west', 'west', 'north-west']
 EMERGENCY = {'7700': 'General emergency (squawking 7700)', '7600': 'Radio failure (squawking 7600)',
@@ -884,7 +1000,18 @@ def details(entity_id: str) -> dict:
         known = ('', '', '', 0, '', '')            # out of date: the plane says it is something else
     # ADSB.lol's name is in capitals ("BOEING 777-300ER"): "Boeing 777-300ER", model numbers left alone
     desc = ' '.join(w.capitalize() if w.isalpha() and w.isupper() and len(w) > 2 else w for w in (a.get('desc') or '').split())
-    aircraft = desc or known[1] or TYPE_NAMES.get((a['type'] or '').upper()) or a['type']
+    tcode = (a['type'] or known[5] or '').upper()
+    mt = model_of(tcode)
+    # 0.11.0 (Rob 19 Nov 13:40-13:46: 47 planes showed only their type code, "V22", "B764", "C56X"): the type list's maker
+    # and model when nothing better is known; airport towers and vehicles say what they are
+    listed = ''
+    if mt and mt[1]:
+        listed = mt[1] if mt[0] and mt[1].lower().startswith(mt[0].lower()) else ' '.join(x for x in (mt[0], mt[1]) if x)
+    ground_kind = plane_kind(a)[0]
+    if ground_kind.startswith('ground-'):
+        aircraft = KIND_WORDS[ground_kind]
+    else:
+        aircraft = desc or known[1] or TYPE_NAMES.get(tcode) or listed or a['type']
     add('Aircraft', aircraft, more=False)
     operator = a.get('operator') or ('Private' if known[3] else known[2])
     if operator and not (airline and operator.lower() == airline[0].lower()):
@@ -928,6 +1055,49 @@ def details(entity_id: str) -> dict:
         out['photo'], out['photoName'] = photo, PHOTOS[photo][0]      # 0.8.1: TPA's own picture of the type
     add('Squawk', sq)
     add('ICAO code', a['hex'].upper())
+
+    # 0.11.0 (Rob 19 Nov 13:44, for the plane enthusiasts' page /planes: "Full type and variant, Operator and country,
+    # Flight data, Squawk meanings"): rows marked 'pro' are shown only there (inside More details). Only what the plane
+    # sends or the standing data knows - nothing guessed.
+    def pro(label, value):
+        if value:
+            rows.append({'label': label, 'value': str(value)[:120], 'more': True, 'pro': True})
+    blk = block_of(a['hex'])
+    if blk:
+        pro('Registered in', blk[0] + (' · military aircraft address' if blk[1] else '') if blk[0] else 'Military aircraft address')
+        if blk[1] and blk[0] and not any(r['label'] in ('Operator', 'Airline') for r in rows):
+            pro('Operator', blk[0] + ' military')
+    if mt:
+        word = {'J': 'jet', 'T': 'turboshaft' if mt[4] == 'H' else 'turboprop', 'P': 'piston', 'E': 'electric', 'R': 'rocket'}.get(mt[3], '')
+        if mt[2] and mt[2].isdigit() and word:
+            pro('Engines', f'{mt[2]} × {word}')
+        pro('Wake category', {'L': 'Light', 'M': 'Medium', 'H': 'Heavy', 'J': 'Super'}.get(mt[5], ''))
+    if not a['ground']:
+        m = a.get('mach')
+        if m is not None and 0.1 <= m <= 3:
+            pro('Mach', f'Mach {m:.2f}')
+        if a.get('windKt') is not None and a.get('windDir') is not None and 1 <= a['windKt'] < 300:
+            pro('Wind at the plane', f"{a['windKt']:.0f} knots from {round(a['windDir']) % 360:03d}°")
+        if a.get('oat') is not None and -90 < a['oat'] < 60:
+            pro('Outside air', f"{a['oat']:.0f} °C")
+        if a.get('altGeom') is not None and -2000 < a['altGeom'] < 70000:
+            pro('GPS height', f"{int(round(a['altGeom'] / 25) * 25):,} ft")
+        if a.get('navHeading') is not None and 0 <= a['navHeading'] <= 360:
+            pro('Autopilot heading', f"{round(a['navHeading']) % 360:03d}°")
+        if a.get('qnh') is not None and 900 < a['qnh'] < 1100:
+            pro('Altimeter setting', f"{a['qnh']:.0f} hPa")
+        modes = [MODE_WORDS.get(x.lower(), x) for x in a.get('navModes') or []]
+        pro('Autopilot modes', ', '.join(modes))
+        tr = a.get('turnRate')
+        if tr is not None and 0.3 <= abs(tr) <= 30:
+            pro('Turning', f"{abs(tr):.1f}° a second to the {'right' if tr > 0 else 'left'}"
+                + (f" · banked {abs(a['roll']):.0f}°" if a.get('roll') is not None and abs(a['roll']) < 90 else ''))
+    pro('Squawk meaning', SQUAWK_UK.get(sq, ''))
+    now_t = time.time()
+    with LOCK:
+        trail = [[lon, lat] for t, lon, lat in TRAILS.get(a['hex'], []) if now_t - t <= TRAIL_SECONDS]
+    if len(trail) >= 2:
+        out['trail'] = trail[-120:]                  # 0.11.0: where it has been in the last 10 minutes
     cat = a.get('category') or ''
     add('Kind code', f'{cat} ({CATEGORY[cat]})' if cat in CATEGORY else cat)
     ago = max(0, round(time.time() - a['reported'])) if a.get('reported') else None
@@ -1010,7 +1180,10 @@ KIND_WORDS = {'military': 'Military', 'mil-fighter': 'Military fast jet', 'mil-t
               'mil-transport': 'Military transport', 'mil-helicopter': 'Military helicopter', 'mil-surveillance': 'Military surveillance', 'cargo': 'Cargo plane', 'helicopter': 'Helicopter', 'glider': 'Glider', 'widebody': 'Large airliner',
               'airliner': 'Airliner', 'turboprop': 'Propeller airliner', 'bizjet': 'Business jet', 'light': 'Light aircraft',
               'ground-emer': 'Airport fire and rescue vehicle', 'ground-gnd': 'Airport service vehicle',
-              'ground-twr': 'Airport tower transmitter'}
+              'ground-twr': 'Airport tower transmitter',
+              # 0.11.0 (Rob 19 Nov 13:40: a CV-22 Osprey was "Military helicopter" with a Chinook picture): from the type
+              # list's aircraft class (T = tiltrotor, G = gyroplane); the box shows no "typical" picture for these
+              'mil-tiltrotor': 'Military tiltrotor', 'tiltrotor': 'Tiltrotor', 'gyroplane': 'Gyroplane'}
 
 
 # 0.8.3 (owner 11 Nov 15:45 count: TWR 8, GND 7, EMER 4 "planes"; 16:31 option B): airport towers, service vehicles and fire
@@ -1031,15 +1204,21 @@ def plane_kind(a) -> tuple:
             kind, words = kind + '-plane', words + ' plane'
         return kind, words, 'from its callsign'
     reported = 'from what it reports'
+    species = (model_of(t) or ('',) * 6)[4] if t else ''      # 0.11.0: L plane, H helicopter, T tiltrotor, G gyroplane
+    if species == 'T':
+        kind = 'mil-tiltrotor' if a.get('military') else 'tiltrotor'
+        return kind, KIND_WORDS[kind], 'from the aircraft database and its type code' if a.get('military') else 'from its type code'
+    if species == 'G':
+        return 'gyroplane', KIND_WORDS['gyroplane'], 'from its type code'
     if a.get('military'):
-        if cat == 'A7' or t in HELICOPTER:
+        if cat == 'A7' or t in HELICOPTER or species == 'H':
             kind = 'mil-helicopter'
         else:
             kind = next((k for k, codes in (('mil-fighter', MIL_FIGHTER), ('mil-surveillance', MIL_SURVEILLANCE),
                                             ('mil-tanker', MIL_TANKER), ('mil-transport', MIL_TRANSPORT)) if t in codes), '')
             kind = kind or ('mil-fighter' if cat == 'A6' else 'military')
         return kind, KIND_WORDS[kind], 'from the aircraft database' + (' and its type code' if t and kind != 'military' else '')
-    if cat == 'A7' or t in HELICOPTER:
+    if cat == 'A7' or t in HELICOPTER or species == 'H':
         return 'helicopter', KIND_WORDS['helicopter'], reported if cat == 'A7' else 'from its type code'
     if cat == 'B1' or t in GLIDER:
         return 'glider', KIND_WORDS['glider'], reported if cat == 'B1' else 'from its type code'
@@ -1061,7 +1240,8 @@ def plane_kind(a) -> tuple:
 
 
 # 0.6.5 (owner 11 Nov 00:42: "Aircraft A20N"): names for the commonest type codes, when the plane sends none
-TYPE_NAMES = {'A318': 'Airbus A318', 'A319': 'Airbus A319', 'A320': 'Airbus A320', 'A321': 'Airbus A321', 'A19N': 'Airbus A319neo',
+TYPE_NAMES = {'V22': 'Bell Boeing V-22 Osprey', 'C5M': 'Lockheed C-5M Super Galaxy', 'C5': 'Lockheed C-5 Galaxy',   # 0.11.0
+              'A318': 'Airbus A318', 'A319': 'Airbus A319', 'A320': 'Airbus A320', 'A321': 'Airbus A321', 'A19N': 'Airbus A319neo',
               'A20N': 'Airbus A320neo', 'A21N': 'Airbus A321neo', 'BCS1': 'Airbus A220-100', 'BCS3': 'Airbus A220-300',
               'A332': 'Airbus A330-200', 'A333': 'Airbus A330-300', 'A339': 'Airbus A330-900neo', 'A359': 'Airbus A350-900',
               'A35K': 'Airbus A350-1000', 'A388': 'Airbus A380', 'B737': 'Boeing 737-700', 'B738': 'Boeing 737-800',

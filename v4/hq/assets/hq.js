@@ -314,6 +314,7 @@ const PLANE_PIC=Object.freeze({airliner:'airliner',widebody:'widebody',turboprop
   helicopter:'helicopter',cargo:'cargo',glider:'glider',balloon:'balloon','mil-fighter':'fighter',
   // 4.37.0 (owner 11 Nov 00:32, his second ten): military and emergency services; other military (trainers) the light aircraft
   'mil-tanker':'tanker','mil-transport':'miltransport','mil-helicopter':'milheli','mil-surveillance':'surveillance',military:'light',
+  'mil-tiltrotor':'miltransport',tiltrotor:'turboprop',gyroplane:'light',   // 4.95.0 (air 0.11.0 kinds; normally drawn as shapes)
   police:'policeheli',ambulance:'ambulanceheli',coastguard:'coastguardheli','police-plane':'policeplane','ambulance-plane':'ambulanceplane',
   'coastguard-plane':'coastguardplane','ground-emer':'icon-emer','ground-gnd':'icon-gnd','ground-twr':'icon-twr'});   // 4.45.0
 function planePic(e){if(e.component!=='air')return null;if(e.variant==null)return 'airliner';
@@ -334,7 +335,8 @@ function planeShape(e){
   // 4.93.0 (Rob 19 Nov 12:17-12:29): TPA's own shapes for military types the free set lacks; milCodes (A330, 737, King
   // Air, H135/H145, Tutor...) only for military planes - civil ones keep Rob's pictures, as he chose on 18 Nov
   const mil=PLANE_SHAPES.milCodes&&isMilitary(e)&&Object.hasOwn(PLANE_SHAPES.milCodes,e.typeCode)?PLANE_SHAPES.milCodes[e.typeCode]:null;
-  const k=mil||(Object.hasOwn(PLANE_SHAPES.codes,e.typeCode)?PLANE_SHAPES.codes[e.typeCode]:null);
+  const k=mil||(Object.hasOwn(PLANE_SHAPES.codes,e.typeCode)?PLANE_SHAPES.codes[e.typeCode]:null)
+    ||({'mil-tiltrotor':'V22',tiltrotor:'V22',gyroplane:'GYRO'})[e.variant]||null;   // 4.95.0: by kind when the type has none
   return k&&Object.hasOwn(PLANE_SHAPES.shapes,k)?k:null;}
 function typeShapeSvg(k,e){
   const s=PLANE_SHAPES.shapes[k],svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
@@ -439,7 +441,10 @@ async function loadDetails(e,box){
     const d=await r.json();
     if(!state.selected||state.selected.id!==e.id||!box.isConnected)return;
     const rows=[],more=[];
-    for(const row of Array.isArray(d.rows)?d.rows.slice(0,24):[]){
+    // 4.95.0 (Rob 19 Nov 13:44, the enthusiasts' extras are for /planes only): rows marked 'pro' show only there
+    const wanted=(Array.isArray(d.rows)?d.rows:[]).filter(row=>PLANES||row.pro!==true);
+    if(e.component==='air'&&PLANES)trailFrom(e,d);
+    for(const row of wanted.slice(0,PLANES?48:24)){
       const line=document.createElement('div');line.className='detail-row';
       const k=document.createElement('span');k.className='detail-label';k.textContent=String(row.label||'').slice(0,30);
       const v=document.createElement('span');v.className='detail-value';v.textContent=String(row.value||'').slice(0,120);
@@ -957,6 +962,26 @@ function zoomAnimStart(e){
   }
 }
 function zoomAnimEnd(){if(!zoomAnim)return;zoomAnim=false;markerLayer.classList.remove('zoom-anim');paint();}
+// 4.95.0 (Rob 19 Nov 13:44, "Trail behind the selected plane", planes page): the engine keeps each plane's last 10 minutes
+// of reports (air 0.11.0, details.trail); the line runs through them to where the plane is drawn now.
+const TRAIL={id:'',pts:[],line:null,svg:null};
+function trailFrom(e,d){
+  if(!Array.isArray(d.trail))return;
+  const pts=d.trail.filter(p=>Array.isArray(p)&&validNum(p[0])&&validNum(p[1])&&Math.abs(p[0])<=180&&Math.abs(p[1])<=90).slice(-200).map(p=>[p[1],p[0]]);
+  TRAIL.id=e.id;TRAIL.pts=pts;}
+function syncTrail(){
+  if(!PLANES||!map||!window.L||typeof L.polyline!=='function')return;
+  const sel=state.selected,pin=sel&&sel.component==='air'?pins.get('air:'+sel.id):null;
+  const want=!!sel&&sel.component==='air'&&TRAIL.id===sel.id&&TRAIL.pts.length>=1&&!!pin&&pin.lat!=null&&state.visible.air;
+  if(!want){if(TRAIL.line){TRAIL.line.remove();TRAIL.line=null;}if(!sel||sel.id!==TRAIL.id){TRAIL.id='';TRAIL.pts=[];}return;}
+  const ll=[...TRAIL.pts,[pin.lat,pin.lon]];
+  // its own SVG layer (the map draws on a canvas): a crisp line that sits under the planes
+  if(!TRAIL.line){
+    // its own pane above the map (and the traffic colours' 450), below the planes (they sit on the page's own layer)
+    if(!map.getPane('tpa-trail')&&typeof map.createPane==='function'){const pn=map.createPane('tpa-trail');pn.style.zIndex='460';pn.style.pointerEvents='none';}
+    TRAIL.svg=TRAIL.svg||(typeof L.svg==='function'?L.svg({pane:'tpa-trail'}):undefined);
+    TRAIL.line=L.polyline(ll,{color:'#ffb21e',weight:3,opacity:.85,interactive:false,className:'plane-trail',renderer:TRAIL.svg}).addTo(map);}
+  else TRAIL.line.setLatLngs(ll);}
 function markers(){
   if(zoomAnim)return;      // icons are travelling with the zoom animation; placed again when it ends
   // 4.1.8 (owner 31 Oct 13:50: after moving the map, moving icons jumped back to their old spot
@@ -1052,6 +1077,7 @@ function markers(){
   drawStacks(viewMoved);
   if(shown.size>keep.size*4+4000)for(const k of shown.keys())if(!keep.has(k))shown.delete(k);
   updateSelectedInfo(now);
+  syncTrail();   // 4.95.0
 }
 // 4.8.0: grouping stacked icons. Generic: any layer whose engine sends groupStacks: true, by how close the
 // icons are on the screen.
@@ -2423,7 +2449,10 @@ for(const id of IDS){$(id+'-toggle').checked=state.visible[id];$(id+'-toggle').a
   paint();});}
 // 4.94.0: the planes page has no other layers to switch
 if(PLANES)for(const l of document.querySelectorAll('.layer-toggle'))if(l.dataset.component!=='air')l.style.display='none';
-if(PLANES){const s=document.getElementById('search');if(s)s.placeholder='Place or flight…';}
+if(PLANES){const s=document.getElementById('search');if(s)s.placeholder='Place or flight…';
+  // 4.95.0: "Vehicles in view" counts aircraft only (the other tiles stayed as dashes)
+  for(const id of ['sea','rail','bus']){const c=document.getElementById(id+'-count')?.parentElement;if(c)c.style.display='none';}
+  const g=document.querySelector('.stats-grid');if(g)g.classList.add('planes-only');}
 function clock(){$('localclock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false});}clock();setInterval(clock,1000);
 $('home-button').onclick=home;$('zoom-in').onclick=()=>zoom(1);$('zoom-out').onclick=()=>zoom(-1);$('menu-button').onclick=()=>setMenu(!$('sidebar').classList.contains('open'));$('sidebar-close').onclick=()=>setMenu(false);$('sidebar-backdrop').onclick=()=>setMenu(false);$('search').addEventListener('input',e=>search(e.target.value));
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){$('sidebar').classList.remove('open');selected.classList.add('hidden');}});

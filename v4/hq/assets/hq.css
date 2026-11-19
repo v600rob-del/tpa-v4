@@ -621,3 +621,6 @@ body:has(.tpa-dialog-back:not(.hidden)) .menu-tab{visibility:hidden}
 
 /* 4.89.0 (Rob 18 Nov): Find Geoff */
 .detail-picture.geoff .geoff-tag{z-index:2;text-transform:none;font-size:13px;background:#ffb21e;color:#1a1200;font-weight:800;letter-spacing:.02em;box-shadow:0 2px 8px rgba(0,0,0,.35)}
+
+/* 4.95.0: the planes page - one count tile across the panel */
+.stats-grid.planes-only{grid-template-columns:1fr}
