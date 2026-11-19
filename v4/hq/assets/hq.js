@@ -2577,7 +2577,7 @@ function tipControl(tip){
 // own vehicle icons across the top (still for anyone who asks their device for less motion).
 function welcomeParade(){
   const strip=el('div','welcome-parade');strip.setAttribute('aria-hidden','true');
-  ['air','rail','bus','sea','air','bus'].forEach((c,i)=>{
+  (PLANES?['air','air','air','air','air','air']:['air','rail','bus','sea','air','bus']).forEach((c,i)=>{   // 4.96.1: planes page: planes only
     const pin=el('span','parade-pin '+c);pin.style.animationDelay=(-i*2.3)+'s';
     const art=buildArtwork({component:c,id:'parade',badge:'TPA',position:{headingDeg:c==='air'?90:null}});
     art.querySelector('.review-route')?.remove();          // no route number on the parade
@@ -2675,6 +2675,16 @@ function enterWaiting(enter,wait){
   enter.replaceChildren(fill,el('span','enter-text','Getting ready…'));}
 function enterReady(enter){enter.classList.remove('waiting');enter.disabled=false;enter.textContent=enter.dataset.label||"Let's go!";}
 function buildWelcome(w,tip,credits){
+  // 4.96.1 (Rob 19 Nov 15:04: "the plane start screen should only mention planes")
+  if(PLANES&&w)w={...w,title:'Welcome to TPA Planes',subtitle:'Live aircraft over the UK',
+    lines:["Watch the UK's aircraft on the move: airliners, military jets, helicopters, light aircraft and more. Free for everyone, always: no adverts, no subscriptions."],
+    sections:[{heading:'What to expect',items:['Every aircraft is drawn from live ADS-B reports, placed as accurately as the data allows.',
+      'Click any aircraft for its type, operator, height, speed and route; More details has the flight data it sends.',
+      'A trail shows where the selected aircraft has been in the last 10 minutes.',
+      'Use the filters to show just military, non-military or emergency aircraft.']}],
+    smallPrint:(Array.isArray(w.smallPrint)?w.smallPrint:[]).map(t=>typeof t==='string'&&t.startsWith('Built from open data')?
+      'Built from open data: FlyItalyADSB, ADSB.lol, Virtual Radar Server standing data and OpenStreetMap. Full details under Data sources & credits.':
+      typeof t==='string'?t.replace("for travel plans or anything safety-related; check with your operator","for travel or anything safety-related"):t)};
   const {back,card}=makeDialog('tpa-welcome',str(w?.title,80)||'Welcome to TPA');
   card.classList.add('welcome-card');
   card.prepend(welcomeParade());
