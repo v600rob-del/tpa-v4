@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.11.0'
+ENGINE_VERSION = '0.11.1'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -1281,6 +1281,10 @@ PHOTOS = {'a320': ('Airbus A320 family', ('A318', 'A319', 'A320', 'A321', 'A19N'
           'cessna': ('Cessna high-wing light aircraft', ('C150', 'C152', 'C170', 'C172', 'C182', 'C72R')),
           'piper': ('Piper PA-28', ('P28A', 'P28B', 'P28R', 'P28T')),
           'typhoon': ('Eurofighter Typhoon', ('EUFI',)),
+          # 0.11.1 (Rob 19 Nov 14:57): his pictures of five military types
+          'chinook': ('Boeing CH-47 Chinook', ('H47',)), 'a400m': ('Airbus A400M Atlas', ('A400',)),
+          'c17': ('Boeing C-17 Globemaster III', ('C17',)), 'c5m': ('Lockheed C-5M Super Galaxy', ('C5M', 'C5')),
+          'falcon900': ('Dassault Falcon 900', ('F900',)),
           'kingair': ('Beechcraft King Air', ('BE20', 'BE30', 'B350', 'BE9L', 'BE9T')),
           # 0.8.2: the owner's third batch (11 Nov 17:05)
           'a330': ('Airbus A330', ('A332', 'A333', 'A338', 'A339')),

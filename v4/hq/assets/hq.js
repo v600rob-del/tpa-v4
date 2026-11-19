@@ -378,7 +378,7 @@ function planeTurn(e,hd){if(e.variant==='ground-twr')return '';
   return e.variant!=='balloon'&&e.position?.headingDeg!=null?'rotate('+((e.position.headingDeg+extra)%360)+'deg)':'';}
 // 4.39.0 (owner 11 Nov 13:04, traffic: incident markers and roadworks happening now): TPA's own road-sign style icons,
 // drawn here (no outside pictures): warning triangles for incidents, the red ring for a closed road.
-const PLANE_PHOTOS=new Set(['a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair','a330','a350','embraer','robinson','trainer',
+const PLANE_PHOTOS=new Set(['chinook','a400m','c17','c5m','falcon900','a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair','a330','a350','embraer','robinson','trainer',
   'a380','b747','b767','apache','wildcat','twinotter','global','falcon','texan','l159','emer','gnd','twr']);   // 4.45.0: the fourth batch and airport vehicles   // 4.43.0
 // 4.43.0: when the type has no picture of its own, a typical picture of its kind, tagged as such; no kind known: a faded
 // airliner tagged "Type not known" (as for buses). Kinds without a picture yet show none.
