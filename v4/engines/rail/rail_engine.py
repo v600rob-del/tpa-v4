@@ -53,7 +53,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-ENGINE_VERSION = '1.7.1'
+ENGINE_VERSION = '1.7.2'
 COMPONENT = 'rail'
 CONTRACT = '1.0'
 ATTRIBUTION = ('Trains: contains information of Network Rail Infrastructure Limited (Data Feeds Licence) · platforms © OpenStreetMap contributors · '
@@ -2006,6 +2006,37 @@ def still_shown(t: dict, now: float) -> bool:
                 or (t.get('cancelled') and now - t.get('cancelledAt', 0) > CANCELLED_KEEP))
 
 
+# 1.7.2 (found 19 Nov 2026 12:10 in Rob's copy-back: trainsTracked=20000, the MAX_TRAINS cap, while 2,062 were shown;
+# 5,511 at 18:43 the day before, 7,536 at 20:03; rail memory 328 -> 585 MB): still_shown() hid finished and old trains,
+# but nothing removed them, so they piled up until the cap (daily restarts used to hide it). Now a train is forgotten
+# FORGET_AFTER after it stopped being shown (a margin for a late report), with its headcode entry. A later report simply
+# makes it a new one; its timetable link (ACTIVATED) is kept separately, so it still knows its journey.
+FORGET_AFTER = 30 * 60
+FORGET_EVERY = 60
+FORGOT = {'at': 0.0, 'total': 0, 'last': 0}
+
+
+def forget_finished(now: float, force: bool = False) -> int:
+    """Forget trains no longer shown for FORGET_AFTER. Call with LOCK held."""
+    if not force and now - FORGOT['at'] < FORGET_EVERY:
+        return 0
+    FORGOT['at'] = now
+    trains = STATE['trains']
+    gone = [k for k, t in trains.items() if not still_shown(t, now - FORGET_AFTER)]
+    for k in gone:
+        t = trains.pop(k)
+        ids = BY_HEAD.get(t.get('headcode') or '')
+        if ids is not None:
+            ids.discard(k)
+            if not ids:
+                BY_HEAD.pop(t['headcode'], None)
+    if gone:
+        STATE['dirty'] = True
+    FORGOT['total'] += len(gone)
+    FORGOT['last'] = len(gone)
+    return len(gone)
+
+
 def stretch_box(t: dict):
     """0.4.1 / 1.0.2: the stretch a train is on, as (south, west, north, east), or None. A train is also sent to a view
     this stretch crosses, so it glides in instead of popping up later, and stays when zoomed in between two places.
@@ -2203,6 +2234,8 @@ def write_counts(root: Path, points, now: float) -> int:
 def publish_round() -> dict:
     t_cpu, t_wall = time.thread_time(), time.monotonic()
     now = time.time()
+    with LOCK:
+        forget_finished(now, force=PUBLISH['rounds'] == 0)    # 1.7.2: once a minute (and on the first round)
     root = _folder(Path(TILES_DIR) / 'rail')
     frame_out, h, notice, trains, connected_for, booked_now = frame_head(now)
     small: dict = {}
@@ -2354,6 +2387,7 @@ class Handler(BaseHTTPRequestHandler):
                                         'loginConfigured': HAVE_LOGIN, 'connected': STATE['connected'],
                                         'stationsKnown': len(STATE['stations'] or {}), 'referenceError': STATE['referenceError'],
                                         'lastError': STATE['lastError'], 'trainsTracked': len(STATE['trains']),
+                                        'trainsForgotten': FORGOT['total'],   # 1.7.2
                                         'loginRefusals': STATE['loginRefusals'], 'networkRailSaid': STATE['networkRailSaid'],
                                         'timetableTrainsNow': STATE.get('timetableTrainsNow', 0) if timetable_mode(time.time()) else 0,
                                         'networkRailSaidAt': iso(STATE['networkRailSaidAt']) if STATE['networkRailSaidAt'] else None,
