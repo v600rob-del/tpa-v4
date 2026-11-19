@@ -4,7 +4,11 @@ From VRS Custom Markers by rikgale: https://github.com/rikgale/VRSCustomMarkers
 (forked from shish0r/VRSCustomMarkers), commit 4ac90d956017e3373dcd4f218851019ca096b769.
 Released under CC0 1.0 Universal (public domain dedication). TPA is free to use them; credited with thanks.
 TPA trimmed the numbers, cropped each shape to fill its icon and left out boats, airport vehicles and
-regional airliners. The CC0 text follows.
+regional airliners.
+
+Shapes whose names start TPA_ (Wildcat, Puma, Juno/Jupiter, Black Hawk, Tutor, Shadow, Voyager, 737/Poseidon,
+Hercules) are TPA's own, drawn on 19 Nov 2026 from each aircraft's real proportions because the set above has no
+shape for them (v4/tools/tpa_plane_shapes_own.py). They are released under CC0 1.0 too. The CC0 text follows.
 
 -----
 

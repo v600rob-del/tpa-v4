@@ -316,10 +316,13 @@ function planeShape(e){
   if(KIDS||e.component!=='air'||typeof e.typeCode!=='string'||isGround(e))return null;
   if(!PLANE_SHAPES){
     if(Date.now()-planeShapesAsked>60000){planeShapesAsked=Date.now();
-      fetch('/assets/planes/shapes.json?v=4.84.0').then(r=>r.ok?r.json():null)
+      fetch('/assets/planes/shapes.json?v=4.93.0').then(r=>r.ok?r.json():null)
         .then(j=>{if(j&&j.codes&&j.shapes)PLANE_SHAPES=j;}).catch(()=>{});}
     return null;}
-  const k=Object.hasOwn(PLANE_SHAPES.codes,e.typeCode)?PLANE_SHAPES.codes[e.typeCode]:null;
+  // 4.93.0 (Rob 19 Nov 12:17-12:29): TPA's own shapes for military types the free set lacks; milCodes (A330, 737, King
+  // Air, H135/H145, Tutor...) only for military planes - civil ones keep Rob's pictures, as he chose on 18 Nov
+  const mil=PLANE_SHAPES.milCodes&&isMilitary(e)&&Object.hasOwn(PLANE_SHAPES.milCodes,e.typeCode)?PLANE_SHAPES.milCodes[e.typeCode]:null;
+  const k=mil||(Object.hasOwn(PLANE_SHAPES.codes,e.typeCode)?PLANE_SHAPES.codes[e.typeCode]:null);
   return k&&Object.hasOwn(PLANE_SHAPES.shapes,k)?k:null;}
 function typeShapeSvg(k,e){
   const s=PLANE_SHAPES.shapes[k],svg=document.createElementNS('http://www.w3.org/2000/svg','svg');
