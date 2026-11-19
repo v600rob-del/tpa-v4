@@ -8,7 +8,12 @@ For every plane seen in three different reports in a row (r0, r1, r2), it predic
   straight: r1's speed along r1's heading (what the map does today);
   turn:     the same, but the heading keeps changing at the rate seen from r0 to r1 (worked out by us);
   reported: the heading keeps changing at the plane's own reported turn rate (track_rate), where it sends one.
-and prints how far each guess was from the real r2, for military/civil and ADS-B/MLAT planes."""
+and prints how far each guess was from the real r2, for military/civil and ADS-B/MLAT planes.
+Second look (Rob 19 Nov 11:42): for planes that send no turn rate, also tries gentler guesses -
+  half:  half the turn seen from r0 to r1;
+  agree: only when the two turns before (r-1 to r0 and r0 to r1) go the same way, at their average;
+  agree-half: both.
+"Turning" now means really turning between r1 and r2 (judged from the real answer, so every guess is judged fairly)."""
 import json
 import math
 import re
@@ -96,7 +101,8 @@ for i in range(ROUNDS):
 
 rows = []
 for hexid, tr in tracks.items():
-    for r0, r1, r2 in zip(tr, tr[1:], tr[2:]):
+    for k, (r0, r1, r2) in enumerate(zip(tr, tr[1:], tr[2:])):
+        rm = tr[k - 1] if k >= 1 else None
         d01, d12 = r1['t'] - r0['t'], r2['t'] - r1['t']
         if not (2 <= d01 <= 60 and 2 <= d12 <= 60) or r1['mps'] < 30:
             continue
@@ -106,16 +112,36 @@ for hexid, tr in tracks.items():
         real = (r2['lat'], r2['lon'])
         straight = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12), real)
         turn = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, rate), real)
+        half = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, rate / 2), real)
+        agree = agree_half = straight
+        if rm is not None and 2 <= r0['t'] - rm['t'] <= 60:
+            before = wrap(r0['trk'] - rm['trk']) / (r0['t'] - rm['t'])
+            if abs(before) <= MAX_RATE and before * rate > 0 and min(abs(before), abs(rate)) >= 0.3:
+                avg = (before + rate) / 2
+                agree = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, avg), real)
+                agree_half = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, avg / 2), real)
+        truly = abs(wrap(r2['trk'] - r1['trk']) / d12) >= 0.5
         rep = None
         if r1['rate'] is not None and abs(float(r1['rate'])) <= MAX_RATE:
             rep = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, float(r1['rate'])), real)
-        rows.append({'mil': info[hexid]['mil'], 'mlat': 'mlat' in info[hexid]['srcs'], 'turning': abs(rate) >= 0.5,
-                     'gap': d12, 'straight': straight, 'turn': turn, 'rep': rep, 'rate': abs(rate)})
+        rows.append({'mil': info[hexid]['mil'], 'mlat': 'mlat' in info[hexid]['srcs'], 'turning': truly,
+                     'gap': d12, 'straight': straight, 'turn': turn, 'rep': rep, 'rate': abs(rate),
+                     'half': half, 'agree': agree, 'agree_half': agree_half, 'own': r1['rate'] is not None})
 
 
 def q(v, f):
     v = sorted(v)
     return v[min(len(v) - 1, int(f * len(v)))] if v else float('nan')
+
+
+def table2(name, sel):
+    s = [r for r in rows if sel(r)]
+    if not s:
+        print(f'{name:38s}  none')
+        return
+    cell = lambda key: f'{q([r[key] for r in s], .5):5.0f}/{q([r[key] for r in s], .9):5.0f}'
+    print(f'{name:38s} {len(s):5d}   straight {cell("straight")}   turn {cell("turn")}   half {cell("half")}'
+          f'   agree {cell("agree")}   agree-half {cell("agree_half")}')
 
 
 def table(name, sel):
@@ -154,4 +180,13 @@ table('military, turning', lambda r: r['mil'] and r['turning'])
 table('MLAT (ground-receiver) planes', lambda r: r['mlat'])
 table('MLAT, turning', lambda r: r['mlat'] and r['turning'])
 table('civil ADS-B, turning', lambda r: not r['mil'] and not r['mlat'] and r['turning'])
+print()
+print('Planes that send NO turn rate: the gentler guesses (median / 90%, metres):')
+table2('no own rate, all', lambda r: not r['own'])
+table2('no own rate, really turning', lambda r: not r['own'] and r['turning'])
+table2('military, no own rate', lambda r: r['mil'] and not r['own'])
+table2('military, no own rate, really turning', lambda r: r['mil'] and not r['own'] and r['turning'])
+table2('MLAT, no own rate', lambda r: r['mlat'] and not r['own'])
+table2('MLAT, no own rate, really turning', lambda r: r['mlat'] and not r['own'] and r['turning'])
+table2('civil ADS-B, no own rate, turning', lambda r: not r['mil'] and not r['mlat'] and not r['own'] and r['turning'])
 print('\nDone. Nothing was changed.')
