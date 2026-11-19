@@ -13,6 +13,10 @@ Second look (Rob 19 Nov 11:42): for planes that send no turn rate, also tries ge
   half:  half the turn seen from r0 to r1;
   agree: only when the two turns before (r-1 to r0 and r0 to r1) go the same way, at their average;
   agree-half: both.
+Third look (Rob 19 Nov 11:55): the TPA rule, exactly as the map would use it -
+  the plane reports its own position (ADS-B) and sends a turn rate: that rate;
+  it reports its own position but sends none: half the turn seen between its last two reports;
+  placed by ground receivers (MLAT) or anything else: straight on. Turns last at most TURN_SECONDS, then straight.
 "Turning" now means really turning between r1 and r2 (judged from the real answer, so every guess is judged fairly)."""
 import json
 import math
@@ -24,6 +28,7 @@ import urllib.request
 LAT, LON, RADIUS = 52.3, -2.2, 250
 ROUNDS, GAP = 13, 10
 MAX_RATE = 8.0                  # degrees a second: anything faster is a bad reading
+TURN_SECONDS = 15               # the map stops turning a plane this long after its report
 KEY = ''
 for line in open('/etc/tpa/air.env', encoding='utf8'):
     m = re.match(r'\s*TPA_FLYITALY_API_KEY\s*=\s*"?([^"\s]+)', line)
@@ -45,17 +50,24 @@ def wrap(d):
     return (d + 180.0) % 360.0 - 180.0
 
 
-def move(lat, lon, track, mps, secs, rate=0.0, step=0.5):
-    """Dead-reckon with a heading that changes at `rate` degrees a second; returns (lat, lon)."""
+def move(lat, lon, track, mps, secs, rate=0.0, step=0.5, turn_for=None):
+    """Dead-reckon with a heading that changes at `rate` degrees a second (for `turn_for` s at most); returns (lat, lon)."""
     t, h = 0.0, track
     while t < secs - 1e-9:
         d = min(step, secs - t)
-        hh = math.radians(h + rate * d / 2)
+        r = rate if turn_for is None or t < turn_for - 1e-9 else 0.0
+        if turn_for is not None and t < turn_for < t + d:
+            d = turn_for - t
+        hh = math.radians(h + r * d / 2)
         lat += mps * d * math.cos(hh) / 111195.0
         lon += mps * d * math.sin(hh) / (111195.0 * max(0.2, math.cos(math.radians(lat))))
-        h += rate * d
+        h += r * d
         t += d
     return lat, lon
+
+
+def own_position(src):
+    return src.startswith('adsb') or src.startswith('adsr')
 
 
 def metres(a, b):
@@ -94,7 +106,7 @@ for i in range(ROUNDS):
             continue
         if not tr or when > tr[-1]['t'] + 0.9:            # a new position
             tr.append({'t': when, 'lat': lat, 'lon': lon, 'trk': float(trk), 'mps': float(gs) * 0.514444,
-                       'rate': a.get('track_rate'), 'src': inf['srcs']})
+                       'rate': a.get('track_rate'), 'src': src})
             inf['reports'] += 1
     print(f'  round {i + 1}: {len(p.get("ac") or [])} planes', flush=True)
     time.sleep(max(0.0, GAP - (time.time() - t0)))
@@ -120,13 +132,20 @@ for hexid, tr in tracks.items():
                 avg = (before + rate) / 2
                 agree = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, avg), real)
                 agree_half = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, avg / 2), real)
+        if own_position(r1['src']) and r1['rate'] is not None and abs(float(r1['rate'])) <= MAX_RATE:
+            rule_rate = float(r1['rate'])
+        elif own_position(r1['src']):
+            rule_rate = rate / 2
+        else:
+            rule_rate = 0.0
+        rule = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, rule_rate, turn_for=TURN_SECONDS), real)
         truly = abs(wrap(r2['trk'] - r1['trk']) / d12) >= 0.5
         rep = None
         if r1['rate'] is not None and abs(float(r1['rate'])) <= MAX_RATE:
             rep = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, float(r1['rate'])), real)
         rows.append({'mil': info[hexid]['mil'], 'mlat': 'mlat' in info[hexid]['srcs'], 'turning': truly,
                      'gap': d12, 'straight': straight, 'turn': turn, 'rep': rep, 'rate': abs(rate),
-                     'half': half, 'agree': agree, 'agree_half': agree_half, 'own': r1['rate'] is not None})
+                     'half': half, 'agree': agree, 'agree_half': agree_half, 'own': r1['rate'] is not None, 'rule': rule})
 
 
 def q(v, f):
@@ -189,4 +208,26 @@ table2('military, no own rate, really turning', lambda r: r['mil'] and not r['ow
 table2('MLAT, no own rate', lambda r: r['mlat'] and not r['own'])
 table2('MLAT, no own rate, really turning', lambda r: r['mlat'] and not r['own'] and r['turning'])
 table2('civil ADS-B, no own rate, turning', lambda r: not r['mil'] and not r['mlat'] and not r['own'] and r['turning'])
+print()
+print('The TPA rule against straight on (median / 90%, metres; "better" = closer than straight, "worse" = further):')
+
+
+def table3(name, sel):
+    s = [r for r in rows if sel(r)]
+    if not s:
+        print(f'{name:38s}  none')
+        return
+    st, ru = [r['straight'] for r in s], [r['rule'] for r in s]
+    better = sum(r['rule'] < r['straight'] - 1 for r in s)
+    worse = sum(r['rule'] > r['straight'] + 1 for r in s)
+    print(f'{name:38s} {len(s):5d}   straight {q(st, .5):5.0f}/{q(st, .9):5.0f}   TPA rule {q(ru, .5):5.0f}/{q(ru, .9):5.0f}'
+          f'   better {100 * better / len(s):3.0f}%  worse {100 * worse / len(s):3.0f}%')
+
+
+table3('all planes', lambda r: True)
+table3('really turning', lambda r: r['turning'])
+table3('military', lambda r: r['mil'])
+table3('military, really turning', lambda r: r['mil'] and r['turning'])
+table3('MLAT', lambda r: r['mlat'])
+table3('civil, really turning', lambda r: not r['mil'] and r['turning'])
 print('\nDone. Nothing was changed.')
