@@ -34,12 +34,12 @@ import html as htmllib
 ROOT = Path(__file__).resolve().parent
 COMPONENTS = ('air', 'sea', 'rail', 'bus', 'road', 'stations', 'stops', 'busstations')   # 4.52.0: stations and their live boards; 4.53.0: bus stops; 4.54.0: bus stations
 PLANE_BOX = ('a320','b737','b787','b777','a220','atr72','tutor','prefect','cessna','piper','typhoon','kingair','airliner','widebody','turboprop','bizjet','light','helicopter','cargo','miltransport','a330','a350','embraer','robinson','trainer','glider','milheli','police','ambulance','coastguard','a380','b747','b767','apache','wildcat','twinotter','global','falcon','texan','l159','emer','gnd','twr')   # 4.43.0: plane box pictures
-PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/assets/kids-sounds.js', '/assets/bus-replay.js', '/assets/bus-fresh.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp', '/assets/icons/busstation.webp', '/assets/icons/trainstation.webp', '/assets/icons/busstop.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
+PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/assets/hq.js', '/assets/tpa-basemap-loader.js', '/assets/transport-vector-layer.js', '/data/uk-geography.json', '/data/site-config.json', '/assets/geoff.jpg', '/user', '/kids', '/full', '/planes', '/assets/kids-sounds.js', '/assets/bus-replay.js', '/assets/bus-fresh.js'} | {'/assets/kids/'+f for f in ('bus-horn.mp3','bus-horn2.mp3','bus-engine.mp3','train-chuff.mp3','train-whistle.mp3','train-horn.mp3','train-track.mp3','plane-flyby.mp3','plane-takeoff.mp3','CREDITS.txt')} | {'/assets/icons/bus.webp', '/assets/icons/train.webp', '/assets/buses/bus.webp', '/assets/icons/busstation.webp', '/assets/icons/trainstation.webp', '/assets/icons/busstop.webp'} | {'/assets/buses/'+k+'.webp' for k in ('dd','sd','coach','mini')} | {'/assets/planes/box/'+k+'.webp' for k in PLANE_BOX} | {'/assets/planes/'+k+'.webp' for k in ('airliner','widebody','turboprop','bizjet','light','helicopter','cargo','fighter','glider','balloon','tanker','miltransport','milheli','surveillance','policeheli','policeplane','ambulanceheli','ambulanceplane','coastguardheli','coastguardplane','icon-emer','icon-gnd','icon-twr')} | {'/assets/trains/'+k+'.webp' for k in ('c800','c390','c43','c220','c150','c158','c170','c195','c345','c700','c755','c387','c66','c165','c777','c350','c385','c323','c185','c395','c380','c333','celectric','cdiesel')}   # 4.11.1: kids recordings   # 4.9.0: /user = the page as a standard user sees it   # 4.7.0: Geoff (owner's cat) on the welcome screen
 # 4.14.0 (owner 3 Nov 20:35: "more professional", its own look): TPA's own signage type, served from here (no outside requests)
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.93.0'
+HQ_VERSION = '4.94.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
@@ -881,7 +881,7 @@ class HQHandler(SimpleHTTPRequestHandler):
             try:self.wfile.write(raw)
             except (BrokenPipeError,ConnectionResetError):pass
             return
-        if path=='/' and DEFAULT_VIEW=='user':
+        if path in ('/','/planes') and DEFAULT_VIEW=='user':   # 4.94.0: the planes page too
             raw=versioned_assets((ROOT/'index.html').read_bytes().replace(b'<html ',b'<html data-default-view="user" ',1))
             # 4.76.0 (Rob 18 Nov 03:47 "i cant find anything on the map"; chose "Whole of Britain"): on the real site
             # addresses visitors start on the whole UK, not on Beverley (builders' tests on 127.0.0.1 keep Beverley)
@@ -892,7 +892,7 @@ class HQHandler(SimpleHTTPRequestHandler):
             try:self.wfile.write(raw)
             except (BrokenPipeError,ConnectionResetError):pass
             return
-        if path in ('/','/user','/kids','/full','/index.html'):   # 4.75.1: the page itself, with version-tagged scripts
+        if path in ('/','/user','/kids','/full','/planes','/index.html'):   # 4.75.1: the page itself, with version-tagged scripts
             raw=versioned_assets((ROOT/'index.html').read_bytes())
             self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(raw)))
             self.send_header('Cache-Control','no-cache');self._cache_set=True;self.end_headers()
@@ -900,7 +900,7 @@ class HQHandler(SimpleHTTPRequestHandler):
             except (BrokenPipeError,ConnectionResetError):pass
             return
         if path in PUBLIC:
-            self.path='/index.html' if path in ('/','/user','/kids','/full') else path
+            self.path='/index.html' if path in ('/','/user','/kids','/full','/planes') else path
             return super().do_GET()
         return self.send_error(404,'HQ standard-only resource allowlist')
     def do_POST(self):

@@ -16,13 +16,18 @@ const $=id=>document.getElementById(id),root=$('map'),canvas=$('geo-canvas'),ctx
 // vehicle is tapped, big picture buttons, "I can see …" counting, "Ride along!", and a grown-ups button that
 // must be held for 3 seconds. No coffee box (we never ask children for money) and nothing is collected.
 const KIDS=location.pathname==='/kids'||new URLSearchParams(location.search).get('view')==='kids';
+// 4.94.0 (Rob 19 Nov 12:41, from plane enthusiasts' feedback: "a plane only one would not use our allotted data for all the
+// other vehicles and maps"): tpalive.co.uk/planes is the map with aircraft only - buses, trains, stations, stops and
+// traffic are never asked for, so no TomTom pictures, bus or train files. Rob: address only (no link), Easter egg as is.
+const PLANES=!KIDS&&(location.pathname==='/planes'||new URLSearchParams(location.search).get('view')==='planes');
 // 4.20.0 (owner 5 Nov 15:26-16:41): the live server makes the main address the user page (data-default-view on the
 // page); the owner's full page, with "Report this", is /full (or ?view=full).
 const VIEW_ASKED=new URLSearchParams(location.search).get('view');
-const FULL_VIEW=!KIDS&&(location.pathname==='/full'||VIEW_ASKED==='full');
-const USER_VIEW=KIDS||(!FULL_VIEW&&(location.pathname==='/user'||VIEW_ASKED==='user'||document.documentElement.dataset.defaultView==='user'));
+const FULL_VIEW=!KIDS&&!PLANES&&(location.pathname==='/full'||VIEW_ASKED==='full');
+const USER_VIEW=KIDS||PLANES||(!FULL_VIEW&&(location.pathname==='/user'||VIEW_ASKED==='user'||document.documentElement.dataset.defaultView==='user'));
 if(KIDS){document.documentElement.classList.add('kids-view');}
-if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':'TPA · Live UK trains, buses and planes on one map';
+if(PLANES){document.documentElement.classList.add('planes-view');}
+if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':PLANES?'TPA Planes · Live UK aircraft on a map':'TPA · Live UK trains, buses and planes on one map';
   const h=document.querySelector('.search-panel h2');if(h)h.textContent='FIND A PLACE';
   const m=document.querySelector('.search-panel .micro');if(m)m.textContent='';}
 const HOME={lon:-0.423,lat:53.842,z:11};
@@ -45,7 +50,14 @@ const POI=[
 // screen for the users who wont need them"): these layers start switched off; a visitor who switches one on keeps it on
 // in that browser (and off again if they switch it off).
 const OFF_AT_START=['stops'];
-function layerOnAtStart(id){if(!OFF_AT_START.includes(id))return true;try{return localStorage.getItem('tpa-layer-on-'+id)==='1';}catch(_){return false;}}
+// 4.94.0 (Rob 19 Nov 12:45, "remember them"): every layer the visitor switched on or off is remembered for next time (it
+// was bus stops only), so someone who hides buses doesn't load them again each visit. The planes page shows aircraft
+// only, and Kids mode always starts with everything (neither remembers).
+function layerOnAtStart(id){
+  if(PLANES)return id==='air';
+  if(!KIDS)try{const v=localStorage.getItem('tpa-layer-on-'+id);if(v==='1')return true;if(v==='0')return false;}catch(_){}
+  return !OFF_AT_START.includes(id);}
+const ASK_WHEN_SHOWN=new Set();   // 4.94.0: layers hidden at start are only asked for once they're switched on
 const state={live:Object.fromEntries(IDS.map(id=>[id,false])),notice:Object.fromEntries(IDS.map(id=>[id,''])),overlays:Object.create(null),parked:Object.fromEntries(IDS.map(id=>[id,false])),lon:HOME.lon,lat:HOME.lat,z:HOME.z,visible:Object.fromEntries(IDS.map(id=>[id,layerOnAtStart(id)])),status:Object.fromEntries(IDS.map(id=>[id,'not_installed'])),frames:Object.create(null),geo:null,selected:null,renderer:'loading',mapErrors:0};
 let map=null,ready=false,toastTimer=0,pending=false,pan=null;
 const selected=$('map-selection');
@@ -1824,7 +1836,7 @@ const bubbleBox=document.createElement('div');bubbleBox.className='bubble-layer'
 async function fetchCounts(){
   if(!BUBBLES_ON||!map||map.getZoom()>=bubbleZoom())return;
   const slot=Math.floor(serverNow()/10000);if(COUNTS.asked===slot)return;COUNTS.asked=slot;
-  await Promise.all(BUBBLE_LAYERS.map(async id=>{
+  await Promise.all(BUBBLE_LAYERS.filter(id=>state.visible[id]).map(async id=>{   // 4.94.0: only layers that are shown
     try{const c=await tileJSON(`/tiles/${id}/counts.json?r=${slot}`,4000,true);
       if(c&&c.v===1&&validNum(c.cell)&&c.cell>0&&Array.isArray(c.c)&&validNum(c.at)){COUNTS[id]=c;bubbleSig='';paint();}}catch(_){}}));
 }
@@ -2273,6 +2285,10 @@ function resumeDrawing(){
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')resumeDrawing();});
 function currentBox(pad){if(!map||typeof map.getBounds!=='function')return null;const b=pad?map.getBounds().pad(pad):map.getBounds();return {w:b.getWest(),s:b.getSouth(),e:b.getEast(),n:b.getNorth()};}
 async function getComponent(id){
+  // 4.94.0 (found building the planes page, 19 Nov): a layer switched off was still asked for whenever the map moved,
+  // was dragged or the tab came back (all those ask every live layer). Now a hidden layer is never asked; switching it
+  // on asks at once (the toggle), then its usual polling carries on.
+  if(!state.visible[id]){ASK_WHEN_SHOWN.add(id);return;}
   const seq=seqSent[id]=(seqSent[id]||0)+1,box=currentBox(0.2);lastFetch[id]=Date.now();
   try{
     const asked=performance.now();
@@ -2402,8 +2418,12 @@ function stationSearch(q){clearTimeout(stationTimer);const ask=++stationAsk;
     if(ask===stationAsk&&!found){const p=out.querySelector('p.empty.searching');if(p){p.classList.remove('searching');p.textContent='Nothing found by that name.';}}
   },250);}
 for(const id of IDS){$(id+'-toggle').checked=state.visible[id];$(id+'-toggle').addEventListener('change',()=>{state.visible[id]=$(id+'-toggle').checked;
-  if(OFF_AT_START.includes(id))try{localStorage.setItem('tpa-layer-on-'+id,state.visible[id]?'1':'0');}catch(_){}
+  if(!PLANES&&!KIDS)try{localStorage.setItem('tpa-layer-on-'+id,state.visible[id]?'1':'0');}catch(_){}   // 4.94.0: every layer
+  if(state.visible[id]&&ASK_WHEN_SHOWN.delete(id)&&!state.parked[id])getComponent(id);   // 4.94.0: first ask, now it's wanted
   paint();});}
+// 4.94.0: the planes page has no other layers to switch
+if(PLANES)for(const l of document.querySelectorAll('.layer-toggle'))if(l.dataset.component!=='air')l.style.display='none';
+if(PLANES){const s=document.getElementById('search');if(s)s.placeholder='Place or flight…';}
 function clock(){$('localclock').textContent=new Date().toLocaleTimeString('en-GB',{hour12:false});}clock();setInterval(clock,1000);
 $('home-button').onclick=home;$('zoom-in').onclick=()=>zoom(1);$('zoom-out').onclick=()=>zoom(-1);$('menu-button').onclick=()=>setMenu(!$('sidebar').classList.contains('open'));$('sidebar-close').onclick=()=>setMenu(false);$('sidebar-backdrop').onclick=()=>setMenu(false);$('search').addEventListener('input',e=>search(e.target.value));
 document.addEventListener('keydown',e=>{if(e.key==='Escape'){$('sidebar').classList.remove('open');selected.classList.add('hidden');}});
@@ -2824,7 +2844,7 @@ async function loadSiteConfig(){
   startPreparing(!(welcome&&cfg.welcome?.enabled===true&&!seen));   // 4.6.0: returning visitors get the short panel
 }
 if(!KIDS)ownIconsInPage();
-setTimeout(loadGeoff,3000);setInterval(loadGeoff,600000);   // 4.89.0: Find Geoff (a tiny list, every 10 minutes)
+if(!PLANES){setTimeout(loadGeoff,3000);setInterval(loadGeoff,600000);}   // 4.89.0: Find Geoff (a tiny list, every 10 minutes)
 for(const b of document.querySelectorAll('.air-filter button')){
   b.setAttribute('aria-pressed',String(b.dataset.air===airShow));
   b.addEventListener('click',()=>{airShow=b.dataset.air;
