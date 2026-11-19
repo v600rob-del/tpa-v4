@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""TPA look-only: would curving planes round their turns place them better than carrying them on straight?
+(Rob 19 Nov 2026 11:33: "I was particularly thinking about the military ones as usually they dont give us a lot of
+information".) Asks FlyItalyADSB for the England circle 13 times, 10 s apart (13 of the month's 300,000 requests),
+using the key in /etc/tpa/air.env (never printed). Changes nothing. Run: curl ... | sudo python3 -
+
+For every plane seen in three different reports in a row (r0, r1, r2), it predicts where r2 should be from r1:
+  straight: r1's speed along r1's heading (what the map does today);
+  turn:     the same, but the heading keeps changing at the rate seen from r0 to r1 (worked out by us);
+  reported: the heading keeps changing at the plane's own reported turn rate (track_rate), where it sends one.
+and prints how far each guess was from the real r2, for military/civil and ADS-B/MLAT planes."""
+import json
+import math
+import re
+import statistics
+import time
+import urllib.request
+
+LAT, LON, RADIUS = 52.3, -2.2, 250
+ROUNDS, GAP = 13, 10
+MAX_RATE = 8.0                  # degrees a second: anything faster is a bad reading
+KEY = ''
+for line in open('/etc/tpa/air.env', encoding='utf8'):
+    m = re.match(r'\s*TPA_FLYITALY_API_KEY\s*=\s*"?([^"\s]+)', line)
+    if m:
+        KEY = m.group(1)
+if not KEY:
+    raise SystemExit('no FlyItalyADSB key in /etc/tpa/air.env')
+URL = f'https://api.flyitalyadsb.com/api/aircraft/v2/lat/{LAT}/lon/{LON}/dist/{RADIUS}/'
+
+
+def fetch():
+    req = urllib.request.Request(URL, headers={'X-Api-Key': KEY, 'Accept': 'application/json',
+                                               'User-Agent': 'TPA-plane-turns-look (+mailto:tpaprojectuk@gmail.com)'})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read())
+
+
+def wrap(d):
+    return (d + 180.0) % 360.0 - 180.0
+
+
+def move(lat, lon, track, mps, secs, rate=0.0, step=0.5):
+    """Dead-reckon with a heading that changes at `rate` degrees a second; returns (lat, lon)."""
+    t, h = 0.0, track
+    while t < secs - 1e-9:
+        d = min(step, secs - t)
+        hh = math.radians(h + rate * d / 2)
+        lat += mps * d * math.cos(hh) / 111195.0
+        lon += mps * d * math.sin(hh) / (111195.0 * max(0.2, math.cos(math.radians(lat))))
+        h += rate * d
+        t += d
+    return lat, lon
+
+
+def metres(a, b):
+    dy = (a[0] - b[0]) * 111195.0
+    dx = (a[1] - b[1]) * 111195.0 * math.cos(math.radians((a[0] + b[0]) / 2))
+    return math.hypot(dx, dy)
+
+
+tracks = {}
+info = {}
+print(f'Asking for the England circle {ROUNDS} times, {GAP} s apart (about {ROUNDS * GAP // 60} minutes)...', flush=True)
+for i in range(ROUNDS):
+    t0 = time.time()
+    try:
+        p = fetch()
+    except Exception as exc:
+        print('  round', i + 1, 'failed:', type(exc).__name__, getattr(exc, 'code', ''), flush=True)
+        time.sleep(GAP)
+        continue
+    now = (p.get('now') or t0 * 1000) / 1000.0
+    for a in p.get('ac') or []:
+        hexid = (a.get('hex') or '').lower()
+        lat, lon, trk, gs = a.get('lat'), a.get('lon'), a.get('track'), a.get('gs')
+        if not hexid or None in (lat, lon) or a.get('alt_baro') == 'ground':
+            continue
+        when = now - float(a.get('seen_pos') or 0)
+        src = (a.get('type') or '?').lower()
+        mil = bool(int(a.get('dbFlags') or 0) & 1)
+        info.setdefault(hexid, {'mil': mil, 'srcs': set(), 'rate': 0, 'roll': 0, 'reports': 0})
+        inf = info[hexid]
+        inf['srcs'].add('mlat' if 'mlat' in src else ('adsb' if 'adsb' in src or 'adsr' in src else src))
+        inf['rate'] += a.get('track_rate') is not None
+        inf['roll'] += a.get('roll') is not None
+        tr = tracks.setdefault(hexid, [])
+        if trk is None or gs is None:
+            continue
+        if not tr or when > tr[-1]['t'] + 0.9:            # a new position
+            tr.append({'t': when, 'lat': lat, 'lon': lon, 'trk': float(trk), 'mps': float(gs) * 0.514444,
+                       'rate': a.get('track_rate'), 'src': inf['srcs']})
+            inf['reports'] += 1
+    print(f'  round {i + 1}: {len(p.get("ac") or [])} planes', flush=True)
+    time.sleep(max(0.0, GAP - (time.time() - t0)))
+
+rows = []
+for hexid, tr in tracks.items():
+    for r0, r1, r2 in zip(tr, tr[1:], tr[2:]):
+        d01, d12 = r1['t'] - r0['t'], r2['t'] - r1['t']
+        if not (2 <= d01 <= 60 and 2 <= d12 <= 60) or r1['mps'] < 30:
+            continue
+        rate = wrap(r1['trk'] - r0['trk']) / d01
+        if abs(rate) > MAX_RATE:
+            continue
+        real = (r2['lat'], r2['lon'])
+        straight = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12), real)
+        turn = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, rate), real)
+        rep = None
+        if r1['rate'] is not None and abs(float(r1['rate'])) <= MAX_RATE:
+            rep = metres(move(r1['lat'], r1['lon'], r1['trk'], r1['mps'], d12, float(r1['rate'])), real)
+        rows.append({'mil': info[hexid]['mil'], 'mlat': 'mlat' in info[hexid]['srcs'], 'turning': abs(rate) >= 0.5,
+                     'gap': d12, 'straight': straight, 'turn': turn, 'rep': rep, 'rate': abs(rate)})
+
+
+def q(v, f):
+    v = sorted(v)
+    return v[min(len(v) - 1, int(f * len(v)))] if v else float('nan')
+
+
+def table(name, sel):
+    s = [r for r in rows if sel(r)]
+    if not s:
+        print(f'{name:38s}  none')
+        return
+    st, tu = [r['straight'] for r in s], [r['turn'] for r in s]
+    better = sum(r['turn'] < r['straight'] for r in s)
+    rp = [r for r in s if r['rep'] is not None]
+    line = (f'{name:38s} {len(s):5d}  gap {statistics.median([r["gap"] for r in s]):4.0f}s   straight {q(st, .5):6.0f} / {q(st, .9):6.0f} m'
+            f'   turn {q(tu, .5):6.0f} / {q(tu, .9):6.0f} m   turn better {100 * better / len(s):3.0f}%')
+    if rp:
+        line += f'   own-rate {q([r["rep"] for r in rp], .5):5.0f} / {q([r["rep"] for r in rp], .9):5.0f} m ({len(rp)})'
+    print(line)
+
+
+planes = len(info)
+mil = [h for h, v in info.items() if v['mil']]
+print()
+print(f'Planes seen: {planes}; military: {len(mil)}')
+print(f'Send their own turn rate (track_rate): {sum(1 for v in info.values() if v["rate"])} of {planes} '
+      f'(military {sum(1 for h in mil if info[h]["rate"])} of {len(mil)})')
+print(f'Placed by ground receivers (MLAT): {sum(1 for v in info.values() if "mlat" in v["srcs"])} of {planes} '
+      f'(military {sum(1 for h in mil if "mlat" in info[h]["srcs"])} of {len(mil)})')
+gaps = [b['t'] - a['t'] for tr in tracks.values() for a, b in zip(tr, tr[1:])]
+mgaps = [b['t'] - a['t'] for h in mil for a, b in zip(tracks.get(h, []), tracks.get(h, [])[1:])]
+print(f'Time between new positions: all median {q(gaps, .5):.0f} s (90%: {q(gaps, .9):.0f} s); '
+      f'military median {q(mgaps, .5):.0f} s (90%: {q(mgaps, .9):.0f} s)')
+print()
+print('How far each guess was from the next real report (median / 90%):')
+table('all planes', lambda r: True)
+table('turning planes (0.5 deg/s or more)', lambda r: r['turning'])
+table('military', lambda r: r['mil'])
+table('military, turning', lambda r: r['mil'] and r['turning'])
+table('MLAT (ground-receiver) planes', lambda r: r['mlat'])
+table('MLAT, turning', lambda r: r['mlat'] and r['turning'])
+table('civil ADS-B, turning', lambda r: not r['mil'] and not r['mlat'] and r['turning'])
+print('\nDone. Nothing was changed.')
