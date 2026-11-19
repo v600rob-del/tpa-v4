@@ -349,7 +349,13 @@ function setWorldPlanes(on){
 function inBox(lon,lat,b){return lat>=b.south&&lat<=b.north&&lon>=b.west&&lon<=b.east;}
 function eggClick(){const t=Date.now();eggClicks=eggClicks.filter(x=>t-x<3000);eggClicks.push(t);
   if(eggClicks.length>=5){eggClicks=[];setWorldPlanes(!WORLD_PLANES);}}
-function planeTurn(e){if(e.variant==='ground-twr')return '';
+// 4.92.0: the way a turning plane points now (its reported heading plus the turn so far); others: as reported
+function headingNow(e,now){const p=e.position,m=state.live[e.component]?e.motion:null;if(p?.headingDeg==null)return null;
+  if(!m||m.mode!=='heading'||!m.turn||!m.turnS)return p.headingDeg;
+  const t=Math.max(0,Math.min((now-Date.parse(e.observedAt))/1000,m.turnS,m.maxSeconds));
+  return Math.round(((p.headingDeg+m.turn*t)%360+360)%360*10)/10;}
+function planeTurn(e,hd){if(e.variant==='ground-twr')return '';
+  if(hd!=null&&hd!==e.position?.headingDeg)e={...e,position:{...e.position,headingDeg:hd}};
   // 4.45.0: the owner's van and fire engine icons are drawn front-down, so they turn half a turn further
   const extra=e.variant==='ground-emer'||e.variant==='ground-gnd'?180:0;
   return e.variant!=='balloon'&&e.position?.headingDeg!=null?'rotate('+((e.position.headingDeg+extra)%360)+'deg)':'';}
@@ -777,6 +783,13 @@ function estimate(e,now){
   // slowToStop (4.1.5): steady speed for the first two-thirds, then ease to a stop over the last third.
   const travelled=()=>{const T0=m.maxSeconds*2/3,E=m.maxSeconds-T0,tau=Math.max(0,t-T0);
     return m.slow?m.speedMps*(Math.min(t,T0)+tau-tau*tau/(2*E)):m.speedMps*t;};
+  if(m.mode==='heading'&&m.turn&&m.turnS){
+    // 4.92.0 (Rob 19 Nov 11:33: curve planes round their turns; air 0.10.0 measured which planes' turns can be trusted):
+    // the heading changes at turn degrees a second for turnS seconds after the report, then the plane carries on straight
+    const R=6371000,v=m.speedMps,w=m.turn*Math.PI/180,h0=p.headingDeg*Math.PI/180,ta=Math.min(t,m.turnS),h1=h0+w*ta;
+    const east=v/w*(Math.cos(h0)-Math.cos(h1))+v*(t-ta)*Math.sin(h1),north=v/w*(Math.sin(h1)-Math.sin(h0))+v*(t-ta)*Math.cos(h1);
+    return {lon:p.lon+east/(R*Math.cos(p.lat*Math.PI/180))*180/Math.PI,lat:p.lat+north/R*180/Math.PI,est:t>=1};
+  }
   if(m.mode==='heading'){
     const d=travelled(),h=p.headingDeg*Math.PI/180,R=6371000;
     return {lon:p.lon+d*Math.sin(h)/(R*Math.cos(p.lat*Math.PI/180))*180/Math.PI,lat:p.lat+d*Math.cos(h)/R*180/Math.PI,est:t>=1};
@@ -994,7 +1007,7 @@ function markers(){
     if(!pin){const b=document.createElement('button');b.type='button';pin={b,art:''};pins.set(k,pin);markerLayer.append(b);}
     const b=pin.b;pin.e=e;pin.lat=pos.lat;pin.lon=pos.lon;pin.active=active;
     if(pin.art!==art){b.replaceChildren(buildArtwork(e));pin.art=art;pin.ft=undefined;}
-    if(e.component==='air'){const svg=b.querySelector('svg,.plane-pic'),rot=KIDS?kidFlip(e):svg?.classList?.contains('plane-pic')?planeTurn(e):e.position.headingDeg!=null?'rotate('+e.position.headingDeg+'deg)':'';
+    if(e.component==='air'){const svg=b.querySelector('svg,.plane-pic'),hd=headingNow(e,now),rot=KIDS?kidFlip(e):svg?.classList?.contains('plane-pic')?planeTurn(e,hd):hd!=null?'rotate('+hd+'deg)':'';   // 4.92.0: hd
       if(svg&&svg.style.transform!==rot)svg.style.transform=rot;
       // 4.84.0: height shadow, only touched when the height changes
       const ft=!KIDS&&typeof e.altFt==='number'&&e.altFt>=0?e.altFt:null;
@@ -1572,7 +1585,10 @@ function checkMotion(m,p){
   if(!m||typeof m!=='object'||!p)return null;
   if(m.mode==='heading'&&validNum(m.speedMps)&&m.speedMps>0&&m.speedMps<=350&&validNum(m.maxSeconds)&&m.maxSeconds>0&&m.maxSeconds<=300&&p.headingDeg!=null)
     // 4.1.3 optional slowToStop: ease from the reported speed to a standstill at maxSeconds.
-    return {mode:'heading',speedMps:m.speedMps,maxSeconds:m.maxSeconds,slow:m.slowToStop===true};
+    return {mode:'heading',speedMps:m.speedMps,maxSeconds:m.maxSeconds,slow:m.slowToStop===true,
+      // 4.92.0 optional turnDegPerSec (+ turnSeconds): curve round a turn; never with slowToStop (planes on the ground)
+      turn:m.slowToStop!==true&&validNum(m.turnDegPerSec)&&Math.abs(m.turnDegPerSec)>=0.05&&Math.abs(m.turnDegPerSec)<=8?m.turnDegPerSec:0,
+      turnS:validNum(m.turnSeconds)&&m.turnSeconds>0&&m.turnSeconds<=30?m.turnSeconds:0};
   if(m.mode==='toward'&&validNum(m.lon)&&validNum(m.lat)&&Math.abs(m.lon)<=180&&Math.abs(m.lat)<=90&&typeof m.arriveAt==='string'&&Number.isFinite(Date.parse(m.arriveAt))&&validNum(m.maxSeconds)&&m.maxSeconds>0&&m.maxSeconds<=7800&&Math.abs(m.lon-p.lon)<1.5&&Math.abs(m.lat-p.lat)<1)
     return {mode:'toward',lon:m.lon,lat:m.lat,arriveAtMs:Date.parse(m.arriveAt),maxSeconds:m.maxSeconds};
   // 4.1.1 "path": follow these points (e.g. along the railway) and arrive by arriveAt.

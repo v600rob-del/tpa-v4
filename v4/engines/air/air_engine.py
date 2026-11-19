@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.9.1'
+ENGINE_VERSION = '0.10.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -322,6 +322,7 @@ def world_poller() -> None:
             if part is None:
                 WORLD['lastError'] = SRC['fly']['lastError']
                 continue
+            note_turns(part[1], now)                  # 0.10.0
             got = {a['hex']: a for a in part[1]}
             old = WORLD['places'].get(due, {}).get('aircraft', [])
             for a in old:                               # as for the UK: a plane missing from one answer fades as usual
@@ -414,7 +415,8 @@ def parse(payload: dict, fetched: float) -> list[dict]:
                     'military': bool(flags & 1), 'private': bool(flags & 12),
                     'ias': finite(a.get('ias')), 'tas': finite(a.get('tas')),
                     'selAlt': finite(a.get('nav_altitude_mcp', a.get('nav_altitude_fms'))),
-                    'source': clean(a.get('type'), 12).lower()})
+                    'source': clean(a.get('type'), 12).lower(),
+                    'turnRate': finite(a.get('track_rate'))})   # 0.10.0: degrees a second, when the plane sends it
     return out
 
 
@@ -424,6 +426,54 @@ def context():
         return truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     except ImportError:
         return ssl.create_default_context()
+
+
+# 0.10.0 (Rob 19 Nov 11:33: curve planes round their turns, "particularly ... the military ones as usually they dont give
+# us a lot of information"). Measured first with the look-only v4/server/tpa-plane-turns (two 2-minute looks at ~450 UK
+# planes, 19 Nov 11:40 and 11:53), guessing each plane's next report from the one before:
+# - planes reporting their own position (ADS-B) with their own turn rate: in turns 164 m out straight on, 60 m using it;
+# - their own rate is NOT safe for planes placed by ground receivers (MLAT) or military planes placed that way: worst
+#   cases 839-1,416 m, far worse than straight on (the rate is left over from an earlier signal);
+# - ADS-B planes with no turn rate (most military ones): half the turn seen between their last two reports was best
+#   (military, really turning: 215 m -> 149 m, worst cases no worse; civil 96 -> 76 m, worst 387 -> 259 m);
+# - MLAT planes: nothing beat straight on (their heading wobbles from report to report).
+TURN_MAX = 8.0           # degrees a second: anything faster is a bad reading
+TURN_SECONDS = 15        # the map turns a plane for at most this long after its report, then carries it on straight
+TURNS = {}               # hex -> the last report's time and heading, and the turn seen arriving at it
+
+
+def note_turns(aircraft, now: float) -> None:
+    """Work out each plane's turn from its previous report (degrees a second, + = right). Call with LOCK held."""
+    for a in aircraft:
+        prev, t, h = TURNS.get(a['hex']), a['reported'], a.get('heading')
+        if prev and t - prev['t'] < 2:
+            a['seenTurn'] = prev['seen']           # the same report again, or too soon to measure: keep the older one
+            continue
+        seen = None
+        if prev and h is not None and prev['h'] is not None and 2 <= t - prev['t'] <= 60:
+            r = ((h - prev['h'] + 180.0) % 360.0 - 180.0) / (t - prev['t'])
+            seen = r if abs(r) <= TURN_MAX else None
+        if not prev or t > prev['t']:
+            TURNS[a['hex']] = {'t': t, 'h': h, 'seen': seen}
+        a['seenTurn'] = seen
+    if len(TURNS) > 5000:
+        for k in [k for k, v in TURNS.items() if now - v['t'] > 300]:
+            TURNS.pop(k, None)
+
+
+def turn_rate(a):
+    """0.10.0: how fast the map should turn this plane (degrees a second), or None to carry it on straight."""
+    src = a.get('source') or ''
+    if a.get('ground') or not (src.startswith('adsb') or src.startswith('adsr')):
+        return None                                # placed by ground receivers (MLAT) or other: straight on
+    own = a.get('turnRate')
+    if own is not None and abs(own) <= TURN_MAX:
+        r = own
+    elif a.get('seenTurn') is not None:
+        r = a['seenTurn'] / 2
+    else:
+        return None
+    return round(r, 2) if abs(r) >= 0.05 else None
 
 
 def fetch_national(src: str = 'lol') -> None:
@@ -441,6 +491,7 @@ def fetch_national(src: str = 'lol') -> None:
     for a in got.values():
         plan_landing(a)
     with LOCK:
+        note_turns(got.values(), started)             # 0.10.0
         # 0.5.4 (owner 4 Nov 23:44-23:45, Manchester: a plane "vanished then reappeared a couple of times on the runway",
         # "straight down the runway"): near the ground receivers lose planes now and then, and ADSB.lol leaves a plane
         # out of an answer while it has nothing fresh. A plane missing from one answer is kept where it was last
@@ -494,6 +545,7 @@ def fetch_once(circle, src: str = 'lol') -> None:
         return
     raw_len, aircraft = part
     with LOCK:
+        note_turns(aircraft, time.time())             # 0.10.0
         STATE.update(aircraft=aircraft, fetchedAt=time.time(), circle=circle, downloadBytes=raw_len, source=src)
         succeeded(src)
     count_types(aircraft)
@@ -1403,6 +1455,9 @@ def snapshot(view, world=False) -> dict:
                 entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': hold, 'slowToStop': True}
             else:
                 entity['motion'] = {'mode': 'heading', 'speedMps': a['speed'], 'maxSeconds': 60}
+                turn = turn_rate(a)                   # 0.10.0: curve it round its turn (see TURN_SECONDS)
+                if turn is not None:
+                    entity['motion'].update(turnDegPerSec=turn, turnSeconds=TURN_SECONDS)
         frame['entities'].append(entity)
     if not frame['entities'] and not circle_covers(circle, view) and not notice:
         frame['notice'] = 'Loading aircraft for this area…'
