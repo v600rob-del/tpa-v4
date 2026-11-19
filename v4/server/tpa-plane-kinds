@@ -1,0 +1,98 @@
+#!/usr/bin/env python3
+"""TPA look-only: what icon does each military plane and helicopter get on the map, and does it change?
+(Rob 19 Nov 2026 12:17: "Military helicopters and planes are sometimes having the right icon, other times not.")
+Reads only TPA's own air engine (127.0.0.1:8783) - no FlyItalyADSB requests - 6 times, 10 s apart, over 9 boxes
+covering the UK, plus each plane's box details once. Changes nothing. Run: curl ... | sudo python3 -"""
+import json
+import time
+import urllib.request
+
+ENGINE = 'http://127.0.0.1:8783'
+SHAPES = '/opt/tpa/layers/hq/v4/hq/assets/planes/shapes.json'
+ROUNDS, GAP = 6, 10
+LATS, LONS = (49.5, 52.0, 54.5, 61.0), (-8.5, -4.8, -1.2, 2.5)
+MIL_WORDS = ('royal air force', 'raf ', 'army air', 'royal navy', 'fleet air arm', 'air force', 'usaf', 'navy', 'army',
+             'ministry of defence', 'military', 'luftwaffe', 'armee', 'marine')
+
+
+def get(path):
+    with urllib.request.urlopen(ENGINE + path, timeout=10) as r:
+        return json.loads(r.read())
+
+
+try:
+    codes = json.load(open(SHAPES))['codes']
+except Exception:
+    codes = {}
+    print('(could not read the shapes file:', SHAPES, ')')
+
+seen = {}
+print(f'Reading the air engine {ROUNDS} times, {GAP} s apart...', flush=True)
+for i in range(ROUNDS):
+    t0 = time.time()
+    n = 0
+    for s, nn in zip(LATS, LATS[1:]):
+        for w, e in zip(LONS, LONS[1:]):
+            try:
+                f = get(f'/snapshot?west={w}&south={s}&east={e}&north={nn}')
+            except Exception as exc:
+                print('  failed:', type(exc).__name__)
+                continue
+            for ent in f.get('entities') or []:
+                n += 1
+                p = seen.setdefault(ent['id'], {'labels': set(), 'variants': [], 'codes': [], 'rounds': set()})
+                p['labels'].add((ent.get('label') or '').split(' · ')[0][:40])
+                if i not in p['rounds']:
+                    p['rounds'].add(i)
+                    p['variants'].append(ent.get('variant') or '(none)')
+                    p['codes'].append(ent.get('typeCode') or '(none)')
+    print(f'  round {i + 1}: {n} planes', flush=True)
+    time.sleep(max(0.0, GAP - (time.time() - t0)))
+
+
+def drawn(variant, code):
+    if code in codes and codes[code]:
+        return 'top-down shape ' + codes[code]
+    return "Rob's picture (" + variant + ')'
+
+
+rows = []
+for pid, p in seen.items():
+    v = set(p['variants'])
+    interesting = any(x.startswith('mil') or x in ('military', 'helicopter', '(none)') for x in v)
+    if not interesting:
+        continue
+    try:
+        d = get('/details?id=' + pid)
+    except Exception:
+        d = {}
+    r = {x.get('label'): x.get('value') for x in d.get('rows') or []}
+    op = (r.get('Operator') or '').lower()
+    rows.append({'id': pid, 'label': sorted(p['labels'])[0] if p['labels'] else '', 'variants': p['variants'],
+                 'codes': p['codes'], 'boxType': r.get('Type code', ''), 'kind': r.get('Kind', ''),
+                 'kindFrom': r.get('Kind from', ''), 'aircraft': r.get('Aircraft', ''), 'operator': r.get('Operator', ''),
+                 'position': r.get('Position from', ''),
+                 'milByOperator': any(w in op + ' ' for w in MIL_WORDS)})
+
+mil = [r for r in rows if any(x.startswith('mil') or x == 'military' for x in r['variants'])]
+heli = [r for r in rows if 'helicopter' in r['variants']]
+print()
+print(f'Planes seen: {len(seen)}; drawn as military: {len(mil)}; drawn as a (civil) helicopter: {len(heli)}')
+changed = [r for r in rows if len(set(r['variants'])) > 1 or len(set(r['codes'])) > 1]
+print(f'Changed icon kind or type code between rounds: {len(changed)}')
+for r in changed:
+    print(f"   {r['label']:12s} kinds {' > '.join(r['variants'])}   type codes {' > '.join(r['codes'])}")
+print()
+print('Each military plane / helicopter (what the map draws, last round):')
+for r in sorted(rows, key=lambda r: (r['variants'][-1], r['codes'][-1])):
+    v, c = r['variants'][-1], r['codes'][-1]
+    if not (v.startswith('mil') or v == 'military' or v == 'helicopter' or r['milByOperator']):
+        continue
+    note = []
+    if c == '(none)' and r['boxType']:
+        note.append(f"no type in its report; our database says {r['boxType']}")
+    if r['milByOperator'] and not (v.startswith('mil') or v == 'military'):
+        note.append('operator sounds military but not drawn as military')
+    print(f"   {r['label']:12s} {v:17s} type {c:6s} -> {drawn(v, c):34s} | {r['aircraft'][:34]:34s} | {r['operator'][:30]:30s}"
+          f" | {r['kindFrom'][:28]}" + (('   <- ' + '; '.join(note)) if note else ''))
+print('\nDone. Nothing was changed.')
