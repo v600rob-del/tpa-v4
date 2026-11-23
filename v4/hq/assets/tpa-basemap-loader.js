@@ -14,9 +14,14 @@ const lib=script(conf.dataset.maplibre).then(()=>{timings.vectorScriptReady=perf
 // only useful labels: travel, help and landmarks. No shops, cafes, bars, restaurants, hairdressers. Safe if a layer is missing.
 const CALM_KEEP=['railway','bus','ferry_terminal','harbor','parking','aerialway','fuel','charging_station',
   'hospital','police','toilets','information','museum','castle','monument','attraction','zoo','stadium'];
+// 4.97.0 (Rob 23 Nov 23:16, picture of the full Liberty map with 3D buildings, shops and cafes: "I want this map level
+// available to tpa users ... keep it this detailed, ignore previous messages about shops etc"; 23:17 "this is just for a
+// test"): a test switch. Add ?map=full to the address and the calming is skipped, so the street map is exactly as
+// OpenFreeMap draws it (3D buildings, shops, cafes, pubs). Without it, visitors keep the calm map as before.
+const CALM=(()=>{try{return new URLSearchParams(location.search).get('map')!=='full';}catch(_){return true;}})();
 function calmMap(gl){
   try{
-    if(!gl||(gl.style&&gl.style.__tpaCalm))return;
+    if(!CALM||!gl||(gl.style&&gl.style.__tpaCalm))return;
     if(gl.getLayer('building-3d'))gl.setLayoutProperty('building-3d','visibility','none');
     if(gl.getLayer('building')){gl.setLayerZoomRange('building',13,24);
       gl.setPaintProperty('building','fill-color','hsl(35,8%,83%)');gl.setPaintProperty('building','fill-outline-color','hsl(35,6%,74%)');}
