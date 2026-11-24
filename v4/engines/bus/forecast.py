@@ -95,6 +95,97 @@ def forecast(t: float, m: float, kn, horizon: float = HORIZON_S):
     return out
 
 
+# ---- bus 0.29.0 (Rob 24 Nov 2026 22:14, "yes that sounds logical to me"; TPA-BUS-GUESS-CHECK-2026-11-24): measured 22:09,
+# 502 buses: the forecast is already as close as any simple guess (typical 105 m in the first minute), so the ~100 m is
+# what cannot be known from reports that arrive 30-40 s late every 30-50 s. Two changes:
+#  1. cautious: the forecast as if the bus were CAUTIOUS_S later - as close (102 m) but shown AHEAD of the real bus 33% of
+#     the time instead of 52% (a bus shown ahead has to stop or fade back; one shown behind can catch up smoothly);
+#  2. bend, never snap (TPA-SERVER-LIVE-PLAN-2026-11-18 Stage C): each new path starts where the previous one had the bus,
+#     follows it for LEAD_S (the page may still be playing the old one), then eases onto the new forecast: behind -> up to
+#     CATCH_FACTOR times the forecast's pace (at least CATCH_MIN_EXTRA m/s more, never over CATCH_MAX_MPS); ahead -> carries on
+#     at AHEAD_SHARE of the forecast's pace until the forecast reaches it. Never backwards. Only a gap over BEND_JUMP_M (a
+#     diversion, a new start) is put straight onto the new forecast.
+CAUTIOUS_S = 15.0
+LEAD_S = 15.0
+CATCH_FACTOR = 2.0
+CATCH_MIN_EXTRA = 3.0
+CATCH_MAX_MPS = 20.0          # ~45 mph
+AHEAD_SHARE = 0.35
+BEND_JUMP_M = 600.0
+BEND_STEP_S = 5.0             # a point every 5 s while easing (a wait still shows as two points at one place)
+
+
+def along(fc, t: float) -> float:
+    """Metres at time t on [(time, metres)]: held before the first point and after the last."""
+    if t <= fc[0][0]:
+        return float(fc[0][1])
+    for (t0, m0), (t1, m1) in zip(fc, fc[1:]):
+        if t <= t1:
+            return m0 + (m1 - m0) * ((t - t0) / (t1 - t0) if t1 > t0 else 1.0)
+    return float(fc[-1][1])
+
+
+def cautious(fc, wait_s: float = CAUTIOUS_S):
+    """The forecast as if the bus were wait_s seconds later: it waits at its report for wait_s, then follows the same
+    path that much later."""
+    if not fc or len(fc) < 2 or wait_s <= 0:
+        return list(fc or [])
+    return [tuple(fc[0])] + [(t + wait_s, m) for t, m in fc[1:]]
+
+
+def bend(prev, target, made_at: float, lead_s: float = LEAD_S):
+    """The path to publish: `prev` (the path published before, same journey, or None) up to made_at + lead_s, then eased
+    onto `target`. Both are [(time, metres)]. Starts at target's first time (the newest report), times always later,
+    metres never going back. Without prev, or with a gap over BEND_JUMP_M, it is simply target."""
+    if not target or len(target) < 2 or not prev or len(prev) < 2:
+        return list(target or [])
+    start = float(target[0][0])
+    tb = max(float(made_at) + lead_s, start)
+    x = along(prev, tb)
+    if abs(x - along(target, tb)) > BEND_JUMP_M:
+        return list(target)
+    out = [(start, along(prev, start))]
+    for t, _ in prev:                                   # the old path's own corners between the report and tb
+        if start < t < tb:
+            out.append((float(t), along(prev, t)))
+    if tb > out[-1][0]:
+        out.append((tb, x))
+    end = float(target[-1][0])
+    t, last_kept = tb, tb
+    while t < end - 1e-6:
+        t1 = min(t + 1.0, end)
+        dt = t1 - t
+        aim = along(target, t1)
+        pace = max(0.0, aim - along(target, t)) / dt      # metres a second
+        if x < aim - 0.5:                               # behind: catch up, never past where it should be
+            x = min(aim, x + dt * min(max(pace * CATCH_FACTOR, pace + CATCH_MIN_EXTRA), CATCH_MAX_MPS))
+        elif x > aim + 0.5:                             # ahead: carry on slowly until the forecast reaches it
+            x += dt * pace * AHEAD_SHARE
+        else:
+            x = aim
+        if abs(x - aim) <= 0.5:                         # back on the forecast: from here on it is the forecast
+            out.append((t1, x))
+            out.extend((float(tt), float(mm)) for tt, mm in target if tt > t1)
+            return _tidy(out)
+        if t1 - last_kept >= BEND_STEP_S:
+            out.append((t1, x))
+            last_kept = t1
+        t = t1
+    if end > out[-1][0]:
+        out.append((end, x))
+    return _tidy(out)
+
+
+def _tidy(pts):
+    """Times strictly later, metres never going back."""
+    out = []
+    for t, m in pts:
+        if out and t <= out[-1][0]:
+            continue
+        out.append((t, max(m, out[-1][1]) if out else m))
+    return out
+
+
 TOWN_HORIZON_S = 150.0       # bus 0.26.0: a town-level path covers 2.5 minutes after the newest report
 TOWN_STEP_M = 50.0           # sampled every 50 m along the route line...
 TOWN_TOLERANCE_M = 8.0       # ...then thinned where the road is straight (no point more than 8 m off the line)

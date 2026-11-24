@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.28.0'
+ENGINE_VERSION = '0.29.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1472,6 +1472,7 @@ PUBLISH_EVERY = 10.0
 PUBLISH_KEEP = 6                      # reports per bus in a tile (the page replays REPLAY_SECONDS behind the newest)
 PUBLISH = {'state': 'off' if not TILES_DIR else 'starting', 'rounds': 0, 'last': None, 'recent': [], 'error': ''}
 ITEM_MEMO: dict = {}                  # bus key -> (signature, small json, big json)
+SHOWN: dict = {}                      # 0.29.0: bus key -> (journey, the path last published for it) - the next one bends from it
 PLACE_MEMO: dict = {}                 # (bus key, report time) -> (lon, lat) on the road (unmatched buses)
 TILE_LAST: dict = {}                  # (size, row, col) -> hash of the text last written
 ROUTES_WRITTEN: set = set()           # (build, line id) already written
@@ -1486,6 +1487,7 @@ ROUTE_USED: dict = {}                 # (build, line id) -> when a bus last used
 # its forecast in the street tiles (`f`, forecast.py); the page ignores it until Stage 3. A journey's stops are placed
 # on its line once and kept (FORECAST_KEEP journeys); at most FORECAST_BUILD_PER_ROUND new journeys a round.
 FORECAST_ON = os.environ.get('TPA_BUS_FORECAST', '1').strip() != '0'
+BEND_ON = os.environ.get('TPA_BUS_BEND', '1').strip() != '0'     # 0.29.0: cautious + bent paths (TPA_BUS_BEND=0: as 0.28.0)
 FORECAST_KNOTS: "OrderedDict[str, array]" = OrderedDict()   # trip_id -> metres, seconds after the first departure, ... (flat; ~0.7 KB)
 FORECAST_KEEP = 20000
 FORECAST_BUILD_PER_ROUND = 150
@@ -1608,8 +1610,10 @@ def _departed_at(dep_iso: str):
     return t.timestamp()
 
 
-def bus_forecast(v, tid, sh, last):
-    """0.22.0: [[time, metres], ...] for the street tiles, or None."""
+def bus_forecast(v, tid, sh, last, now=None):
+    """0.22.0: [[time, metres], ...] for the street tiles, or None.
+    0.29.0 (Rob 24 Nov 22:14; TPA-BUS-GUESS-CHECK-2026-11-24): the forecast "cautious 15 s", and bent from the path this
+    bus was last published with (same journey), so a new report eases the bus over instead of snapping or fading it."""
     kn = forecast_knots(tid, sh)
     if not kn:
         return None
@@ -1619,7 +1623,18 @@ def bus_forecast(v, tid, sh, last):
     fc = forecast.forecast(float(last[0]), float(last[1]), [(kn[k], start + kn[k + 1]) for k in range(0, len(kn), 2)])
     if len(fc) < 2:
         return None
-    return [[int(t), _r1(m)] for t, m in fc]
+    if BEND_ON:
+        fc = forecast.cautious(fc)
+        was = SHOWN.get(v['key'])
+        fc = forecast.bend(was[1] if was and was[0] == tid else None, fc, time.time() if now is None else now)
+        SHOWN[v['key']] = (tid, fc)
+    out = []
+    for t, m in fc:                    # whole seconds and tenths of a metre, times still always later
+        t, m = int(t), _r1(m)          # whole seconds cut down, as the reports `r` are
+        if out and t <= out[-1][0]:
+            continue
+        out.append([t, max(m, out[-1][1]) if out else m])
+    return out if len(out) >= 2 else None
 
 
 def bus_item(v, hist, now):
@@ -1658,7 +1673,7 @@ def bus_item(v, hist, now):
         small = dict(base, s=sid, r=[[int(t), _r1(m)] for t, m in pts], p=ps)
         big = dict(base, p=ps)
         if has_fc and pts:
-            fc = bus_forecast(v, tid, sh, pts[-1])
+            fc = bus_forecast(v, tid, sh, pts[-1], now)
             if fc:
                 small['f'] = fc
                 # 0.26.0 (Rob 18 Nov 06:16: "All levels need to be warm"): the town tiles carry the same forecast as
@@ -1902,7 +1917,7 @@ def publish_round() -> dict:
         for k in _tiles_for(v, th, recent, TILE_BIG):
             big.setdefault(k, []).append(got[1])
     live = {v['key'] for v in vehicles}
-    for memo in (ITEM_MEMO, PUB_TRIED):
+    for memo in (ITEM_MEMO, PUB_TRIED, SHOWN):
         for k in [k for k in memo if k not in live]:
             del memo[k]
     with JOURNEY_LOCK:
