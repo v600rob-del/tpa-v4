@@ -32,13 +32,14 @@ import ssl
 import tarfile
 import threading
 import time
+import zlib
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.13.1'
+ENGINE_VERSION = '0.13.2'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -1704,13 +1705,18 @@ def snapshot(view, world=False) -> dict:
     inside.sort(key=lambda t: t[0])
     if mil_view:                             # 0.13.0: all of them (thinned evenly only past MIL_MAX)
         chosen = inside if len(inside) <= MIL_MAX else [inside[int(i * len(inside) / MIL_MAX)] for i in range(MIL_MAX)]
-    elif wide and len(inside) > MAX_PER_VIEW:
-        # 0.7.1: zoomed right out with a busy sky: an even share from right across the view (every so many by
-        # distance from the middle), not just the nearest 400 in a blob round the middle.
-        step = len(inside) / MAX_PER_VIEW
-        chosen = [inside[int(i * step)] for i in range(MAX_PER_VIEW)]
+    elif len(inside) > MAX_PER_VIEW:
+        # 0.13.2 (Rob 24 Nov 20:28: "why are they still disappearing on certain zoom levels and not staying visible";
+        # measured over America: 464-618 in view, a different 400 each answer, 11-14 military left out): a busy sky keeps
+        # every military aircraft, then a FIXED share of the rest (by each plane's own address, so it is spread right
+        # across the view). The same planes stay from answer to answer as they move, and zooming in only ever adds
+        # planes. (0.7.1 took every so many by distance from the middle, which changed as the planes moved.)
+        def keep_order(t):
+            a = t[1]
+            return (0 if a.get('military') or plane_kind(a)[0].startswith('mil') else 1, zlib.crc32(a['hex'].encode()))
+        chosen = sorted(inside, key=keep_order)[:MAX_PER_VIEW]
     else:
-        chosen = inside[:MAX_PER_VIEW]
+        chosen = inside
     for _, a, age in chosen:
         entity = {'id': 'air:' + a['hex'], 'label': label_for(a)[:160],
                   'position': {'lon': a['lon'], 'lat': a['lat'], 'headingDeg': a['heading']},
@@ -1754,8 +1760,7 @@ def snapshot(view, world=False) -> dict:
     elif not frame['entities'] and not circle_covers(circle, view) and not notice:
         frame['notice'] = 'Loading aircraft for this area…'
     elif len(inside) > MAX_PER_VIEW and not notice:
-        frame['notice'] = (f'Showing {MAX_PER_VIEW} of {len(inside)} planes · zoom in for all' if wide
-                           else f'Showing nearest {MAX_PER_VIEW} · zoom in for all')
+        frame['notice'] = f'Showing {MAX_PER_VIEW} of {len(inside)} planes · zoom in for all'
     return frame
 
 
