@@ -84,10 +84,12 @@ def along(points, t):
 
 # ---- a copy of engines/bus/forecast.py (bus 0.29.0), so this look-only check can run on a server with an older engine
 CAUTIOUS_S = 15.0
-LEAD_S = 15.0
-CATCH_FACTOR = 2.0
-CATCH_MIN_EXTRA = 3.0
-CATCH_MAX_MPS = 20.0          # ~45 mph
+# Settings "D" (Rob 24 Nov 23:27, after tpa-forecastcheck tried four side by side at 23:23: what the page would show
+# typical 170 m against today's 138 m, fades at a new report 4% against 56%, shown ahead 43% against 52%)
+LEAD_S = 5.0
+CATCH_FACTOR = 3.0
+CATCH_MIN_EXTRA = 5.0
+CATCH_MAX_MPS = 25.0          # ~56 mph
 AHEAD_SHARE = 0.35
 BEND_JUMP_M = 600.0
 BEND_STEP_S = 5.0             # a point every 5 s while easing (a wait still shows as two points at one place)
@@ -169,10 +171,10 @@ def _tidy(pts):
 
 
 SETTINGS = {                                     # name: (cautious s, lead s, catch factor, catch extra, catch max, ahead share)
-    'A as built: cautious 15 s, follows the old path 15 s, catches up at 2x': (15.0, 15.0, 2.0, 3.0, 20.0, 0.35),
+    'A first build: cautious 15 s, follows the old path 15 s, catches up at 2x': (15.0, 15.0, 2.0, 3.0, 20.0, 0.35),
     'B no caution, 15 s, 3x': (0.0, 15.0, 3.0, 5.0, 25.0, 0.35),
     'C no caution, 5 s, 3x': (0.0, 5.0, 3.0, 5.0, 25.0, 0.35),
-    'D cautious 15 s, 5 s, 3x': (15.0, 5.0, 3.0, 5.0, 25.0, 0.35),
+    'D cautious 15 s, 5 s, 3x (chosen 24 Nov 23:27)': (15.0, 5.0, 3.0, 5.0, 25.0, 0.35),
 }
 PAGE_LATE_S = 10.0
 
