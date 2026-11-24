@@ -638,6 +638,5 @@ html.look2 .eyebrow,html.look2 .brand h1 em,html.look2 .hq-label{display:none}
 html.look2 .layer-toggle{border:0;border-bottom:1px solid #22303e;border-radius:0;background:transparent;box-shadow:none;min-height:50px}
 html.look2 .layer-toggle:hover{background:#ffffff05}
 html.look2 #layers-body{gap:0}
-html.look2 .welcome-ready.load2 .prep-caption{font-size:12px;margin-bottom:6px}
-html.look2 .load2-bar{height:6px;border-radius:3px;background:#1c2a3a;overflow:hidden;margin:0 0 10px}
-html.look2 .load2-bar>span{display:block;height:100%;width:0;background:#3fa796;transition:width .4s}
+/* 4.99.2 (Rob 13:55: the arrival board "adds character"): the split-flap board keeps its departure-board capitals */
+html.look2 .flapboard .fb-name,html.look2 .flapboard .fb-flap{text-transform:uppercase!important;letter-spacing:.1em!important}

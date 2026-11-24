@@ -1492,13 +1492,11 @@ function updatePrep(){
     // 4.7.2 (owner 1 Nov 16:00: "still no animation on the welcome screen"): everything was usually ready before
     // anyone could see it, so the tiles were green at once. Each tile now pulses for a moment, then turns green in
     // turn (0.6 s, 1.4 s, 2.2 s ...) - never before its layer is really ready, so green is always true.
-    let n=0,okN=0;
+    let n=0;
     for(const [id] of PREP_ITEMS){const row=items[id],want=prepWanted(id);
       const ok=!want||(prepReady(id)&&now>=list.t0+600+800*n);if(want)n++;
       row.hidden=!want;row.classList.toggle('done',ok);const t=row.querySelector('.prep-tick');if(t)t.textContent=ok?'✓':'…';if(!ok)all=false;
-      if(want&&ok)okN++;
       if(list.flaps)flapState(list,id,row,want,ok,now);}
-    if(list.bar)list.bar.style.width=(n?Math.round(100*okN/n):100)+'%';   // 4.99.0 ?look=2: the plain loading bar
   }
   return all;
 }
@@ -2716,10 +2714,9 @@ function buildWelcome(w,tip,credits){
     for(const t of items)ul.append(el('li','',t));box.append(ul);main.append(box);}
   const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
   // 4.7.0: the streams pulse and turn green; Let's go! appears after enterAfterSeconds (5) from opening
-  const ready=el('div','welcome-ready');
-  if(LOOK2){const bar=el('div','load2-bar'),fill=el('span');bar.append(fill);const rl=makeReadyList();[...prepLists].pop().bar=fill;
-    ready.classList.add('load2');ready.append(el('small','prep-caption','Loading live data'),bar,rl);updatePrep();}   // 4.99.0 (Rob ticked: no split-flap board)
-  else ready.append(el('small','prep-caption','Preparing streams'),makeFlapBoard());   // 4.26.0
+  // 4.99.2 (Rob 24 Nov 13:55: "i changed my mind about the arrival board on the start page, it adds character"): the
+  // split-flap board stays with ?look=2 too (4.99.0's plain loading bar is gone).
+  const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Preparing streams'),makeFlapBoard());   // 4.26.0
   const wait=Number.isFinite(w?.enterAfterSeconds)?clamp(w.enterAfterSeconds,0,10):0;
   enter.dataset.label=enter.textContent;
   if(wait>0){enterWaiting(enter,wait);back.dataset.enterAfter=String(wait);}
