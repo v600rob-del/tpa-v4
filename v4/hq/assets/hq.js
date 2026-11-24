@@ -25,6 +25,10 @@ const PLANES=!KIDS&&(location.pathname==='/planes'||new URLSearchParams(location
 const VIEW_ASKED=new URLSearchParams(location.search).get('view');
 const FULL_VIEW=!KIDS&&!PLANES&&(location.pathname==='/full'||VIEW_ASKED==='full');
 const USER_VIEW=KIDS||PLANES||(!FULL_VIEW&&(location.pathname==='/user'||VIEW_ASKED==='user'||document.documentElement.dataset.defaultView==='user'));
+// 4.99.0 (Rob 24 Nov 12:42: people read a left-hand menu bar as a sign of an AI-made site; wants the menu on the right,
+// all of it still working, and Arial throughout): with ?look=2 (preview only) the menu panel sits on the right (its
+// hide tab too; on phones it slides in from the right) and every font is Arial. Normal visitors unchanged until Rob says.
+const LOOK2=!KIDS&&new URLSearchParams(location.search).get('look')==='2';if(LOOK2)document.documentElement.classList.add('look2');
 if(KIDS){document.documentElement.classList.add('kids-view');}
 if(PLANES){document.documentElement.classList.add('planes-view');}
 if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':PLANES?'TPA Planes · Live UK aircraft on a map':'TPA · Live UK trains, buses and planes on one map';
@@ -1488,11 +1492,13 @@ function updatePrep(){
     // 4.7.2 (owner 1 Nov 16:00: "still no animation on the welcome screen"): everything was usually ready before
     // anyone could see it, so the tiles were green at once. Each tile now pulses for a moment, then turns green in
     // turn (0.6 s, 1.4 s, 2.2 s ...) - never before its layer is really ready, so green is always true.
-    let n=0;
+    let n=0,okN=0;
     for(const [id] of PREP_ITEMS){const row=items[id],want=prepWanted(id);
       const ok=!want||(prepReady(id)&&now>=list.t0+600+800*n);if(want)n++;
       row.hidden=!want;row.classList.toggle('done',ok);const t=row.querySelector('.prep-tick');if(t)t.textContent=ok?'✓':'…';if(!ok)all=false;
+      if(want&&ok)okN++;
       if(list.flaps)flapState(list,id,row,want,ok,now);}
+    if(list.bar)list.bar.style.width=(n?Math.round(100*okN/n):100)+'%';   // 4.99.0 ?look=2: the plain loading bar
   }
   return all;
 }
@@ -1565,7 +1571,7 @@ function flapTick(list){
 function startPreparing(showPanel){
   const t0=performance.now();let panel=null;
   if(showPanel){panel=el('div','prep-panel');panel.setAttribute('role','status');
-    panel.append(el('strong','prep-title','Preparing streams…'),makeReadyList());document.body.append(panel);}
+    panel.append(el('strong','prep-title',LOOK2?'Loading live data…':'Preparing streams…'),makeReadyList());document.body.append(panel);}
   // 4.7.1 (owner 1 Nov 15:42: the streams "part doesnt work on the welcome screen"): 4.7.0 stopped updating as soon
   // as everything it knew about was ready - often just the map, before HQ had learnt which layers exist. Now
   // "all ready" only counts once the layer list has arrived, and the row keeps updating for 30 s.
@@ -2710,7 +2716,10 @@ function buildWelcome(w,tip,credits){
     for(const t of items)ul.append(el('li','',t));box.append(ul);main.append(box);}
   const enter=el('button','tpa-primary',str(w?.enterLabel,40)||'Enter the map');enter.type='button';enter.onclick=()=>closeDialog(back);
   // 4.7.0: the streams pulse and turn green; Let's go! appears after enterAfterSeconds (5) from opening
-  const ready=el('div','welcome-ready');ready.append(el('small','prep-caption','Preparing streams'),makeFlapBoard());   // 4.26.0
+  const ready=el('div','welcome-ready');
+  if(LOOK2){const bar=el('div','load2-bar'),fill=el('span');bar.append(fill);const rl=makeReadyList();[...prepLists].pop().bar=fill;
+    ready.classList.add('load2');ready.append(el('small','prep-caption','Loading live data'),bar,rl);updatePrep();}   // 4.99.0 (Rob ticked: no split-flap board)
+  else ready.append(el('small','prep-caption','Preparing streams'),makeFlapBoard());   // 4.26.0
   const wait=Number.isFinite(w?.enterAfterSeconds)?clamp(w.enterAfterSeconds,0,10):0;
   enter.dataset.label=enter.textContent;
   if(wait>0){enterWaiting(enter,wait);back.dataset.enterAfter=String(wait);}
@@ -2905,14 +2914,43 @@ loadSiteConfig();
 // it (the map takes the whole width) and brings it back; remembered in this browser. Phones keep their own LAYERS menu.
 function setMenuHidden(hide,save){
   const app=document.querySelector('.app');if(!app)return;app.classList.toggle('menu-hidden',hide);
-  const t=$('menu-tab');if(t){t.textContent=hide?'▶':'◀';t.setAttribute('aria-expanded',hide?'false':'true');
+  const t=$('menu-tab');if(t){t.textContent=(hide!==LOOK2)?'▶':'◀';   // 4.99.0: mirrored when the menu is on the right
+    t.setAttribute('aria-expanded',hide?'false':'true');
     t.setAttribute('aria-label',hide?'Show the layers menu':'Hide the layers menu');t.title=hide?'Show the menu':'Hide the menu';}
   if(save){try{localStorage.setItem('tpa-menu-hidden',hide?'1':'0');}catch(_){}}
   if(map&&typeof map.invalidateSize==='function')map.invalidateSize({pan:false});
   paint();}
 if($('menu-tab')){$('menu-tab').onclick=()=>setMenuHidden(!document.querySelector('.app').classList.contains('menu-hidden'),true);
   let was=false;try{was=localStorage.getItem('tpa-menu-hidden')==='1';}catch(_){}
-  if(was)setMenuHidden(true,false);}
+  if(was)setMenuHidden(true,false);else if(LOOK2)$('menu-tab').textContent='▶';}
 function setMenu(open){$('sidebar').classList.toggle('open',open);$('menu-button').setAttribute('aria-expanded',open?'true':'false');}
 new MutationObserver(()=>$('menu-button').setAttribute('aria-expanded',$('sidebar').classList.contains('open')?'true':'false')).observe($('sidebar'),{attributes:true,attributeFilter:['class']});
+// 4.99.0 (Rob ticked 24 Nov 12:50, ?look=2 preview only): plainer words. No spaced-out CAPITAL headings (sentence case;
+// place names in Title Case), no "·" between words (a comma instead), everyday words for jargon, one plain line instead of
+// the tagline and the tiny top line. Done on the page's own text as it is written (a MutationObserver runs before the
+// browser paints), outside the map itself, so nothing else in the page has to change.
+if(LOOK2){
+  const KEEP=new Set(['TPA','UK','NI','HQ','ADS-B','ETA','GPS']),TITLE_SEL='.crumb strong,#map-place,#home-button,#home-button *';
+  const CASE_SEL='.section-title h2,.section-title h2 *,.micro,.stat-label,.eyebrow,.glass-chip,.glass-chip *,.control-button,.control-button *,.crumb,.crumb *,.onair,.onair *,.prep-caption,.prep-name,.detail-stops-head,.map-bottom,.map-bottom *,.panel-note,.mock-banner,.sidebar-footer,.sidebar-footer *';
+  const WORDS=[[/^tracking layers$/i,'Layers'],[/^find a target$/i,'Find a place'],[/^preparing streams(…)?$/i,'Loading live data$1'],
+    [/^(vehicles|mock markers) in view$/i,'In view now'],[/^show \/ hide$/i,'Show or hide'],[/^on map$/i,''],[/^your world, moving\.$/i,'Live UK trains, buses and planes on one map']];
+  const word=w=>KEEP.has(w.toUpperCase())||/\d/.test(w)?w.toUpperCase():w;   // codes with a number (B738, X3, JET1) stay as they are
+  const sentence=t=>t.toLowerCase().replace(/[a-z0-9][a-z0-9'-]*/gi,word).replace(/(^|[:.!?]\s+)([a-z])/g,(m,a,b)=>a+b.toUpperCase());
+  const title=t=>t.toLowerCase().replace(/[a-z0-9][a-z0-9'-]*/gi,w=>KEEP.has(w.toUpperCase())||/\d/.test(w)?w.toUpperCase():w[0].toUpperCase()+w.slice(1));
+  function fixText(n){
+    const p=n.parentElement;if(!p||p.closest('#map .leaflet-pane,.marker-layer,script,style'))return;
+    let t=n.nodeValue,o=t;if(!t||!t.trim())return;
+    t=t.replace(/\s+·\s+/g,', ').replace(/^·\s+|\s+·$/g,'');
+    const core=t.trim();
+    if(/[A-Z]{2}/.test(core)&&core===core.toUpperCase()&&!KEEP.has(core)){
+      const fixed=p.matches(TITLE_SEL)?title(core):p.matches(CASE_SEL)?sentence(core):core;t=t.replace(core,fixed);}
+    for(const [re,to] of WORDS){const c=t.trim();if(re.test(c)){t=t.replace(c,c.replace(re,to));break;}}
+    if(t!==o)n.nodeValue=t;}
+  function fixAll(root){
+    if(root.nodeType===3){fixText(root);return;}if(root.nodeType!==1||root.closest?.('#map .leaflet-pane,.marker-layer'))return;
+    const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);let n;while((n=w.nextNode()))fixText(n);}
+  const mo=new MutationObserver(recs=>{for(const r of recs){if(r.type==='characterData')fixText(r.target);else r.addedNodes.forEach(fixAll);}});
+  const start=()=>{fixAll(document.body);mo.observe(document.body,{subtree:true,childList:true,characterData:true});};
+  if(document.body)start();else addEventListener('DOMContentLoaded',start);
+}
 })();

@@ -624,3 +624,20 @@ body:has(.tpa-dialog-back:not(.hidden)) .menu-tab{visibility:hidden}
 
 /* 4.95.0: the planes page - one count tile across the panel */
 .stats-grid.planes-only{grid-template-columns:1fr}
+
+/* 4.99.0 (Rob 24 Nov 12:42): ?look=2 preview - the menu panel on the right, every font Arial */
+html.look2 .app{flex-direction:row-reverse}
+html.look2 .sidebar{border-right:0;border-left:1px solid #2a3b4c}
+html.look2 .menu-tab{left:auto;right:0;border-left:1px solid #2a3b4c;border-right:0;border-radius:9px 0 0 9px;box-shadow:-3px 0 12px #0006}
+@media(max-width:760px){html.look2 .sidebar{left:auto;right:0;transform:translateX(105%);box-shadow:-9px 0 35px #0009}html.look2 .sidebar.open{transform:translateX(0)}}
+html.look2,html.look2 body,html.look2 *{font-family:Arial,Helvetica,sans-serif!important}
+/* 4.99.0 ?look=2 (Rob ticked 24 Nov): no spaced-out capitals anywhere; no tiny top line or HQ tag; layers as a flat list
+   (no glowing card each); a plain loading bar on the welcome screen */
+html.look2 *{letter-spacing:normal!important;text-transform:none!important}
+html.look2 .eyebrow,html.look2 .brand h1 em,html.look2 .hq-label{display:none}
+html.look2 .layer-toggle{border:0;border-bottom:1px solid #22303e;border-radius:0;background:transparent;box-shadow:none;min-height:50px}
+html.look2 .layer-toggle:hover{background:#ffffff05}
+html.look2 #layers-body{gap:0}
+html.look2 .welcome-ready.load2 .prep-caption{font-size:12px;margin-bottom:6px}
+html.look2 .load2-bar{height:6px;border-radius:3px;background:#1c2a3a;overflow:hidden;margin:0 0 10px}
+html.look2 .load2-bar>span{display:block;height:100%;width:0;background:#3fa796;transition:width .4s}
