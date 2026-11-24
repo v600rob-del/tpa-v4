@@ -41,14 +41,19 @@ function busPlate(e,d){
   if(/^[A-Z0-9]{2,8}$/.test(v)&&/\d/.test(v)&&/[A-Z]/.test(v))return v;
   const tail=String(e.id||'').split(':').pop().toUpperCase().replace(/[^A-Z0-9]/g,'');
   return /^[A-Z]{2}\d{2}[A-Z]{3}$/.test(tail)?tail:'';}            // London buses send their plate as their id
-function askPhoto(reg,tries,onFound){
+// 4.106.1 (Rob 23:54 "couldnt find one, clicked on a lot": the page stopped waiting after ~24 s and remembered "none"):
+// it keeps asking every 3 s while that bus's box is open (up to 3 minutes); if the box closes first nothing is
+// remembered, so the next time the bus is opened it asks again.
+function askPhoto(reg,tries,onFound,open){
   fetch('/api/v4/photo?reg='+encodeURIComponent(reg)).then(r=>r.ok?r.json():{state:'none'}).then(ans=>{
-    if(ans&&ans.state==='looking'&&tries<6){setTimeout(()=>askPhoto(reg,tries+1,onFound),4000);return;}
+    if(ans&&ans.state==='looking'){
+      if(open()&&tries<60)setTimeout(()=>askPhoto(reg,tries+1,onFound,open),3000);else PHOTO_ANS.delete(reg);
+      return;}
     const ok=ans&&ans.state==='found'&&typeof ans.src==='string'&&ans.src.startsWith('/api/v4/photo/img/');
     PHOTO_ANS.set(reg,ok?ans:{state:'none'});if(ok)onFound(ans);
-  }).catch(()=>PHOTO_ANS.set(reg,{state:'none'}));}
-function busPhoto(reg,onFound){const a=PHOTO_ANS.get(reg);if(a)return a.state==='found'?a:null;
-  PHOTO_ANS.set(reg,{state:'looking'});askPhoto(reg,0,onFound);return null;}
+  }).catch(()=>PHOTO_ANS.delete(reg));}
+function busPhoto(reg,onFound,open){const a=PHOTO_ANS.get(reg);if(a)return a.state==='found'?a:null;
+  PHOTO_ANS.set(reg,{state:'looking'});askPhoto(reg,0,onFound,open);return null;}
 function realPhoto(box3,a,reg){
   const old=box3.querySelector('img');if(!old||box3.classList.contains('real'))return;
   const img=document.createElement('img');img.src=a.src;img.alt='Photo of bus '+(a.plate||reg);img.decoding='async';
@@ -615,8 +620,8 @@ async function loadDetails(e,box){
       else if(!known){box3.classList.add('unknown');const tag=document.createElement('span');tag.className='pic-tag';tag.textContent='Type not known';box3.append(tag);}
       img.addEventListener('error',()=>box3.remove(),{once:true});box3.append(img);
       const reg=PHOTOS_ON&&!geoff?busPlate(e,d):'';                     // 4.106.0: a real photo of this bus, if there is one
-      if(reg){const ph=busPhoto(reg,a=>{const live=box.querySelector('.detail-picture.bus');
-          if(live&&box.isConnected&&state.selected&&state.selected.id===e.id)realPhoto(live,a,reg);});
+      if(reg){const open=()=>box.isConnected&&!!state.selected&&state.selected.id===e.id;
+        const ph=busPhoto(reg,a=>{const live=box.querySelector('.detail-picture.bus');if(live&&open())realPhoto(live,a,reg);},open);
         if(ph)realPhoto(box3,ph,reg);}
       rows.unshift(box3);}
     // 4.43.0 (owner 11 Nov 15:43: "I would like to add plane pictures ... static ones"): TPA's own picture of the plane's type

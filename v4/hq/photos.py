@@ -14,6 +14,10 @@ How it works:
   - The photo is fetched once at box size and kept here, then served from our own address: visitors' browsers never
     contact another site, and the page's security rules need no change.
   - Kept: a found photo 30 days, "none found" 7 days, a failed lookup 1 hour.
+  - 4.106.1 (Rob 23:54 "couldnt find one, clicked on a lot"; 144 looked up, ~5 of his clicks found but none seen: the page
+    gave up after ~24 s while the queue was long): a plate someone has just clicked goes to the FRONT of the queue; and
+    warm() looks up, slowly in the background (one every WARM_GAP_S), the plates of buses on the map that have never been
+    looked up, so most answers are ready before anyone clicks.
 """
 from __future__ import annotations
 
@@ -31,6 +35,8 @@ API = 'https://commons.wikimedia.org/w/api.php'
 USER_AGENT = 'TPA-live-map/4.106 (https://tpalive.co.uk; tpaprojectuk@gmail.com) photo-by-plate'
 GAP_S = 1.0
 QUEUE_MAX = 300
+WARM_MAX = 600                 # 4.106.1: background lookups waiting at most
+WARM_GAP_S = 15.0              # 4.106.1: one background lookup every 15 s (~240 an hour), clicked ones go first
 FOUND_KEEP_S = 30 * 86400
 NONE_KEEP_S = 7 * 86400
 ERROR_KEEP_S = 3600
@@ -83,13 +89,17 @@ def default_fetch(url: str, limit: int) -> bytes:
 
 
 class Finder:
-    def __init__(self, folder, api: str = API, fetch=None, gap: float = GAP_S, start: bool = True):
+    def __init__(self, folder, api: str = API, fetch=None, gap: float = GAP_S, start: bool = True, warm_gap: float = WARM_GAP_S):
         self.dir = Path(folder)
         self.api = api
         self.fetch = fetch or default_fetch
         self.gap = gap
+        self.warm_gap = warm_gap
+        self.last_warm = 0.0
         self.lock = threading.Lock()
-        self.queue: list[str] = []
+        self.queue: list[str] = []                # clicked: first, one every `gap` seconds
+        self.later: list[str] = []                # 4.106.1: background (warm), one every WARM_GAP_S
+        self.busy: set[str] = set()               # being looked up right now
         self.memo: dict[str, dict] = {}
         self.counts = {'looked': 0, 'found': 0, 'none': 0, 'errors': 0}
         self.wake = threading.Event()
@@ -129,7 +139,26 @@ class Finder:
 
     def status(self) -> dict:
         with self.lock:
-            return dict(self.counts, waiting=len(self.queue))
+            return dict(self.counts, waiting=len(self.queue), background=len(self.later))
+
+    def warm(self, regs) -> int:
+        """4.106.1: plates of buses on the map: any never looked up (or due again) join the background queue. How many joined."""
+        added = 0
+        for reg in regs:
+            n = norm(reg)
+            if not n:
+                continue
+            rec = self.record(n)
+            if rec and time.time() - float(rec.get('at', 0)) <= (FOUND_KEEP_S if rec.get('state') == 'found' else NONE_KEEP_S):
+                continue
+            with self.lock:
+                if n in self.queue or n in self.later or n in self.busy or len(self.later) >= WARM_MAX:
+                    continue
+                self.later.append(n)
+                added += 1
+        if added:
+            self.kick()
+        return added
 
     # ---- keeping
     def record(self, n):
@@ -158,21 +187,41 @@ class Finder:
                 self.memo.pop(next(iter(self.memo)))
 
     def enqueue(self, n):
+        """Someone has just opened this bus: to the front of the queue (4.106.1)."""
         with self.lock:
-            if n in self.queue or len(self.queue) >= QUEUE_MAX:
+            if n in self.busy:
                 return
-            self.queue.append(n)
+            if n in self.later:
+                self.later.remove(n)
+            if n in self.queue:
+                self.queue.remove(n)
+            elif len(self.queue) >= QUEUE_MAX:
+                self.queue.pop()
+            self.queue.insert(0, n)
+        self.kick()
+
+    def kick(self):
+        with self.lock:
             if self.start and self.thread is None:
                 self.thread = threading.Thread(target=self.work, daemon=True)
                 self.thread.start()
         self.wake.set()
 
+    def next_plate(self, now):
+        """The next plate to look up: a clicked one first; a background one only every warm_gap seconds."""
+        with self.lock:
+            if self.queue:
+                return self.queue.pop(0)
+            if self.later and now - self.last_warm >= self.warm_gap:
+                self.last_warm = now
+                return self.later.pop(0)
+        return None
+
     def work(self):
         while True:
-            with self.lock:
-                n = self.queue.pop(0) if self.queue else None
+            n = self.next_plate(time.time())
             if n is None:
-                self.wake.wait(60)
+                self.wake.wait(1.0)
                 self.wake.clear()
                 continue
             self.look(n)
@@ -185,10 +234,14 @@ class Finder:
     def look(self, n):
         with self.lock:
             self.counts['looked'] += 1
+            self.busy.add(n)
         try:
             rec = self.find(n)
         except Exception as exc:                  # never breaks the page: tried again in an hour
             rec = {'state': 'error', 'at': time.time(), 'why': type(exc).__name__}
+        finally:
+            with self.lock:
+                self.busy.discard(n)
         key = 'found' if rec['state'] == 'found' else 'none' if rec['state'] == 'none' else 'errors'
         with self.lock:
             self.counts[key] += 1
@@ -235,3 +288,22 @@ class Finder:
         artist = text((meta.get('Artist') or {}).get('value')) or 'Unknown photographer'
         return {'state': 'found', 'at': time.time(), 'file': f'{n}.{ext}', 'title': title,
                 'credit': artist[:CREDIT_MAX], 'licence': lic, 'page': ii.get('descriptionurl', '')}
+
+
+PLATE_ID = re.compile(r'^[A-Z]{2}\d{2}[A-Z]{3}$')
+
+
+def plates_from_tiles(root) -> list:
+    """4.106.1: number plates of the buses in the bus engine's published town-level files (<root>/bus/b/*.json): the last
+    part of a bus's id when it is a modern plate (London buses, National Express, Bee Network send their plate)."""
+    out = []
+    for f in sorted(Path(root, 'bus', 'b').glob('*.json')):
+        try:
+            items = json.loads(f.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            continue
+        for it in items if isinstance(items, list) else []:
+            tail = str(it.get('i', '') if isinstance(it, dict) else '').split(':')[-1].upper()
+            if PLATE_ID.match(tail):
+                out.append(tail)
+    return out
