@@ -10,6 +10,13 @@ bus have put it at that moment - and how far was that from where the bus really 
   - stay put:               where it last reported
   - carry on at its speed:  on along its route at the speed between its last two reports
   - today's map:            where today's map shows it then (its replay, `d` seconds behind)
+24 Nov 2026 21:52 (Rob agreed: make the guess itself better, measured first) - four more ways, each using only what had
+been published before the report:
+  - own pace, last 3 min:   on along its route at its own average pace over its last 3 minutes of reports (stops and
+                            lights included)
+  - route pace, last 15 min: on at the typical pace of every bus seen on the same route line over the last 15 minutes
+  - forecast at own pace:   the forecast, sped up or slowed to this bus's own recent pace against the forecast's pace
+  - forecast + own pace:    half way between the forecast and its own pace
 Distances are metres along the bus's route line. "Ahead" = shown further along than it really was (looks worse than
 behind: a bus that runs ahead then slides back). Split by how long after the bus's last report (the page shows a bus
 for a minute or more after it), and by area for the forecast.
@@ -37,7 +44,11 @@ AREAS = {                                         # south, west, north, east
 }
 BUCKETS = ((60, 'up to 1 min after its last report'), (120, '1 to 2 min after'), (180, '2 to 3 min after'),
            (300, '3 to 5 min after'))
-METHODS = ('forecast', 'forecast, cautious 15 s', 'forecast, cautious 30 s', 'stay put', 'carry on at its speed')
+METHODS = ('forecast', 'forecast, cautious 15 s', 'forecast, cautious 30 s', 'stay put', 'carry on at its speed',
+           'own pace, last 3 min', 'route pace, last 15 min', 'forecast at own pace', 'forecast + own pace')
+OWN_S = 180.0                                    # 24 Nov: its own pace over this long before its report
+ROUTE_S = 900.0                                  # 24 Nov: other buses on the same line over this long
+WARP = (0.3, 2.5)                                # the forecast is never sped up or slowed beyond these
 CAUTIOUS = (15.0, 30.0)                          # HQ 4.61.0 Stage 3: the same forecast, as if the bus were this much later
 KEEP_S = 300.0
 
@@ -59,6 +70,21 @@ def along(points, t):
     return points[-1][1]
 
 
+def own_pace(rep, t0):
+    """24 Nov: metres a second along its line over its last OWN_S seconds of reports up to t0 (stops included); None
+    when its reports up to t0 span under a minute."""
+    upto = [p for p in rep if p[0] <= t0]
+    if len(upto) < 2:
+        return None
+    first = next((p for p in upto if p[0] >= t0 - OWN_S), upto[0])
+    last = upto[-1]
+    if last[0] - first[0] < 60:
+        first = upto[0]
+    if last[0] - first[0] < 60:
+        return None
+    return max(0.0, (last[1] - first[1]) / (last[0] - first[0]))
+
+
 class Bus:
     __slots__ = ('line', 'area', 'reports', 'forecasts', 'delay')
 
@@ -76,6 +102,7 @@ class Check:
         self.by_area = {}                           # area -> [signed metres] (forecast, all times)
         self.scored = 0
         self.with_forecast = 0
+        self.lines = {}                             # route line -> [(time, pace m/s)] of every bus on it (24 Nov)
 
     def observe(self, items, area_of):
         for i, it in items.items():
@@ -91,6 +118,11 @@ class Check:
                 if known is not None:
                     self.score(b, t2, m2)
                 b.reports[t2] = m2
+                pace = own_pace(sorted(b.reports.items()), t2)
+                if pace is not None:
+                    lst = self.lines.setdefault(b.line, [])
+                    lst.append((t2, pace))
+                    self.lines[b.line] = [x for x in lst if t2 - x[0] <= ROUTE_S + 60]
             f = it.get('f')
             if f and len(f) >= 2 and (not b.forecasts or f[0][0] > b.forecasts[-1][0][0]):
                 b.forecasts.append([(float(t), float(m)) for t, m in f])
@@ -114,6 +146,17 @@ class Check:
             before = [p for p in rep if p[0] < t0]
             speed = (m0 - before[-1][1]) / (t0 - before[-1][0]) if before and t0 > before[-1][0] else 0.0
             got = {'forecast': along(fc, t2), 'stay put': m0, 'carry on at its speed': m0 + max(0.0, speed) * h}
+            own = own_pace(rep, t0)                 # 24 Nov: what this bus has really been doing
+            if own is not None:
+                got['own pace, last 3 min'] = m0 + own * h
+                ahead = min(OWN_S, max(30.0, h))
+                fpace = (along(fc, t0 + ahead) - m0) / ahead
+                warp = min(WARP[1], max(WARP[0], own / fpace)) if fpace > 0.3 else 1.0
+                got['forecast at own pace'] = m0 + warp * (along(fc, t2) - m0)
+                got['forecast + own pace'] = (got['forecast'] + got['own pace, last 3 min']) / 2
+            line = [pc for tt, pc in self.lines.get(b.line, []) if t0 - ROUTE_S <= tt <= t0]
+            if len(line) >= 3:
+                got['route pace, last 15 min'] = m0 + statistics.median(line) * h
             for c in CAUTIOUS:                      # waits at its report for c seconds, then follows the forecast that much later
                 got[f'forecast, cautious {c:g} s'] = along(fc, t2 - c) if t2 - c > t0 else m0
             for meth, m in got.items():
