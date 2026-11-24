@@ -28,7 +28,8 @@ const USER_VIEW=KIDS||PLANES||(!FULL_VIEW&&(location.pathname==='/user'||VIEW_AS
 // 4.99.0 (Rob 24 Nov 12:42: people read a left-hand menu bar as a sign of an AI-made site; wants the menu on the right,
 // all of it still working, and Arial throughout): with ?look=2 (preview only) the menu panel sits on the right (its
 // hide tab too; on phones it slides in from the right) and every font is Arial. Normal visitors unchanged until Rob says.
-const LOOK2=!KIDS&&new URLSearchParams(location.search).get('look')==='2';if(LOOK2)document.documentElement.classList.add('look2');
+// 4.105.0 (Rob 24 Nov 18:33: "use the good stuff on the main site"): the new look is normal now; ?look=1 = the old look for a while
+const LOOK2=!KIDS&&new URLSearchParams(location.search).get('look')!=='1';if(LOOK2)document.documentElement.classList.add('look2');
 if(KIDS){document.documentElement.classList.add('kids-view');}
 if(PLANES){document.documentElement.classList.add('planes-view');}
 if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':PLANES?'TPA Planes · Live UK aircraft on a map':'TPA · Live UK trains, buses and planes on one map';
@@ -1029,7 +1030,7 @@ const TRAIL={id:'',pts:[],line:null,svg:null,drawn:[],base:null,raf:0};
 // meets the plane; the line is a gentle curve through the reports (a light average evens out rough ground-station (MLAT)
 // positions, then corner-cutting). The kink came from the trail ending at the last REPORT while the icon glides gently
 // towards each new report (4.42.0), so it can be a way off it for a while.
-const TRAIL2=PLANES&&new URLSearchParams(location.search).get('trail')==='2';
+const TRAIL2=PLANES&&new URLSearchParams(location.search).get('trail')!=='1';   // 4.105.0: normal now; ?trail=1 = the old trail
 function trailFrom(e,d){
   if(!Array.isArray(d.trail))return;
   const pts=d.trail.filter(p=>Array.isArray(p)&&validNum(p[0])&&validNum(p[1])&&Math.abs(p[0])<=180&&Math.abs(p[1])<=90).slice(-200).map(p=>[p[1],p[0]]);
@@ -1465,7 +1466,7 @@ function currentEntity(sel){const f=state.frames[sel.component];return f?.entiti
 // (air 0.12.0 'alerts'), each with "Show me", which goes to the plane and opens its box. Closing the box hides it until
 // the list changes (another plane or another code). Preview: /planes?squawk=1; /planes?squawk=test shows a pretend alert
 // for a plane on screen, so the box can be seen on a quiet day.
-const SQUAWK_MODE=PLANES?new URLSearchParams(location.search).get('squawk'):null,SQUAWK_ON=SQUAWK_MODE==='1'||SQUAWK_MODE==='test';
+const SQUAWK_MODE=PLANES?new URLSearchParams(location.search).get('squawk'):null,SQUAWK_ON=PLANES&&SQUAWK_MODE!=='0';   // 4.105.0: normal now; ?squawk=0 = off, ?squawk=test = a pretend alert
 const SQUAWK_WORDS={'7500':'hijack (unlawful interference)','7600':'radio failure','7700':'general emergency'};
 let squawkBox=null,squawkClosed='';
 function squawkList(){
