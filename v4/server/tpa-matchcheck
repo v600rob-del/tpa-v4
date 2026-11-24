@@ -19,6 +19,7 @@ Python's cache files), the live engine is not asked anything.
 """
 import importlib.util
 import json
+import math
 import os
 import sys
 import time
@@ -33,6 +34,12 @@ WATCH = ('26296', '27182')              # the Portsmouth (22 Nov) and Hull (23 N
 LATE_END_MIN = 30                       # a report this long after the journey's timetabled end counts as "after its end"
 EXAMPLES = 6
 FLAGS = ('route number differs', 'company code differs', f'report over {LATE_END_MIN} min after the journey ended')
+# 24 Nov 21:05 (Rob: the buses still reporting after their journey ended - "both, in order please"): where those buses are
+NEAR_M = 300                            # this close to a stop counts as "at" it
+STILL_M = 200                           # moved less than this over its last 10 minutes of reports counts as standing still
+WHERE = ('at its last stop', 'back at its first stop', 'elsewhere, standing still', 'elsewhere, moving',
+         'elsewhere, movement not known')
+AT_END = 'standing at its last stop after its due time (box shows a growing "late")'
 
 
 def say(text):
@@ -57,6 +64,50 @@ def journey(tt, trip_id):
                             'LEFT JOIN routes r ON r.route_id = t.route_id LEFT JOIN agency a ON a.agency_id = r.agency_id '
                             'JOIN trip_ends e ON e.trip_id = t.trip_id WHERE t.trip_id=?', (trip_id,)).fetchone()
     return tuple(row) if row else ('', '', '', 0, 0)
+
+
+def metres(lat1, lon1, lat2, lon2):
+    k = math.pi / 180
+    x = (lon2 - lon1) * k * math.cos((lat1 + lat2) / 2 * k)
+    return 6371000 * math.hypot(x, (lat2 - lat1) * k)
+
+
+def ends(tt, trip_id):
+    """((lat, lon) of the journey's first stop, (lat, lon) of its last stop) - None where not known."""
+    with tt.lock:
+        row = tt.db.execute('SELECT f.lat, f.lon, l.lat, l.lon FROM trip_ends e LEFT JOIN stops f ON f.stop_id = e.first_stop '
+                            'LEFT JOIN stops l ON l.stop_id = e.last_stop WHERE e.trip_id=?', (trip_id,)).fetchone()
+    if not row:
+        return None, None
+    return (row[0], row[1]) if row[0] is not None else None, (row[2], row[3]) if row[2] is not None else None
+
+
+def moved_m(v, hist):
+    """Furthest it has been from where it is now over its last 10 minutes of reports (None: no history)."""
+    try:
+        lat, lon, t = float(v['lat']), float(v['lon']), float(v['recorded'])
+    except (KeyError, TypeError, ValueError):
+        return None
+    pts = [h for h in (hist or []) if isinstance(h, (list, tuple)) and len(h) >= 3 and t - 600 <= h[0] <= t]
+    if len(pts) < 2:
+        return None
+    return max(metres(lat, lon, h[1], h[2]) for h in pts)
+
+
+def where(v, first, last, hist):
+    """Which of WHERE a bus is (and its distances to its first and last stops, metres)."""
+    try:
+        lat, lon = float(v['lat']), float(v['lon'])
+    except (KeyError, TypeError, ValueError):
+        return WHERE[4], None, None
+    d_last = metres(lat, lon, *last) if last else None
+    d_first = metres(lat, lon, *first) if first else None
+    if d_last is not None and d_last <= NEAR_M:
+        return WHERE[0], d_first, d_last
+    if d_first is not None and d_first <= NEAR_M:
+        return WHERE[1], d_first, d_last
+    m = moved_m(v, hist)
+    return (WHERE[4] if m is None else WHERE[2] if m < STILL_M else WHERE[3]), d_first, d_last
 
 
 def flags_for(v, j):
@@ -87,9 +138,10 @@ def describe(v, j, past):
             + (f"  |  {past:+.0f} min after its end" if past is not None else ''))
 
 
-def check(tt, buses, progress=None):
+def check(tt, buses, progress=None, history=None):
     """Counts, examples per flag and the watched buses' lines. Uses the engine's own matching (tt.match)."""
-    count, examples, watch = Counter(), {f: [] for f in FLAGS}, []
+    count, examples, watch = Counter(), {f: [] for f in FLAGS + WHERE + (AT_END,)}, []
+    history = history or {}
     for i, v in enumerate(buses):
         if progress and i and i % 4000 == 0:
             progress(i)
@@ -109,6 +161,20 @@ def check(tt, buses, progress=None):
             count[f] += 1
             if len(examples[f]) < EXAMPLES:
                 examples[f].append(line)
+        first, last = ends(tt, got[0])
+        place, d_first, d_last = where(v, first, last, history.get(v['key']))
+        extra = f"  |  {d_last / 1000:.1f} km from its last stop" if d_last is not None else ''
+        if place == WHERE[0] and past is not None and past > 2:
+            count[AT_END] += 1
+            if len(examples[AT_END]) < EXAMPLES:
+                examples[AT_END].append(line + extra)
+        if FLAGS[2] in fl:
+            count[place] += 1
+            band = '30-60 min' if past <= 60 else '1-2 hours' if past <= 120 else 'over 2 hours'
+            count['after its end: ' + band] += 1
+            if len(examples[place]) < EXAMPLES:
+                m = moved_m(v, history.get(v['key']))
+                examples[place].append(line + extra + (f", moved {m:.0f} m in 10 min" if m is not None else ''))
         if FLAGS[0] in fl and FLAGS[1] in fl:
             count['route number AND company differ'] += 1
         if fl:
@@ -135,13 +201,18 @@ def main(argv):
     buses = saved.get('vehicles') or []
     say(f"{len(buses)} buses in the engine's last saved reports ({round(time.time() - saved.get('savedAt', time.time()))} s old)")
     t0 = time.time()
-    count, examples, watch = check(tt, buses, lambda i: say(f'  ...{i} of {len(buses)} ({time.time() - t0:.0f} s)'))
+    count, examples, watch = check(tt, buses, lambda i: say(f'  ...{i} of {len(buses)} ({time.time() - t0:.0f} s)'),
+                                   saved.get('history') or {})
     say('=== COPY BACK START ===')
     say(f"tpa-matchcheck {time.strftime('%d %b %H:%M')}: {len(buses)} buses, {time.time() - t0:.0f} s")
     for k in ('linked to one journey', 'linked with at least one difference') + FLAGS + (
             'route number AND company differ', 'not linked (none or several fit)', 'no start stop or time sent'):
         say(f'{k}: {count[k]}')
-    for f in FLAGS:
+    say(f'-- of the {count[FLAGS[2]]} reporting over {LATE_END_MIN} min after their journey ended, where they are:')
+    for k in WHERE + tuple('after its end: ' + b for b in ('30-60 min', '1-2 hours', 'over 2 hours')):
+        say(f'  {k}: {count[k]}')
+    say(f'{AT_END}: {count[AT_END]}')
+    for f in FLAGS + WHERE + (AT_END,):
         if examples[f]:
             say(f'-- examples: {f}')
             for line in examples[f]:
