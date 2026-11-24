@@ -179,14 +179,21 @@ function isLost(e){const own=e.layerLate===undefined?e.quality:e.ownQuality;retu
 // opened, so a long-silent vehicle fades away almost at once instead of pulsing for 3 minutes on arrival.
 const LOST_AFTER={bus:300,rail:600};   // seconds after its last report that its engine calls it stale (bus 5 min, rail 10 min)
 function finished(e){return typeof e.label==='string'&&/(^|· )terminated at /.test(e.label);}
+// 4.98.0 (Rob 23 Nov 23:24, Hull Bus 10 with a report 3-6 min old "vanished about every 6 s"; 24 Nov "Yes, preview
+// first"): with ?lost=1, a vehicle that has faded away stays away until it reports again. Before, moving cleared its
+// search clock and the next pause faded it away at once, so a stale bus still carried on by its timetable blinked out and in.
+const LOST_STAY=new URLSearchParams(location.search).get('lost')==='1',GONE_ON=new Map();
 function lostState(e,k,keepIt,pos,now){
-  if(!isLost(e)||finished(e)){SEARCHING.delete(k);return 0;}
+  if(!isLost(e)||finished(e)){SEARCHING.delete(k);GONE_ON.delete(k);return 0;}
+  if(LOST_STAY&&!keepIt&&GONE_ON.get(k)===e.observedAt)return 2;
   const here=estimate(e,now),ahead=here&&estimate(e,now+3000);   // (estimate only: whereNow would change the vehicle's blends)
   if(ahead&&Math.hypot(...metresXY(here,ahead))>3){SEARCHING.delete(k);return 0;}   // still being carried on: looks normal
   if(!SEARCHING.has(k)){let start=now;const ob=Date.parse(e.observedAt);
     if(e.layerLate===undefined&&Number.isFinite(ob))start=Math.min(now,ob+1000*(LOST_AFTER[e.component]||120));
     SEARCHING.set(k,start);if(SEARCHING.size>20000)SEARCHING.delete(SEARCHING.keys().next().value);}
-  return now-SEARCHING.get(k)>SEARCH_MS&&!keepIt?2:1;
+  const st=now-SEARCHING.get(k)>SEARCH_MS&&!keepIt?2:1;
+  if(st===2&&LOST_STAY){GONE_ON.delete(k);GONE_ON.set(k,e.observedAt);if(GONE_ON.size>20000)GONE_ON.delete(GONE_ON.keys().next().value);}
+  return st;
 }
 
 // ICON REVIEW ONLY. The SVG shapes are fixed HQ artwork reproduced from the
