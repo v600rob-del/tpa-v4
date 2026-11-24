@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.11.1'
+ENGINE_VERSION = '0.12.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -1552,6 +1552,27 @@ def label_for(a) -> str:
     return ' · '.join(parts)
 
 
+# 0.12.0 (Rob 24 Nov 2026 15:52: "if any report 7500, 7600, and 7700 a pop up box should appear in planes only view, with
+# links to click and be taken to those flights"): every map answer lists the planes squawking an emergency code anywhere
+# the engine holds (not only in the view asked about), so the page can say so and take you there.
+ALERT_SQUAWKS = ('7500', '7600', '7700')
+MAX_ALERTS = 20
+
+
+def squawk_alerts(aircraft, now: float) -> list:
+    out = []
+    for a in aircraft:
+        sq = a.get('squawk') or ''
+        if sq in ALERT_SQUAWKS and now - a['reported'] <= a.get('keep', DROP_AFTER) and a.get('lat') is not None:
+            item = {'id': 'air:' + a['hex'], 'label': label_for(a)[:80], 'squawk': sq,
+                    'lat': round(a['lat'], 5), 'lon': round(a['lon'], 5), 'observedAt': iso(a['reported'])}
+            if a.get('alt') is not None and 0 <= a['alt'] <= 60000:
+                item['altFt'] = int(round(a['alt'] / 100.0) * 100)
+            out.append(item)
+    out.sort(key=lambda x: (ALERT_SQUAWKS.index(x['squawk']), x['id']))   # hijack first, then radio failure, then emergency
+    return out[:MAX_ALERTS]
+
+
 def snapshot(view, world=False) -> dict:
     now = time.time()
     span = view[2] - view[0] if view is not None else None
@@ -1582,6 +1603,7 @@ def snapshot(view, world=False) -> dict:
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
              'nextPollAfterMs': PAGE_POLL_MS if small else 10000, 'attribution': ATTRIBUTIONS[source or ORDER[0]], 'entities': []}
+    frame['alerts'] = squawk_alerts(aircraft, now)                          # 0.12.0
     if not small:
         frame['notice'] = 'Zoom in to see aircraft'
         return frame

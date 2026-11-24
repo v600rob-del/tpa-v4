@@ -443,6 +443,31 @@ let detailsTimer=0;
 // but not all at once, so the casual map user isnt overwhelmed"): rows an engine marks 'more' sit behind "More details".
 // Closed at first; once opened it stays open for the next box (kept in this browser, if it allows).
 let moreOpen=(()=>{try{return localStorage.getItem('tpa-more-details')==='1';}catch(_){return false;}})();
+// 4.102.0 (Rob 24 Nov 15:51: "tidy the boxes please, and move squawk up the list"; the chatty opening sentences were part of
+// the "vibe coded" comments): with ?look=2 the box's opening sentence becomes labelled facts. The engines write these
+// sentences in fixed patterns (air 0.11, bus 0.27, rail 1.7), so they are read back here; anything else is left as it was.
+// Squawk (and its meaning, on /planes) is shown with the first rows, under Kind, instead of at the bottom of More details.
+function summaryFacts(comp,text){
+  const t=String(text||'').trim(),out=[];let m;
+  if(comp==='air'){
+    if((m=t.match(/^This is an? (tower|airport vehicle|emergency vehicle|ground vehicle|airport ground vehicle)(?: \((.+)\))?\.$/i)))return [['What',m[1][0].toUpperCase()+m[1].slice(1)+(m[2]?` (${m[2]})`:'')]];
+    if(!(m=t.match(/^This is (.+?)(?:, (which usually flies from|from) (.+) to ([^,]+))?\.$/)))return null;
+    const who=m[1];let w;
+    if((w=who.match(/^(.+) flight (\S+)$/)))out.push(['Flight',`${w[1]} ${w[2]}`]);
+    else if((w=who.match(/^flight (\S+)$/)))out.push(['Flight',w[1]]);
+    else if((w=who.match(/^aircraft (\S+)$/)))out.push(['Aircraft',w[1]]);
+    else if(!/^an? /.test(who))return null;          // "a Boeing 737-800 (G-ABCD)": the rows already say so
+    if(m[3])out.push([m[2].startsWith('which')?'Usual route':'Route',`${m[3]} to ${m[4]}`]);
+    return out;}
+  if(comp==='bus'&&(m=t.match(/^This is the (.*?)(coach|bus), the (\d\d:\d\d) from (.+) to (.+)\.$/))){
+    const who=m[1].trim();let w;
+    if((w=who.match(/^(.*?)\s*number (\S+)$/))){if(w[1])out.push(['Operator',w[1]]);out.push(['Route',w[2]]);}
+    else if(who)out.push(['Service',who]);
+    out.push(['Journey',`${m[3]} from ${m[4]}`],['Going to',m[5]]);return out;}
+  if(comp==='rail'&&(m=t.match(/^This is the (?:(.+) )?(\d\d:\d\d) service from (.+) to (.+)\.$/))){
+    if(m[1])out.push(['Operator',m[1]]);out.push(['Journey',`${m[2]} from ${m[3]}`],['Going to',m[4]]);return out;}
+  return null;}
+window.TPA_HQ_SUMMARY_FACTS=summaryFacts;   // (checks only)
 async function loadDetails(e,box){
   clearTimeout(detailsTimer);
   if(!state.live[e.component])return;
@@ -453,7 +478,15 @@ async function loadDetails(e,box){
     if(!state.selected||state.selected.id!==e.id||!box.isConnected)return;
     const rows=[],more=[];
     // 4.95.0 (Rob 19 Nov 13:44, the enthusiasts' extras are for /planes only): rows marked 'pro' show only there
-    const wanted=(Array.isArray(d.rows)?d.rows:[]).filter(row=>PLANES||row.pro!==true);
+    let wanted=(Array.isArray(d.rows)?d.rows:[]).filter(row=>PLANES||row.pro!==true);
+    // 4.102.0 (?look=2): the opening sentence as labelled facts first; squawk up with the first rows (under Kind)
+    const facts=LOOK2&&typeof d.summary==='string'?summaryFacts(e.component,d.summary):null;
+    if(LOOK2){
+      const sq=wanted.filter(r=>/^Squawk( meaning)?$/.test(String(r.label||''))).map(r=>Object.assign({},r,{more:false}));
+      if(sq.length){const rest=wanted.filter(r=>!/^Squawk( meaning)?$/.test(String(r.label||'')));
+        let at=rest.findIndex(r=>r.label==='Kind');if(at<0)at=rest.findIndex(r=>r.more===true)-1;if(at<-1)at=rest.length-1;
+        rest.splice(at+1,0,...sq);wanted=rest;}
+    }
     if(e.component==='air'&&PLANES)trailFrom(e,d);
     for(const row of wanted.slice(0,PLANES?48:24)){
       const line=document.createElement('div');line.className='detail-row';
@@ -480,10 +513,20 @@ async function loadDetails(e,box){
     // scrollable list, within the box"). Generic: any engine may send a summary and its stops (done / here / due).
     const stops=Array.isArray(d.stops)?d.stops.filter(s=>s&&typeof s.name==='string'&&['done','here','due'].includes(s.state)).slice(0,120):[];   // names up to 80 letters, wrapped
     const trip=[];
-    if(typeof d.summary==='string'&&d.summary){const p=document.createElement('p');p.className='detail-summary';p.textContent=tidyName(d.summary.slice(0,200));trip.push(p);}
+    if(facts)for(const [label,value] of facts){   // 4.102.0 (?look=2): where the sentence was, the same facts as labelled rows
+      const line=document.createElement('div');line.className='detail-row detail-fact';
+      const k=document.createElement('span');k.className='detail-label';k.textContent=label;
+      const v=document.createElement('span');v.className='detail-value';v.textContent=tidyName(String(value)).slice(0,120);
+      line.append(k,v);trip.push(line);}
+    else if(typeof d.summary==='string'&&d.summary){const p=document.createElement('p');p.className='detail-summary';p.textContent=tidyName(d.summary.slice(0,200));trip.push(p);}
     // 4.33.0: what it is doing ("Coming in to land at Leeds Bradford") and how far along ("About halfway: ...")
     for(const [key,cls] of [['doing','detail-doing'],['progress','detail-progress']])
-      if(typeof d[key]==='string'&&d[key]){const p=document.createElement('p');p.className=cls;p.textContent=d[key].slice(0,120);trip.push(p);}
+      if(typeof d[key]==='string'&&d[key]){const p=document.createElement('p');p.className=cls;
+        // 4.102.0 (?look=2): "About a quarter of the way: 95 miles flown, 240 to go" -> Distance: 95 miles flown, 240 to go
+        const pm=LOOK2&&key==='progress'?d[key].match(/^[^:]{3,40}:\s*(.+)$/):null;
+        if(pm){p.className='detail-row detail-progress';const k=document.createElement('span');k.className='detail-label';k.textContent='Distance';
+          const v=document.createElement('span');v.className='detail-value';v.textContent=pm[1].slice(0,100);p.replaceChildren(k,v);}
+        else p.textContent=d[key].slice(0,120);trip.push(p);}
     if(stops.length>=2){
       const when=s=>s.expected&&s.expected!==s.time?`${s.time||''} (expected ${s.expected})`:(s.time||'');
       const here=stops.find(s=>s.state==='here'),next=stops.find(s=>s.state==='due');
@@ -1413,6 +1456,39 @@ async function copyReport(e){
 }
 function pin0(k){const p=pins.get(k);return p&&p.tf?p:null;}
 function currentEntity(sel){const f=state.frames[sel.component];return f?.entities.find(x=>x.id===sel.id)||null;}
+// 4.103.0 (Rob 24 Nov 15:52: "if any report 7500, 7600, and 7700 a pop up box should appear in planes only view, with links to
+// click and be taken to those flights"): on /planes, a box lists every plane squawking an emergency code anywhere in the UK
+// (air 0.12.0 'alerts'), each with "Show me", which goes to the plane and opens its box. Closing the box hides it until
+// the list changes (another plane or another code). Preview: /planes?squawk=1; /planes?squawk=test shows a pretend alert
+// for a plane on screen, so the box can be seen on a quiet day.
+const SQUAWK_MODE=PLANES?new URLSearchParams(location.search).get('squawk'):null,SQUAWK_ON=SQUAWK_MODE==='1'||SQUAWK_MODE==='test';
+const SQUAWK_WORDS={'7500':'hijack (unlawful interference)','7600':'radio failure','7700':'general emergency'};
+let squawkBox=null,squawkClosed='';
+function squawkList(){
+  let list=state.frames.air?.alerts||[];
+  if(SQUAWK_MODE==='test'&&!list.length){const e=(state.frames.air?.entities||[]).find(x=>x.position&&!isGround(x));
+    if(e)list=[{id:e.id,label:e.label.split(' · ')[0]+' (test only)',squawk:'7700',lat:e.position.lat,lon:e.position.lon}];}
+  return list;}
+function goToAlert(a){
+  stopFollow();if(map)map.setView([a.lat,a.lon],Math.max(map.getZoom(),10),{animate:false});state.lon=a.lon;state.lat=a.lat;refetchLiveView();paint();
+  const t0=Date.now(),tick=()=>{const e=currentEntity({component:'air',id:a.id});if(e){selectEntity(e);return;}if(Date.now()-t0<15000)setTimeout(tick,500);};tick();}
+function updateSquawkAlert(){
+  if(!SQUAWK_ON)return;
+  const list=squawkList(),sig=list.map(a=>a.id+':'+a.squawk).join('|');
+  if(!list.length||sig===squawkClosed){if(squawkBox){squawkBox.remove();squawkBox=null;}return;}
+  if(squawkBox&&squawkBox.dataset.sig===sig)return;
+  if(squawkBox)squawkBox.remove();
+  const box=el('div','squawk-alert');box.dataset.sig=sig;box.setAttribute('role','alert');
+  const head=el('div','squawk-head');head.append(el('strong','',list.length>1?`Emergency squawks (${list.length})`:'Emergency squawk'));
+  const x=el('button','squawk-close','×');x.type='button';x.setAttribute('aria-label','Close the emergency squawk box');
+  x.onclick=()=>{squawkClosed=sig;box.remove();squawkBox=null;};head.append(x);box.append(head);
+  const ul=el('ul','squawk-list');
+  for(const a of list){const li=el('li');const who=el('b','',a.label);
+    li.append(who,el('span','',` squawking ${a.squawk}: ${SQUAWK_WORDS[a.squawk]}`+(a.altFt!=null?`, ${a.altFt.toLocaleString('en-GB')} ft`:'')));
+    const go=el('button','squawk-go','Show me');go.type='button';go.onclick=()=>goToAlert(a);li.append(go);ul.append(li);}
+  box.append(ul,el('small','squawk-note','This is what the plane is broadcasting. Codes are sometimes set by mistake or for a test.'));
+  (document.querySelector('.map-section')||document.body).append(box);squawkBox=box;}
+if(SQUAWK_ON)setInterval(updateSquawkAlert,2000);
 function updateSelectedInfo(now){
   if(!state.selected||selected.classList.contains('hidden'))return;
   const e=currentEntity(state.selected);if(!e)return;
@@ -1666,7 +1742,11 @@ const pollMs=Number.isInteger(f.nextPollAfterMs)?clamp(f.nextPollAfterMs,2000,12
 // 4.25.0 (owner 5 Nov 22:05, "belt and braces"): a layer may say it is showing its timetable (scheduled) rather than live
 // reports, and give the real reason for a break (noticeDetail) - shown only on the owner's full page. Generic.
 const noticeDetail=typeof f.noticeDetail==='string'?f.noticeDetail.replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,200):'';
-return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<serverNow()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs,groupStacks:f.groupStacks===true,scheduled:f.scheduled===true,noticeDetail};}
+// 4.103.0 (air 0.12.0): planes squawking 7500 / 7600 / 7700 anywhere in the UK, for the alert on /planes
+const alerts=id==='air'&&Array.isArray(f.alerts)?f.alerts.filter(a=>a&&typeof a.id==='string'&&a.id.length<=128&&['7500','7600','7700'].includes(a.squawk)
+  &&validNum(a.lat)&&validNum(a.lon)&&Math.abs(a.lat)<=90&&Math.abs(a.lon)<=180).slice(0,20)
+  .map(a=>({id:a.id,label:String(a.label||a.id).replace(/[\u0000-\u001f\u007f]/g,' ').slice(0,80),squawk:a.squawk,lat:a.lat,lon:a.lon,altFt:validNum(a.altFt)?a.altFt:null})):[];
+return {component:id,health:f.health==='ready'&&Date.parse(f.expiresAt)<serverNow()?'stale':f.health,entities,attribution:f.attribution,notice,overlay,pollMs,groupStacks:f.groupStacks===true,scheduled:f.scheduled===true,noticeDetail,alerts};}
 // 4.1.0 optional motion hint from an engine. HQ only does generic arithmetic with it
 // (straight-line "carry on at this speed" or "head for this point by this time");
 // anything malformed is ignored and the vehicle simply stays at its reported position.

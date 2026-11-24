@@ -640,3 +640,13 @@ html.look2 .layer-toggle:hover{background:#ffffff05}
 html.look2 #layers-body{gap:0}
 /* 4.99.2 (Rob 13:55: the arrival board "adds character"): the split-flap board keeps its departure-board capitals */
 html.look2 .flapboard .fb-name,html.look2 .flapboard .fb-flap{text-transform:uppercase!important;letter-spacing:.1em!important}
+/* 4.103.0: the emergency squawk box on /planes (?squawk=1 preview) */
+.squawk-alert{position:absolute;z-index:1300;top:64px;left:50%;transform:translateX(-50%);width:min(440px,calc(100% - 24px));
+  background:#1a0d10f2;border:2px solid #e5484d;border-radius:8px;color:#fff;padding:10px 12px;box-shadow:0 6px 24px #000a}
+.squawk-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:6px}
+.squawk-head strong{color:#ff8a8d;font-size:15px}
+.squawk-close{background:none;border:0;color:#fff;font-size:20px;line-height:1;cursor:pointer;padding:0 4px}
+.squawk-list{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.squawk-list li{display:flex;flex-wrap:wrap;align-items:center;gap:4px 8px;font-size:13px}
+.squawk-go{margin-left:auto;background:#e5484d;border:0;color:#fff;border-radius:5px;padding:4px 10px;font-weight:700;cursor:pointer}
+.squawk-note{display:block;margin-top:6px;color:#c9b6b8;font-size:11px}
