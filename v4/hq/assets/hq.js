@@ -2938,7 +2938,7 @@ if(LOOK2){
   const sentence=t=>t.toLowerCase().replace(/[a-z0-9][a-z0-9'-]*/gi,word).replace(/(^|[:.!?]\s+)([a-z])/g,(m,a,b)=>a+b.toUpperCase());
   const title=t=>t.toLowerCase().replace(/[a-z0-9][a-z0-9'-]*/gi,w=>KEEP.has(w.toUpperCase())||/\d/.test(w)?w.toUpperCase():w[0].toUpperCase()+w.slice(1));
   function fixText(n){
-    const p=n.parentElement;if(!p||p.closest('#map .leaflet-pane,.marker-layer,script,style'))return;
+    const p=n.parentElement;if(!p||p.closest('script,style')||(p.closest('#map .leaflet-pane,.marker-layer')&&!p.closest('.bubble-layer')))return;   // town bubbles too
     let t=n.nodeValue,o=t;if(!t||!t.trim())return;
     t=t.replace(/\s+·\s+/g,', ').replace(/^·\s+|\s+·$/g,'');
     const core=t.trim();
@@ -2947,7 +2947,7 @@ if(LOOK2){
     for(const [re,to] of WORDS){const c=t.trim();if(re.test(c)){t=t.replace(c,c.replace(re,to));break;}}
     if(t!==o)n.nodeValue=t;}
   function fixAll(root){
-    if(root.nodeType===3){fixText(root);return;}if(root.nodeType!==1||root.closest?.('#map .leaflet-pane,.marker-layer'))return;
+    if(root.nodeType===3){fixText(root);return;}if(root.nodeType!==1||(root.closest?.('#map .leaflet-pane,.marker-layer')&&!root.closest('.bubble-layer')&&!root.querySelector?.('.bubble-layer')))return;
     const w=document.createTreeWalker(root,NodeFilter.SHOW_TEXT);let n;while((n=w.nextNode()))fixText(n);}
   const mo=new MutationObserver(recs=>{for(const r of recs){if(r.type==='characterData')fixText(r.target);else r.addedNodes.forEach(fixAll);}});
   const start=()=>{fixAll(document.body);mo.observe(document.body,{subtree:true,childList:true,characterData:true});};
