@@ -123,7 +123,7 @@ function fitUK(animate){if(!map||typeof map.fitBounds!=='function')return false;
 function home(){if(START_UK){if(!fitUK(true))gotoPlace(-2.9,54.3,6,'UNITED KINGDOM');$('map-place').textContent='UNITED KINGDOM';toast('Home · the whole of the UK');return;}
   gotoPlace(HOME.lon,HOME.lat,HOME.z,'BEVERLEY, EAST YORKSHIRE');toast('Home · Beverley, East Yorkshire');}
 function fitUK(){gotoPlace(-3.0,54.55,5.5,'UNITED KINGDOM');}
-function zoom(delta){if(map)map.setZoom(clamp(map.getZoom()+delta,minZ,18));else{state.z=clamp(state.z+delta,3,17);paint();}}
+function zoom(delta){if(map)map.setZoom(clamp(map.getZoom()+delta,WORLD_PLANES?WORLD_MIN_ZOOM:minZ,18));else{state.z=clamp(state.z+delta,3,17);paint();}}
 function drawFallback(){const {w,h}=dims(),scale=Math.min(2,window.devicePixelRatio||1);if(canvas.width!==Math.round(w*scale)||canvas.height!==Math.round(h*scale)){canvas.width=Math.round(w*scale);canvas.height=Math.round(h*scale);}ctx.setTransform(scale,0,0,scale,0,0);ctx.clearRect(0,0,w,h);if(!state.geo||ready)return;
 ctx.fillStyle='#e8eeea';for(const shape of state.geo.land){if(shape.length<3)continue;ctx.beginPath();shape.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.closePath();ctx.fill();}
 ctx.strokeStyle='#86acb1';ctx.lineWidth=1;for(const seg of state.geo.coastlines){ctx.beginPath();seg.forEach(([lon,lat],i)=>{let p=pixel(lon,lat);i?ctx.lineTo(...p):ctx.moveTo(...p);});ctx.stroke();}
@@ -366,14 +366,18 @@ function planeShadow(art,ft){
 // Unlocked, the map may leave the UK box and the planes engine is asked with world=1: it then also fetches planes round
 // wherever the visitor looks (rationed by the engine). Nothing is saved: a refresh or a new visit is the UK again.
 // Five more clicks lock it again. Not advertised anywhere.
-let WORLD_PLANES=false,UK_LIMITS=null,eggClicks=[];
+let WORLD_PLANES=false,UK_LIMITS=null,eggClicks=[];const WORLD_MIN_ZOOM=2;
 function setWorldPlanes(on){
   if(!map||WORLD_PLANES===on)return;
   WORLD_PLANES=on;
   try{if(typeof map.setMaxBounds==='function')map.setMaxBounds(on?null:UK_LIMITS);}catch(_){}
+  // 4.104.0 (Rob 24 Nov 16:37-16:42, air 0.13.0: zoomed out past the UK, the egg shows military aircraft worldwide): the map
+  // may zoom right out to the whole world while unlocked; locked again, back to the UK's own furthest-out zoom
+  try{if(typeof map.setMinZoom==='function')map.setMinZoom(on?WORLD_MIN_ZOOM:minZ);}catch(_){}
+  if(!on){const c=map.getCenter();if(!inBox(c.lng,c.lat,UK_BOX)||map.getZoom()<minZ)home();}   // 4.104.0: move first, then ask
   delete fetchedBox.air;if(state.live.air)getComponent('air');
-  if(on)toast('✈ World planes unlocked! Scroll anywhere on Earth and zoom in to see the planes there. Click the logo 5 more times to go back to the UK.',10000);
-  else{const c=map.getCenter();if(!inBox(c.lng,c.lat,UK_BOX))home();toast('Back to the UK planes',4000);}}
+  if(on)toast('✈ World planes unlocked! Zoom right out to see military aircraft worldwide, or zoom in anywhere on Earth to see all the planes there. Click the logo 5 more times to go back to the UK.',12000);
+  else toast('Back to the UK planes',4000);}
 function inBox(lon,lat,b){return lat>=b.south&&lat<=b.north&&lon>=b.west&&lon<=b.east;}
 function eggClick(){const t=Date.now();eggClicks=eggClicks.filter(x=>t-x<3000);eggClicks.push(t);
   if(eggClicks.length>=5){eggClicks=[];setWorldPlanes(!WORLD_PLANES);}}
@@ -2615,7 +2619,7 @@ try{
     if(v&&validNum(v.lat)&&validNum(v.lon)&&validNum(v.z)&&v.z>=3&&v.z<=18){map.setView([v.lat,v.lon],v.z,{animate:false});$('map-place').textContent='';}}catch(_){}
   map.on('moveend',()=>{try{const c=map.getCenter();sessionStorage.setItem('tpa-view',JSON.stringify({lat:+c.lat.toFixed(5),lon:+c.lng.toFixed(5),z:map.getZoom()}));}catch(_){}});
   // 4.38.0: zooming out stops once the whole UK box is on screen (a phone stops one step further out than a PC).
-  const fitMinZoom=()=>{try{if(!ukBounds||typeof map.getBoundsZoom!=='function')return;minZ=clamp(map.getBoundsZoom(ukBounds,false),3,10);if(typeof map.setMinZoom==='function')map.setMinZoom(minZ);}catch(_){}};
+  const fitMinZoom=()=>{try{if(!ukBounds||typeof map.getBoundsZoom!=='function')return;minZ=clamp(map.getBoundsZoom(ukBounds,false),3,10);if(typeof map.setMinZoom==='function'&&!WORLD_PLANES)map.setMinZoom(minZ);}catch(_){}};
   fitMinZoom();if(typeof map.on==='function')map.on('resize',fitMinZoom);
   UK_LIMITS=ukBounds;document.querySelector('.sidebar .brand-mark')?.addEventListener('click',eggClick);   // 4.85.0: the plane Easter egg
   L.control.attribution({position:'bottomright',prefix:false}).addTo(map);

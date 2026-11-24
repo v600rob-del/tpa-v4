@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.12.0'
+ENGINE_VERSION = '0.13.0'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -295,6 +295,70 @@ def world_aircraft(now: float) -> list:
             continue
         out.extend(place['aircraft'])
     return out
+
+
+# 0.13.0 (Rob 24 Nov 2026 16:37-16:42: the world part of the Easter egg - "more interested in military activity"; "that
+# sounds perfect"): FlyItalyADSB's GET /v2/mil gives every military aircraft it sees worldwide in ONE answer (measured 17:05:
+# 354 aircraft, 182 KB, 0.1 s). With the egg, a view wider than the UK view shows that list. It is asked for at most every
+# MIL_GAP_SECONDS and only while such a view is being asked about, from the same monthly allowance as everything else
+# (never in the last WORLD_RESERVE of the month), and shared by every viewer.
+_mil_test = os.environ.get('TPA_AIR_FLY_MIL_TEST_URL', '').strip()
+if _mil_test and not re.match(r'^http://127\.0\.0\.1:\d+/', _mil_test):
+    raise SystemExit('TPA_AIR_FLY_MIL_TEST_URL must point at 127.0.0.1 (testing only)')
+FLY_MIL_URL = _mil_test or 'https://api.flyitalyadsb.com/v2/mil'
+MIL_GAP_SECONDS = 3 if _mil_test else 30
+MIL_WANTED_SECONDS = 20          # a world view counts as on screen for this long after the last question
+MIL_MAX = 800                    # more than ever measured (354); thinned evenly beyond this
+MIL = {'aircraft': [], 'fetchedAt': 0.0, 'wantedAt': 0.0, 'lastAt': 0.0, 'requests': 0, 'lastError': ''}
+
+
+def fetch_mil():
+    """One request for the worldwide military list; the planes, or None after recording the failure (in MIL)."""
+    headers = {'User-Agent': f'TPA-Air-Engine/{ENGINE_VERSION} (+mailto:tpaprojectuk@gmail.com)', 'Accept': 'application/json',
+               'X-Api-Key': FLY_KEY, 'api-auth': FLY_KEY}
+    started = time.time()
+    try:
+        with urlopen(Request(FLY_MIL_URL, headers=headers), timeout=20, context=context()) as res:
+            raw = res.read(MAX_DOWNLOAD + 1)
+        if len(raw) > MAX_DOWNLOAD:
+            raise ValueError('too-large')
+        payload = json.loads(raw)
+        if not isinstance(payload, dict):
+            raise ValueError('not-an-object')
+        return parse(payload, started)
+    except HTTPError as exc:
+        err = f'flyitaly-mil-http-{exc.code}'
+    except (URLError, TimeoutError, OSError) as exc:
+        err = 'network-' + type(exc).__name__
+    except ValueError as exc:
+        err = 'bad-data-' + str(exc)[:30]
+    with LOCK:
+        MIL['lastError'] = err
+    return None
+
+
+def mil_poller() -> None:
+    while True:
+        time.sleep(1)
+        now = time.time()
+        with LOCK:
+            due = (bool(FLY_KEY) and now - MIL['wantedAt'] <= MIL_WANTED_SECONDS and now - MIL['lastAt'] >= MIL_GAP_SECONDS
+                   and budget_left() >= FLY_BUDGET * WORLD_RESERVE)
+            if due:
+                MIL['lastAt'] = now
+                MIL['requests'] += 1
+                budget_count()
+        if not due:
+            continue
+        got = fetch_mil()
+        if got is None:
+            continue
+        with LOCK:
+            note_turns(got, now)
+            seen = {a['hex'] for a in got}
+            kept = [a for a in MIL['aircraft'] if a['hex'] not in seen and now - a['reported'] <= DROP_AFTER]
+            MIL.update(aircraft=got + kept, fetchedAt=now, lastError='')
+        print(f'Military worldwide OK: {len(got)} aircraft', flush=True)
 
 
 def world_poller() -> None:
@@ -955,6 +1019,8 @@ def details(entity_id: str) -> dict:
         a = next((x for x in STATE['aircraft'] if x['hex'] == hexid), None)
         if a is None:                            # 0.9.0: a plane from a world look-round
             a = next((x for p in WORLD['places'].values() for x in p['aircraft'] if x['hex'] == hexid), None)
+        if a is None:                            # 0.13.0: one from the worldwide military list
+            a = next((x for x in MIL['aircraft'] if x['hex'] == hexid), None)
     if a is None:
         out['note'] = 'This aircraft is no longer being picked up.'
         return out
@@ -1578,11 +1644,16 @@ def snapshot(view, world=False) -> dict:
     span = view[2] - view[0] if view is not None else None
     small = span is not None and span <= (WIDE_VIEW_SPAN if ALWAYS_ON else MAX_VIEW_SPAN)
     wide = span is not None and span > MAX_VIEW_SPAN
+    mil_view = bool(world and ALWAYS_ON and span is not None and not small)   # 0.13.0: zoomed out past the UK, with the egg
     if small:                       # 0.7.0: a zoomed-out map shows no planes, so it does not count as watching
         note_demand(view)
     with LOCK:
         aircraft, fetched, circle, source = STATE['aircraft'], STATE['fetchedAt'], STATE['circle'], STATE['source']
         h, notice = health(now)
+        alerts = squawk_alerts(aircraft, now)                               # 0.12.0: always the UK's
+        if mil_view:
+            MIL['wantedAt'] = now
+            aircraft, fetched = list(MIL['aircraft']), MIL['fetchedAt']
         if world and small and ALWAYS_ON:         # 0.9.0: the Easter egg - planes beyond the UK, where the visitor looks
             place = world_circle(view)
             if place:
@@ -1603,8 +1674,12 @@ def snapshot(view, world=False) -> dict:
     frame = {'component': COMPONENT, 'contractVersion': CONTRACT, 'health': h,
              'observedAt': iso(received), 'receivedAt': iso(received), 'expiresAt': iso(received + FRAME_TTL),
              'nextPollAfterMs': PAGE_POLL_MS if small else 10000, 'attribution': ATTRIBUTIONS[source or ORDER[0]], 'entities': []}
-    frame['alerts'] = squawk_alerts(aircraft, now)                          # 0.12.0
-    if not small:
+    frame['alerts'] = alerts                                                # 0.12.0
+    if mil_view:
+        frame['notice'] = (f'Military aircraft worldwide ({len(aircraft)})' if fetched else 'Loading military aircraft worldwide…')
+        if not fetched:
+            return frame
+    elif not small:
         frame['notice'] = 'Zoom in to see aircraft'
         return frame
     if notice:
@@ -1620,7 +1695,9 @@ def snapshot(view, world=False) -> dict:
             continue
         inside.append(((a['lat'] - clat) ** 2 + (a['lon'] - clon) ** 2, a, age))
     inside.sort(key=lambda t: t[0])
-    if wide and len(inside) > MAX_PER_VIEW:
+    if mil_view:                             # 0.13.0: all of them (thinned evenly only past MIL_MAX)
+        chosen = inside if len(inside) <= MIL_MAX else [inside[int(i * len(inside) / MIL_MAX)] for i in range(MIL_MAX)]
+    elif wide and len(inside) > MAX_PER_VIEW:
         # 0.7.1: zoomed right out with a busy sky: an even share from right across the view (every so many by
         # distance from the middle), not just the nearest 400 in a blob round the middle.
         step = len(inside) / MAX_PER_VIEW
@@ -1665,7 +1742,9 @@ def snapshot(view, world=False) -> dict:
                 if turn is not None:
                     entity['motion'].update(turnDegPerSec=turn, turnSeconds=TURN_SECONDS)
         frame['entities'].append(entity)
-    if not frame['entities'] and not circle_covers(circle, view) and not notice:
+    if mil_view:
+        pass                                     # 0.13.0: the notice says what this is
+    elif not frame['entities'] and not circle_covers(circle, view) and not notice:
         frame['notice'] = 'Loading aircraft for this area…'
     elif len(inside) > MAX_PER_VIEW and not notice:
         frame['notice'] = (f'Showing {MAX_PER_VIEW} of {len(inside)} planes · zoom in for all' if wide
@@ -1721,7 +1800,9 @@ class Handler(BaseHTTPRequestHandler):
                                         'keyConfigured': bool(KEY), 'lastError': main_src['lastError'],
                                         'lastSuccessAt': iso(STATE['fetchedAt']) if STATE['fetchedAt'] else None,
                                         'aircraftInLastDownload': len(STATE['aircraft']), 'lastDownloadKB': STATE['downloadBytes'] // 1024,
-                                        'world': world, 'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
+                                        'world': world, 'military': {'requestsThisRun': MIL['requests'], 'kept': len(MIL['aircraft']),
+                                                                     'lastError': MIL['lastError']},
+                                        'adsblolRequestsThisRun': STATE['downloadsThisRun'], 'pollSeconds': POLL_SECONDS, 'alwaysOn': ALWAYS_ON,
                                         'slowLevel': main_src['slowLevel'], 'pollingEverySeconds': pace(ORDER[0]),
                                         'standingData': {'ready': bool(STANDING['path']), 'builtAt': iso(STANDING['builtAt']) if STANDING['builtAt'] else None,
                                                          'error': STANDING['error'], 'rows': STANDING['rows']}})
@@ -1753,6 +1834,7 @@ def main() -> None:
     threading.Thread(target=poller, daemon=True).start()
     if ALWAYS_ON:
         threading.Thread(target=world_poller, daemon=True).start()     # 0.9.0: the Easter egg's world planes
+        threading.Thread(target=mil_poller, daemon=True).start()       # 0.13.0: the egg's worldwide military aircraft
     if DATA_DIR:
         threading.Thread(target=standing_keeper, daemon=True).start()
     with ThreadingHTTPServer(('127.0.0.1', port), Handler) as server:
