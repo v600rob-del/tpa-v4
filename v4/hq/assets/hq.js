@@ -975,7 +975,7 @@ function zoomAnimStart(e){
 function zoomAnimEnd(){if(!zoomAnim)return;zoomAnim=false;markerLayer.classList.remove('zoom-anim');paint();}
 // 4.95.0 (Rob 19 Nov 13:44, "Trail behind the selected plane", planes page): the engine keeps each plane's last 10 minutes
 // of reports (air 0.11.0, details.trail); the line runs through them to where the plane is drawn now.
-const TRAIL={id:'',pts:[],line:null,svg:null,drawn:[],base:null};
+const TRAIL={id:'',pts:[],line:null,svg:null,drawn:[],base:null,raf:0};
 // 4.100.0 (Rob 24 Nov 14:09, a Typhoon on /planes: the trail came down in long straight pieces, then kinked sideways to the
 // plane; Rob ticked "Trail joins the icon smoothly" and "Smooth curve, not straight bits"): with ?trail=2 the newest part of
 // the trail is the path the icon really took on screen (recorded once a second while the plane is selected), so it always
@@ -995,6 +995,19 @@ function trailSmooth(pts){   // 4.100.0: [lat, lon] -> a gentle curve with the s
     for(let i=0;i<p.length-1;i++){const a=p[i],b=p[i+1];o.push([.75*a[0]+.25*b[0],.75*a[1]+.25*b[1]],[.25*a[0]+.75*b[0],.25*a[1]+.75*b[1]]);}
     o.push(p[p.length-1]);p=o;}
   return p;}
+// 4.100.1 (Rob 24 Nov 14:23: "close up zoom on 2 was showing the trail appear before the plane then the plane catch up, on
+// fullest zoom"): the page works out where a plane should be once a second and the icon GLIDES there over the next second
+// (a CSS transition), so the trail end jumped ahead of the icon. The trail now ends where the icon really is on screen
+// (read from the icon itself), updated every frame while a plane is selected.
+function trailOnScreen(){
+  const pin=pins.get('air:'+TRAIL.id),b=pin&&pin.b;if(!b||!b.isConnected||!map||typeof map.containerPointToLatLng!=='function')return null;
+  const r=b.getBoundingClientRect(),c=map.getContainer().getBoundingClientRect();if(!r.width||!r.height)return null;
+  const ll=map.containerPointToLatLng([r.left+r.width/2-c.left,r.top+r.height/2-c.top]);
+  return ll&&validNum(ll.lat)&&validNum(ll.lng)?{lat:ll.lat,lon:ll.lng}:null;}
+function trailTick(){
+  TRAIL.raf=0;if(!TRAIL2||!TRAIL.line||!TRAIL.id)return;
+  if(!zoomAnim){const v=trailOnScreen();if(v)TRAIL.line.setLatLngs(trailLine(v));}
+  TRAIL.raf=requestAnimationFrame(trailTick);}
 function trailLine(pin){   // 4.100.0: reports up to where the icon's own path begins, then that path, smoothed; ends at the icon
   const t=performance.now(),D=TRAIL.drawn;
   if(!D.length||t-D[D.length-1][2]>=1000){D.push([pin.lat,pin.lon,t]);while(D.length&&t-D[0][2]>600000)D.shift();TRAIL.base=null;}
@@ -1008,14 +1021,15 @@ function syncTrail(){
   const sel=state.selected,pin=sel&&sel.component==='air'?pins.get('air:'+sel.id):null;
   const want=!!sel&&sel.component==='air'&&TRAIL.id===sel.id&&TRAIL.pts.length>=1&&!!pin&&pin.lat!=null&&state.visible.air;
   if(!want){if(TRAIL.line){TRAIL.line.remove();TRAIL.line=null;}if(!sel||sel.id!==TRAIL.id){TRAIL.id='';TRAIL.pts=[];TRAIL.drawn=[];TRAIL.base=null;}return;}
-  const ll=TRAIL2?trailLine(pin):[...TRAIL.pts,[pin.lat,pin.lon]];
+  const ll=TRAIL2?trailLine(trailOnScreen()||pin):[...TRAIL.pts,[pin.lat,pin.lon]];
   // its own SVG layer (the map draws on a canvas): a crisp line that sits under the planes
   if(!TRAIL.line){
     // its own pane above the map (and the traffic colours' 450), below the planes (they sit on the page's own layer)
     if(!map.getPane('tpa-trail')&&typeof map.createPane==='function'){const pn=map.createPane('tpa-trail');pn.style.zIndex='460';pn.style.pointerEvents='none';}
     TRAIL.svg=TRAIL.svg||(typeof L.svg==='function'?L.svg({pane:'tpa-trail'}):undefined);
     TRAIL.line=L.polyline(ll,{color:'#ffb21e',weight:3,opacity:.85,interactive:false,className:'plane-trail',renderer:TRAIL.svg}).addTo(map);}
-  else TRAIL.line.setLatLngs(ll);}
+  else TRAIL.line.setLatLngs(ll);
+  if(TRAIL2&&!TRAIL.raf)TRAIL.raf=requestAnimationFrame(trailTick);}   // 4.100.1: follows the gliding icon every frame
 function markers(){
   if(zoomAnim)return;      // icons are travelling with the zoom animation; placed again when it ends
   // 4.1.8 (owner 31 Oct 13:50: after moving the map, moving icons jumped back to their old spot
