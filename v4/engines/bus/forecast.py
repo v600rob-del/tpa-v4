@@ -133,7 +133,8 @@ def cautious(fc, wait_s: float = CAUTIOUS_S):
     return [tuple(fc[0])] + [(t + wait_s, m) for t, m in fc[1:]]
 
 
-def bend(prev, target, made_at: float, lead_s: float = LEAD_S):
+def bend(prev, target, made_at: float, lead_s: float = LEAD_S, catch_factor: float = CATCH_FACTOR,
+         catch_extra: float = CATCH_MIN_EXTRA, catch_max: float = CATCH_MAX_MPS, ahead_share: float = AHEAD_SHARE):
     """The path to publish: `prev` (the path published before, same journey, or None) up to made_at + lead_s, then eased
     onto `target`. Both are [(time, metres)]. Starts at target's first time (the newest report), times always later,
     metres never going back. Without prev, or with a gap over BEND_JUMP_M, it is simply target."""
@@ -158,9 +159,9 @@ def bend(prev, target, made_at: float, lead_s: float = LEAD_S):
         aim = along(target, t1)
         pace = max(0.0, aim - along(target, t)) / dt      # metres a second
         if x < aim - 0.5:                               # behind: catch up, never past where it should be
-            x = min(aim, x + dt * min(max(pace * CATCH_FACTOR, pace + CATCH_MIN_EXTRA), CATCH_MAX_MPS))
+            x = min(aim, x + dt * min(max(pace * catch_factor, pace + catch_extra), catch_max))
         elif x > aim + 0.5:                             # ahead: carry on slowly until the forecast reaches it
-            x += dt * pace * AHEAD_SHARE
+            x += dt * pace * ahead_share
         else:
             x = aim
         if abs(x - aim) <= 0.5:                         # back on the forecast: from here on it is the forecast

@@ -25,6 +25,9 @@ been published before the report:
   - fair comparison (24 Nov 22:55): what the page would really be showing at the moment of each report, using only the
     forecast or bent path that had APPEARED in the tiles by then (the rows above score a forecast from its report time,
     before it was published - flattering today's forecast in the first minute)
+  - settings side by side (24 Nov 23:10, first run: bent paths fade 1% instead of 42% but 158 m out instead of 122 m):
+    each setting is played on the same forecasts; fades are counted as the page would meet the new path 10 s after it
+    is made (the page reads every 10 s - the worst case)
   NB once bus 0.29.0 is installed the tiles already carry bent paths: "forecast" then IS the bent path.
 Distances are metres along the bus's route line. "Ahead" = shown further along than it really was (looks worse than
 behind: a bus that runs ahead then slides back). Split by how long after the bus's last report (the page shows a bus
@@ -108,7 +111,8 @@ def cautious(fc, wait_s: float = CAUTIOUS_S):
     return [tuple(fc[0])] + [(t + wait_s, m) for t, m in fc[1:]]
 
 
-def bend(prev, target, made_at: float, lead_s: float = LEAD_S):
+def bend(prev, target, made_at: float, lead_s: float = LEAD_S, catch_factor: float = CATCH_FACTOR,
+         catch_extra: float = CATCH_MIN_EXTRA, catch_max: float = CATCH_MAX_MPS, ahead_share: float = AHEAD_SHARE):
     """The path to publish: `prev` (the path published before, same journey, or None) up to made_at + lead_s, then eased
     onto `target`. Both are [(time, metres)]. Starts at target's first time (the newest report), times always later,
     metres never going back. Without prev, or with a gap over BEND_JUMP_M, it is simply target."""
@@ -133,9 +137,9 @@ def bend(prev, target, made_at: float, lead_s: float = LEAD_S):
         aim = along(target, t1)
         pace = max(0.0, aim - along(target, t)) / dt      # metres a second
         if x < aim - 0.5:                               # behind: catch up, never past where it should be
-            x = min(aim, x + dt * min(max(pace * CATCH_FACTOR, pace + CATCH_MIN_EXTRA), CATCH_MAX_MPS))
+            x = min(aim, x + dt * min(max(pace * catch_factor, pace + catch_extra), catch_max))
         elif x > aim + 0.5:                             # ahead: carry on slowly until the forecast reaches it
-            x += dt * pace * AHEAD_SHARE
+            x += dt * pace * ahead_share
         else:
             x = aim
         if abs(x - aim) <= 0.5:                         # back on the forecast: from here on it is the forecast
@@ -161,8 +165,22 @@ def _tidy(pts):
     return out
 
 
-
 # ---- end of the copy
+
+
+SETTINGS = {                                     # name: (cautious s, lead s, catch factor, catch extra, catch max, ahead share)
+    'A as built: cautious 15 s, follows the old path 15 s, catches up at 2x': (15.0, 15.0, 2.0, 3.0, 20.0, 0.35),
+    'B no caution, 15 s, 3x': (0.0, 15.0, 3.0, 5.0, 25.0, 0.35),
+    'C no caution, 5 s, 3x': (0.0, 5.0, 3.0, 5.0, 25.0, 0.35),
+    'D cautious 15 s, 5 s, 3x': (15.0, 5.0, 3.0, 5.0, 25.0, 0.35),
+}
+PAGE_LATE_S = 10.0
+
+
+def make_path(prev, fc, now, setting):
+    caut, lead, cf, ce, cm, ah = setting
+    return bend(prev, cautious(fc, caut) if caut else list(fc), now, lead_s=lead, catch_factor=cf, catch_extra=ce,
+                catch_max=cm, ahead_share=ah)
 
 
 def page_fades(prev, new, now):
@@ -194,11 +212,12 @@ def own_pace(rep, t0):
 
 
 class Bus:
-    __slots__ = ('line', 'area', 'reports', 'forecasts', 'delay', 'bent', 'appeared')
+    __slots__ = ('line', 'area', 'reports', 'forecasts', 'delay', 'bent', 'appeared', 'tried')
 
     def __init__(self, line, area):
         self.line, self.area, self.reports, self.forecasts, self.delay = line, area, {}, [], 90
         self.bent = []                              # bus 0.29.0 paths, made as each forecast appeared
+        self.tried = {}                             # setting -> the last path made with it
         self.appeared = []                          # [(when it appeared, forecast, bent path)] - the fair comparison
 
 
@@ -214,6 +233,7 @@ class Check:
         self.with_forecast = 0
         self.lines = {}                             # route line -> [(time, pace m/s)] of every bus on it (24 Nov)
         self.shown = {'today': [], 'bent': []}      # fair comparison: signed metres at each report's moment
+        self.trial = {k: {'shown': [], 'fades': 0, 'jumps': 0} for k in SETTINGS}   # settings side by side
         self.fades = {'new forecasts': 0, 'today': 0, 'bent': 0, 'bent put straight on (over 600 m)': 0}
 
     def observe(self, items, area_of, now=None):
@@ -248,9 +268,20 @@ class Check:
                     tb = max(now + LEAD_S, path[0][0])
                     if abs(along(was, tb) - along(cautious(fc), tb)) > BEND_JUMP_M:
                         self.fades['bent put straight on (over 600 m)'] += 1
+                tried = {}
+                for name, setting in SETTINGS.items():
+                    old = b.tried.get(name)
+                    new = make_path(old, fc, now, setting)
+                    if old is not None and b.forecasts:
+                        self.trial[name]['fades'] += page_fades(old, new, now + PAGE_LATE_S)
+                        aim = cautious(fc, setting[0]) if setting[0] else fc
+                        tb = max(now + setting[1], new[0][0])
+                        self.trial[name]['jumps'] += abs(along(old, tb) - along(aim, tb)) > BEND_JUMP_M
+                    tried[name] = new
+                b.tried = tried
                 b.forecasts.append(fc)
                 b.bent.append(path)
-                b.appeared = (b.appeared + [(now, fc, path)])[-12:]
+                b.appeared = (b.appeared + [(now, fc, path, tried)])[-12:]
             newest = max(b.reports)
             b.forecasts = [fc for fc in b.forecasts if newest - fc[0][0] <= KEEP_S]
             b.bent = b.bent[-len(b.forecasts):] if b.forecasts else b.bent[-1:]
@@ -262,9 +293,11 @@ class Check:
         self.scored += 1
         had = [x for x in b.appeared if x[0] <= t2]
         if had:
-            _, fc, path = had[-1]
+            _, fc, path, tried = had[-1]
             self.shown['today'].append(along(fc, t2) - m2)
             self.shown['bent'].append(along(path, t2) - m2)
+            for name, pth in tried.items():
+                self.trial[name]['shown'].append(along(pth, t2) - m2)
         rep = sorted(b.reports.items())
         shown = along(rep, t2 - b.delay)            # today's map at t2: the replay, delay seconds behind
         self.today.append(shown - m2)
@@ -325,6 +358,12 @@ class Check:
             out.append(f"   today's forecasts: {self.sums(self.shown['today'])}")
             out.append(f"   bent paths: {self.sums(self.shown['bent'])}")
         n = self.fades['new forecasts']
+        if n and any(v['shown'] for v in self.trial.values()):
+            out.append(f'settings side by side (what the page would show; fades as the page meets each new path {PAGE_LATE_S:g} s late):')
+            for name, v in self.trial.items():
+                if v['shown']:
+                    out.append(f"   {name}: {self.sums(v['shown'])} | fades {v['fades']} of {n} ({round(100 * v['fades'] / n)}%), "
+                               f"over 600 m {v['jumps']}")
         if n:
             out.append(f"fades at a new forecast (today's page rules): today's forecasts {self.fades['today']} of {n} "
                        f"({round(100 * self.fades['today'] / n)}%) | bent paths {self.fades['bent']} "
