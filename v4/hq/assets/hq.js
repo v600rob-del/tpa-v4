@@ -2237,16 +2237,23 @@ function deselectComponent(id){
 const SLOT_MS=4000;   // = serve_hq.SHARE_SECONDS
 // 4.65.0: the area the page asks about (padded by a fifth, snapped outward to a grid) - shared by the per-viewer answer
 // and the published train files, so both pick exactly the same trains and say "Zoom in" at the same point
-function viewBox(){
+// 4.101.0 (Rob 24 Nov 14:40: "follow me on fast jets at zoom struggles then lets go"; measured 14:42: zoomed right in, the
+// plane data for the small view came back with 0 planes and Follow me ended): an engine sends the vehicles whose last REPORT
+// is inside the asked area, but a plane is drawn ahead of its report, so close up a fast one dropped out of the data and its
+// icon went. While a plane is followed, planes are asked for at least FOLLOW_AIR_DEG (~45 km) round the middle of the screen.
+const FOLLOW_AIR_DEG=0.4;
+function viewBox(minDeg){
   let w=-12.5,s=49,e=4.5,n=61.8;
-  if(map&&typeof map.getBounds==='function'){const b=map.getBounds().pad(0.2);w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();}
+  if(map&&typeof map.getBounds==='function'){const b=map.getBounds().pad(0.2);w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();
+    if(minDeg&&n-s<minDeg){const c=b.getCenter(),k=1/Math.max(0.2,Math.cos(c.lat*Math.PI/180));   // the same distance east-west
+      s=Math.min(s,c.lat-minDeg/2);n=Math.max(n,c.lat+minDeg/2);w=Math.min(w,c.lng-minDeg*k/2);e=Math.max(e,c.lng+minDeg*k/2);}}
   s=clamp(s,-85,85);n=clamp(n,-85,85);w=clamp(w,-180,180);e=clamp(e,-180,180);
   const g=Math.min(4,Math.max(1/1024,2**Math.floor(Math.log2(Math.max(n-s,1e-4)/4)))),gl=g*2;
   s=Math.max(-85,Math.floor(s/g)*g);n=Math.min(85,Math.ceil(n/g)*g);w=Math.max(-180,Math.floor(w/gl)*gl);e=Math.min(180,Math.ceil(e/gl)*gl);
   return {w,s,e,n,g};
 }
-function viewQuery(){
-  const {w,s,e,n,g}=viewBox(),f=v=>v.toFixed(4);
+function viewQuery(minDeg){
+  const {w,s,e,n,g}=viewBox(minDeg),f=v=>v.toFixed(4);
   // and the 4-second time slot by the server's clock: a new question every slot, so a kept answer is never old,
   // however long a cache in between might keep it (Cloudflare's free plan may keep things for hours)
   return `west=${f(w)}&south=${f(s)}&east=${f(e)}&north=${f(n)}&cell=${g}&t=${Math.floor(serverNow()/SLOT_MS)}`;
@@ -2372,7 +2379,7 @@ async function getComponent(id){
     if(id==='bus'&&BUS_TILES.on){try{raw=await busTileFrame();BUS_TILES.used=true;}catch(_){raw=null;BUS_TILES.used=false;}}
     // 4.65.0: trains the same way (rail 1.6.0); the old per-visitor answer stays as the way back (?railtiles=0, or files missing/old)
     if(id==='rail'&&RAIL_TILES.on){try{raw=await railTileFrame();RAIL_TILES.used=true;}catch(_){raw=null;RAIL_TILES.used=false;}}
-    const f=checkFrame(id,raw||await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery()}${id==='air'&&WORLD_PLANES?'&world=1':''}`,1200000,6000));   // 4.85.0
+    const f=checkFrame(id,raw||await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery(id==='air'&&follow&&follow.comp==='air'?FOLLOW_AIR_DEG:0)}${id==='air'&&WORLD_PLANES?'&world=1':''}`,1200000,6000));   // 4.85.0
     {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length){speedMark(id+' shown');hasItems[id]=true;}}
     if(seq<(seqDone[id]||0))return;
     seqDone[id]=seq;
