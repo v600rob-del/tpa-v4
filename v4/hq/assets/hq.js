@@ -29,7 +29,35 @@ const USER_VIEW=KIDS||PLANES||(!FULL_VIEW&&(location.pathname==='/user'||VIEW_AS
 // all of it still working, and Arial throughout): with ?look=2 (preview only) the menu panel sits on the right (its
 // hide tab too; on phones it slides in from the right) and every font is Arial. Normal visitors unchanged until Rob says.
 // 4.105.0 (Rob 24 Nov 18:33: "use the good stuff on the main site"): the new look is normal now; ?look=1 = the old look for a while
-const LOOK2=!KIDS&&new URLSearchParams(location.search).get('look')!=='1';if(LOOK2)document.documentElement.classList.add('look2');
+const LOOK2=!KIDS&&new URLSearchParams(location.search).get('look')!=='1';
+// 4.106.0 (Rob 24 Nov 23:12-23:39: "adding real bus pictures to our windows first, mine as a fallback ... matched by the
+// registration number"; "Sticking with free"): a real photo of THIS bus from Wikimedia Commons (found by its number plate
+// by our own server, kept and served from our own address, with the photographer's credit); Rob's picture otherwise.
+// Preview only (?photos=1) until Rob has seen it. Each plate is asked about once per visit.
+const PHOTOS_ON=!KIDS&&new URLSearchParams(location.search).get('photos')==='1',PHOTO_ANS=new Map();
+function busPlate(e,d){
+  const row=(Array.isArray(d.rows)?d.rows:[]).find(x=>x&&x.label==='Number plate');
+  const v=String(row?.value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
+  if(/^[A-Z0-9]{2,8}$/.test(v)&&/\d/.test(v)&&/[A-Z]/.test(v))return v;
+  const tail=String(e.id||'').split(':').pop().toUpperCase().replace(/[^A-Z0-9]/g,'');
+  return /^[A-Z]{2}\d{2}[A-Z]{3}$/.test(tail)?tail:'';}            // London buses send their plate as their id
+function askPhoto(reg,tries,onFound){
+  fetch('/api/v4/photo?reg='+encodeURIComponent(reg)).then(r=>r.ok?r.json():{state:'none'}).then(ans=>{
+    if(ans&&ans.state==='looking'&&tries<6){setTimeout(()=>askPhoto(reg,tries+1,onFound),4000);return;}
+    const ok=ans&&ans.state==='found'&&typeof ans.src==='string'&&ans.src.startsWith('/api/v4/photo/img/');
+    PHOTO_ANS.set(reg,ok?ans:{state:'none'});if(ok)onFound(ans);
+  }).catch(()=>PHOTO_ANS.set(reg,{state:'none'}));}
+function busPhoto(reg,onFound){const a=PHOTO_ANS.get(reg);if(a)return a.state==='found'?a:null;
+  PHOTO_ANS.set(reg,{state:'looking'});askPhoto(reg,0,onFound);return null;}
+function realPhoto(box3,a,reg){
+  const old=box3.querySelector('img');if(!old||box3.classList.contains('real'))return;
+  const img=document.createElement('img');img.src=a.src;img.alt='Photo of bus '+(a.plate||reg);img.decoding='async';
+  const tag=box3.querySelector('.pic-tag'),was=box3.className;
+  const credit=document.createElement(/^https:\/\//.test(a.page||'')?'a':'span');credit.className='pic-credit';
+  if(credit.tagName==='A'){credit.href=a.page;credit.target='_blank';credit.rel='noopener noreferrer';}
+  credit.textContent='Photo: '+String(a.credit||'unknown').slice(0,80)+(a.licence?', '+String(a.licence).slice(0,30):'')+', via Wikimedia Commons';
+  img.addEventListener('error',()=>{img.replaceWith(old);credit.remove();box3.className=was;if(tag)box3.prepend(tag);},{once:true});   // back to Rob's picture
+  old.replaceWith(img);tag?.remove();box3.classList.remove('unknown');box3.classList.add('real');box3.append(credit);}if(LOOK2)document.documentElement.classList.add('look2');
 if(KIDS){document.documentElement.classList.add('kids-view');}
 if(PLANES){document.documentElement.classList.add('planes-view');}
 if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':PLANES?'TPA Planes · Live UK aircraft on a map':'TPA · Live UK trains, buses and planes on one map';
@@ -585,7 +613,12 @@ async function loadDetails(e,box){
       img.alt=geoff?'Geoff the cat driving a TPA bus':known?BUS_PICTURES[kind]:'Picture of a bus (type not known)';img.decoding='async';
       if(geoff){box3.classList.add('geoff');const tag=document.createElement('span');tag.className='pic-tag geoff-tag';tag.textContent="You've found Geoff on "+geoffDay(GEOFF.date)+'!';box3.append(tag);}
       else if(!known){box3.classList.add('unknown');const tag=document.createElement('span');tag.className='pic-tag';tag.textContent='Type not known';box3.append(tag);}
-      img.addEventListener('error',()=>box3.remove(),{once:true});box3.append(img);rows.unshift(box3);}
+      img.addEventListener('error',()=>box3.remove(),{once:true});box3.append(img);
+      const reg=PHOTOS_ON&&!geoff?busPlate(e,d):'';                     // 4.106.0: a real photo of this bus, if there is one
+      if(reg){const ph=busPhoto(reg,a=>{const live=box.querySelector('.detail-picture.bus');
+          if(live&&box.isConnected&&state.selected&&state.selected.id===e.id)realPhoto(live,a,reg);});
+        if(ph)realPhoto(box3,ph,reg);}
+      rows.unshift(box3);}
     // 4.43.0 (owner 11 Nov 15:43: "I would like to add plane pictures ... static ones"): TPA's own picture of the plane's type
     // (made by the owner, neutral colours, no logos) on the same light panel as trains and buses; none when the type has
     // no picture yet - never a picture of the wrong type. Left out if it fails to load.
