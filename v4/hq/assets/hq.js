@@ -975,17 +975,40 @@ function zoomAnimStart(e){
 function zoomAnimEnd(){if(!zoomAnim)return;zoomAnim=false;markerLayer.classList.remove('zoom-anim');paint();}
 // 4.95.0 (Rob 19 Nov 13:44, "Trail behind the selected plane", planes page): the engine keeps each plane's last 10 minutes
 // of reports (air 0.11.0, details.trail); the line runs through them to where the plane is drawn now.
-const TRAIL={id:'',pts:[],line:null,svg:null};
+const TRAIL={id:'',pts:[],line:null,svg:null,drawn:[],base:null};
+// 4.100.0 (Rob 24 Nov 14:09, a Typhoon on /planes: the trail came down in long straight pieces, then kinked sideways to the
+// plane; Rob ticked "Trail joins the icon smoothly" and "Smooth curve, not straight bits"): with ?trail=2 the newest part of
+// the trail is the path the icon really took on screen (recorded once a second while the plane is selected), so it always
+// meets the plane; the line is a gentle curve through the reports (a light average evens out rough ground-station (MLAT)
+// positions, then corner-cutting). The kink came from the trail ending at the last REPORT while the icon glides gently
+// towards each new report (4.42.0), so it can be a way off it for a while.
+const TRAIL2=PLANES&&new URLSearchParams(location.search).get('trail')==='2';
 function trailFrom(e,d){
   if(!Array.isArray(d.trail))return;
   const pts=d.trail.filter(p=>Array.isArray(p)&&validNum(p[0])&&validNum(p[1])&&Math.abs(p[0])<=180&&Math.abs(p[1])<=90).slice(-200).map(p=>[p[1],p[0]]);
-  TRAIL.id=e.id;TRAIL.pts=pts;}
+  if(TRAIL.id!==e.id)TRAIL.drawn=[];
+  TRAIL.id=e.id;TRAIL.pts=pts;TRAIL.base=null;}
+function trailSmooth(pts){   // 4.100.0: [lat, lon] -> a gentle curve with the same two ends
+  if(pts.length<3)return pts;
+  let p=pts.map((q,i)=>i===0||i===pts.length-1?q:[(pts[i-1][0]+2*q[0]+pts[i+1][0])/4,(pts[i-1][1]+2*q[1]+pts[i+1][1])/4]);
+  for(let it=0;it<2;it++){const o=[p[0]];
+    for(let i=0;i<p.length-1;i++){const a=p[i],b=p[i+1];o.push([.75*a[0]+.25*b[0],.75*a[1]+.25*b[1]],[.25*a[0]+.75*b[0],.25*a[1]+.75*b[1]]);}
+    o.push(p[p.length-1]);p=o;}
+  return p;}
+function trailLine(pin){   // 4.100.0: reports up to where the icon's own path begins, then that path, smoothed; ends at the icon
+  const t=performance.now(),D=TRAIL.drawn;
+  if(!D.length||t-D[D.length-1][2]>=1000){D.push([pin.lat,pin.lon,t]);while(D.length&&t-D[0][2]>600000)D.shift();TRAIL.base=null;}
+  if(!TRAIL.base){let cut=TRAIL.pts.length;
+    if(D.length){let best=Infinity;const c=Math.cos(D[0][0]*Math.PI/180);
+      TRAIL.pts.forEach((q,i)=>{const d=(q[0]-D[0][0])**2+((q[1]-D[0][1])*c)**2;if(d<best){best=d;cut=i;}});}
+    TRAIL.base=trailSmooth([...TRAIL.pts.slice(0,cut),...D.map(q=>[q[0],q[1]])]);}
+  return [...TRAIL.base,[pin.lat,pin.lon]];}
 function syncTrail(){
   if(!PLANES||!map||!window.L||typeof L.polyline!=='function')return;
   const sel=state.selected,pin=sel&&sel.component==='air'?pins.get('air:'+sel.id):null;
   const want=!!sel&&sel.component==='air'&&TRAIL.id===sel.id&&TRAIL.pts.length>=1&&!!pin&&pin.lat!=null&&state.visible.air;
-  if(!want){if(TRAIL.line){TRAIL.line.remove();TRAIL.line=null;}if(!sel||sel.id!==TRAIL.id){TRAIL.id='';TRAIL.pts=[];}return;}
-  const ll=[...TRAIL.pts,[pin.lat,pin.lon]];
+  if(!want){if(TRAIL.line){TRAIL.line.remove();TRAIL.line=null;}if(!sel||sel.id!==TRAIL.id){TRAIL.id='';TRAIL.pts=[];TRAIL.drawn=[];TRAIL.base=null;}return;}
+  const ll=TRAIL2?trailLine(pin):[...TRAIL.pts,[pin.lat,pin.lon]];
   // its own SVG layer (the map draws on a canvas): a crisp line that sits under the planes
   if(!TRAIL.line){
     // its own pane above the map (and the traffic colours' 450), below the planes (they sit on the page's own layer)
