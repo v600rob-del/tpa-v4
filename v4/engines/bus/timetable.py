@@ -552,6 +552,16 @@ class Timetable:
                                   'LEFT JOIN agency a ON a.agency_id = r.agency_id WHERE t.trip_id=?', (trip_id,)).fetchone()
         return (row[0] or '', row[1] or '') if row else ('', '')
 
+    def trip_end(self, trip_id):
+        """0.28.0: (first departure, last arrival - seconds after local midnight - and (lat, lon) of the last stop or None)
+        for one journey; None when not known."""
+        with self.lock:
+            row = self.db.execute('SELECT e.first_dep, e.last_arr, s.lat, s.lon FROM trip_ends e '
+                                  'LEFT JOIN stops s ON s.stop_id = e.last_stop WHERE e.trip_id=?', (trip_id,)).fetchone()
+        if not row or row[0] is None or row[1] is None:
+            return None
+        return row[0], row[1], ((row[2], row[3]) if row[2] is not None and row[3] is not None else None)
+
     def shape_id_of(self, trip_id):
         """0.17.0: the route line's own id for a journey ('' if none). Many journeys share one line."""
         with self.lock:

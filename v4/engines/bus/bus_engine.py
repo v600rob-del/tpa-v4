@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.27.0'
+ENGINE_VERSION = '0.28.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1718,6 +1718,12 @@ def road_way(v, now):
 
 
 UNSURE: dict = {}                     # 0.17.1: bus key -> journey signature that matched several timetabled journeys
+# 0.28.0 (Rob 24 Nov 21:00-21:25, "Yes, build both"; measured 21:14: 25 buses 20-30 km away and moving, 9 parked, still
+# sending a journey that had ended 30+ min before - another trip, or a school or club run while the ticket machine still
+# sends the last timetabled journey, Rob's "Acklams gambit"): such a journey is dropped. Bus key -> journey signature.
+ENDED: dict = {}
+JOURNEY_OVER_SECONDS = 30 * 60        # this long after a journey's timetabled end ...
+AT_END_METRES = 300                   # ... and further than this from its last stop: the journey no longer describes it
 # 0.17.3 (owner 13 Nov 21:13 "pushing on"): how far "off its route" buses really are from their route line, and how
 # detailed those lines are (corners per km) next to the lines of buses that are placed - rough lines or real diversions?
 OFF_BUCKETS = ((100, 'under100m'), (250, '100to250m'), (500, '250to500m'), (2000, '500mTo2km'), (float('inf'), 'over2km'))
@@ -2689,6 +2695,26 @@ def match_counter() -> None:
                 STATE['timetableMatch'] = r
 
 
+def journey_over(tt, v: dict, tid) -> bool:
+    """0.28.0: this report came over JOURNEY_OVER_SECONDS after the journey's timetabled end, away from its last stop."""
+    look = getattr(tt, 'trip_end', None)      # a timetable that cannot say: the journey is kept, as before
+    if look is None:
+        return False
+    try:
+        end = look(tid)
+        if not end or not end[2]:
+            return False
+        started = datetime.fromisoformat(str(v.get('dep') or '').replace('Z', '+00:00')).timestamp()
+        if float(v['recorded']) - started <= (end[1] - end[0]) + JOURNEY_OVER_SECONDS:
+            return False
+        lat, lon = float(v['lat']), float(v['lon'])
+    except (KeyError, TypeError, ValueError):
+        return False
+    k = math.pi / 180
+    far = 6371000 * math.hypot((end[2][1] - lon) * k * math.cos((end[2][0] + lat) / 2 * k), (end[2][0] - lat) * k)
+    return far > AT_END_METRES
+
+
 def journey_sig(v: dict) -> tuple:
     return (v.get('origin'), v.get('dep'), v.get('route'), v.get('dest'), v.get('jref'))
 
@@ -2953,7 +2979,13 @@ def _follow_bus(v: dict) -> None:
                     STATE['timetableError'] = ('match: ' + type(exc).__name__)[:100]
         known = TRIPS[v['key']] = (sig, tid)
         FOLLOW.pop(v['key'], None)
+        ENDED.pop(v['key'], None)
     tid = known[1]
+    if tid and journey_over(tt, v, tid):     # 0.28.0
+        TRIPS[v['key']] = (sig, None)
+        FOLLOW.pop(v['key'], None)
+        ENDED[v['key']] = sig
+        return
     if not tid:
         return
     sh = shape_for(tid)
@@ -3011,7 +3043,7 @@ def journey_worker() -> None:
                 road_legs(v, time.time(), None)        # 0.7.1: unmatched buses replayed along the roads
         with JOURNEY_LOCK, LOCK:          # always this order (follow_bus takes LOCK inside JOURNEY_LOCK)
             live = {v['key'] for v in STATE['vehicles']}
-            for d in (TRIPS, FOLLOW, LEGS):
+            for d in (TRIPS, FOLLOW, LEGS, UNSURE, ENDED):     # 0.28.0: UNSURE and ENDED too (UNSURE was never tidied)
                 for k in [k for k in d if k not in live]:
                     del d[k]
             STATE['journeyRound'] = {'buses': min(len(picks), JOURNEY_MAX), 'waiting': max(0, len(picks) - JOURNEY_MAX),
@@ -3443,7 +3475,10 @@ def details(entity_id: str) -> dict:
             out['rows'].insert(0, {'label': 'Operator', 'value': who})
         if v.get('destination'):
             out['rows'].append({'label': 'To', 'value': v['destination'][:80]})
-        out['note'] = 'Its timetable could not be matched, so stops and times are not shown.'
+        with JOURNEY_LOCK:
+            ended = ENDED.get(key) == journey_sig(v)
+        out['note'] = ('Its last timetabled journey has ended; it may now be on another service or a private hire, so stops '
+                       'and times are not shown.' if ended else 'Its timetable could not be matched, so stops and times are not shown.')
         return out
     try:
         stops = stops_along(trip, sh)
@@ -3524,7 +3559,11 @@ def details(entity_id: str) -> dict:
                     break
         if due_then is not None and abs(shown_clock - due_then) <= 90 * 60:
             late = round((shown_clock - due_then) / 60)
-    if late is not None:
+    # 0.28.0 (measured 24 Nov 21:14: 369 buses waiting at their last stop, their "late" growing every minute): at its last
+    # stop it has finished this journey
+    if shown_m is not None and known and shown_m >= known[-1][0] - 15:
+        out['rows'].append({'label': 'Running', 'value': 'Finished this journey'})
+    elif late is not None:
         out['rows'].append({'label': 'Running', 'value': 'About on time' if abs(late) <= 1 else
                             f'About {late} min late' if late > 0 else f'About {-late} min early'})
     calls = []
