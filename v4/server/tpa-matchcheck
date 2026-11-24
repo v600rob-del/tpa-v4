@@ -1,0 +1,157 @@
+#!/usr/bin/env python3
+"""tpa-matchcheck - LOOK-ONLY count of how buses are linked to their timetable journeys on the real server.
+
+Public report 22 Nov 2026 (Portsmouth, fleet 26296): the box said "Bus 39 to Havant" (from the bus itself) but its text
+and stops were First's number 7, the 12:35 from Blackbird Close (from the timetable). Read in the code (bus 0.26.1,
+timetable.Timetable.match): a bus is linked by the stop its journey started at and its departure time; the route
+number, end stop, bus company and journey code are only used to choose when SEVERAL journeys fit. When exactly one fits
+it is taken, even if its route number and company differ from what the bus is sending.
+
+Before any guard is designed, this counts, for every bus in the engine's last saved reports, the journey the engine's
+own matching gives it and whether that journey's route number or company code differs from the bus's own, or whether
+the report came well after the journey should have finished. Examples are listed so differences that are only spelling
+(e.g. a company publishing its timetable under another code) can be told apart from real wrong matches.
+
+It changes nothing: the timetable is opened read-only, the saved reports are only read, nothing is written (not even
+Python's cache files), the live engine is not asked anything.
+
+  sudo nice -n 10 python3 -B -u tpa-matchcheck [timetable.py] [bus data folder]
+"""
+import importlib.util
+import json
+import os
+import sys
+import time
+from collections import Counter
+from datetime import datetime
+
+sys.dont_write_bytecode = True          # look-only: no __pycache__ beside the live engine's files
+
+TIMETABLE_PY = '/opt/tpa/layers/bus/v4/engines/bus/timetable.py'
+DATA = '/var/lib/tpa/bus'
+WATCH = ('26296', '27182')              # the Portsmouth (22 Nov) and Hull (23 Nov) buses Rob reported
+LATE_END_MIN = 30                       # a report this long after the journey's timetabled end counts as "after its end"
+EXAMPLES = 6
+FLAGS = ('route number differs', 'company code differs', f'report over {LATE_END_MIN} min after the journey ended')
+
+
+def say(text):
+    print(text, flush=True)
+
+
+def load_timetable(path_py, path_db):
+    spec = importlib.util.spec_from_file_location('tpa_timetable_look', path_py)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m.Timetable(path_db)
+
+
+def norm(s):
+    return ''.join((s or '').lower().split())
+
+
+def journey(tt, trip_id):
+    """(route number, company code, company name, first departure s, last arrival s) of one timetabled journey."""
+    with tt.lock:
+        row = tt.db.execute('SELECT r.short_name, a.noc, a.name, e.first_dep, e.last_arr FROM trips t '
+                            'LEFT JOIN routes r ON r.route_id = t.route_id LEFT JOIN agency a ON a.agency_id = r.agency_id '
+                            'JOIN trip_ends e ON e.trip_id = t.trip_id WHERE t.trip_id=?', (trip_id,)).fetchone()
+    return tuple(row) if row else ('', '', '', 0, 0)
+
+
+def flags_for(v, j):
+    """Which of FLAGS apply to bus report v linked to journey j (from journey()); also minutes past the journey's end."""
+    short, tnoc, _name, dep, arr = j
+    noc = v['key'].split(':', 1)[0]
+    out = []
+    if norm(v.get('route')) and norm(short) and norm(v.get('route')) != norm(short):
+        out.append(FLAGS[0])
+    if noc and tnoc and noc.upper() != (tnoc or '').upper():
+        out.append(FLAGS[1])
+    past = None
+    try:
+        started = datetime.fromisoformat(str(v['dep']).replace('Z', '+00:00')).timestamp()
+        past = ((float(v['recorded']) - started) - ((arr or 0) - (dep or 0))) / 60
+    except (KeyError, TypeError, ValueError):
+        pass
+    if past is not None and past > LATE_END_MIN:
+        out.append(FLAGS[2])
+    return out, past
+
+
+def describe(v, j, past):
+    short, tnoc, name, dep, _arr = j
+    dep = dep or 0
+    return (f"{v['key'][:30]}  bus says: {v.get('route', '')} to {(v.get('destination') or '')[:24]}  |  "
+            f"timetable: {short} {tnoc} '{(name or '')[:26]}' {dep // 3600 % 24:02d}:{dep % 3600 // 60:02d}"
+            + (f"  |  {past:+.0f} min after its end" if past is not None else ''))
+
+
+def check(tt, buses, progress=None):
+    """Counts, examples per flag and the watched buses' lines. Uses the engine's own matching (tt.match)."""
+    count, examples, watch = Counter(), {f: [] for f in FLAGS}, []
+    for i, v in enumerate(buses):
+        if progress and i and i % 4000 == 0:
+            progress(i)
+        noc = v['key'].split(':', 1)[0]
+        if not (v.get('origin') and v.get('dep')):
+            count['no start stop or time sent'] += 1
+            continue
+        got = tt.match(v['origin'], v['dep'], v.get('route', ''), v.get('dest', ''), noc, v.get('jref', ''))
+        if len(got) != 1:
+            count['not linked (none or several fit)'] += 1
+            continue
+        count['linked to one journey'] += 1
+        j = journey(tt, got[0])
+        fl, past = flags_for(v, j)
+        line = describe(v, j, past)
+        for f in fl:
+            count[f] += 1
+            if len(examples[f]) < EXAMPLES:
+                examples[f].append(line)
+        if FLAGS[0] in fl and FLAGS[1] in fl:
+            count['route number AND company differ'] += 1
+        if fl:
+            count['linked with at least one difference'] += 1
+        if any(w in v['key'] for w in WATCH):
+            watch.append(line + '  |  ' + (', '.join(fl) if fl else 'no difference'))
+    return count, examples, watch
+
+
+def main(argv):
+    path_py = argv[1] if len(argv) > 1 else TIMETABLE_PY
+    data = argv[2] if len(argv) > 2 else DATA
+    path_db, path_saved = os.path.join(data, 'timetable.sqlite'), os.path.join(data, 'buses-last-reports.json')
+    missing = [p for p in (path_py, path_db, path_saved) if not os.path.exists(p)]
+    if missing:
+        say('=== COPY BACK START ===')
+        say('Not found (nothing was run): ' + ', '.join(missing))
+        say('=== COPY BACK END ===')
+        return 2
+    say('tpa-matchcheck: look-only, changes nothing. About 1-2 minutes; a line every 4,000 buses.')
+    tt = load_timetable(path_py, path_db)
+    with open(path_saved, encoding='utf-8') as f:
+        saved = json.load(f)
+    buses = saved.get('vehicles') or []
+    say(f"{len(buses)} buses in the engine's last saved reports ({round(time.time() - saved.get('savedAt', time.time()))} s old)")
+    t0 = time.time()
+    count, examples, watch = check(tt, buses, lambda i: say(f'  ...{i} of {len(buses)} ({time.time() - t0:.0f} s)'))
+    say('=== COPY BACK START ===')
+    say(f"tpa-matchcheck {time.strftime('%d %b %H:%M')}: {len(buses)} buses, {time.time() - t0:.0f} s")
+    for k in ('linked to one journey', 'linked with at least one difference') + FLAGS + (
+            'route number AND company differ', 'not linked (none or several fit)', 'no start stop or time sent'):
+        say(f'{k}: {count[k]}')
+    for f in FLAGS:
+        if examples[f]:
+            say(f'-- examples: {f}')
+            for line in examples[f]:
+                say('  ' + line)
+    say('-- fleet 26296 / 27182 now:')
+    for line in watch or ['(neither is in the saved reports now)']:
+        say('  ' + line)
+    say('=== COPY BACK END ===')
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main(sys.argv))
