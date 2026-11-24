@@ -22,6 +22,9 @@ been published before the report:
                             before it (the copy below of engines/bus/forecast.py's cautious/bend; tests keep them the same)
   - fades: at each new forecast, would today's page rules (bus-replay.js forecastMarks: wait at most 20 s when ahead,
     catch up at most 40% faster within 30 s when behind) fade the bus - with today's forecasts, and with bent paths?
+  - fair comparison (24 Nov 22:55): what the page would really be showing at the moment of each report, using only the
+    forecast or bent path that had APPEARED in the tiles by then (the rows above score a forecast from its report time,
+    before it was published - flattering today's forecast in the first minute)
   NB once bus 0.29.0 is installed the tiles already carry bent paths: "forecast" then IS the bent path.
 Distances are metres along the bus's route line. "Ahead" = shown further along than it really was (looks worse than
 behind: a bus that runs ahead then slides back). Split by how long after the bus's last report (the page shows a bus
@@ -191,11 +194,12 @@ def own_pace(rep, t0):
 
 
 class Bus:
-    __slots__ = ('line', 'area', 'reports', 'forecasts', 'delay', 'bent')
+    __slots__ = ('line', 'area', 'reports', 'forecasts', 'delay', 'bent', 'appeared')
 
     def __init__(self, line, area):
         self.line, self.area, self.reports, self.forecasts, self.delay = line, area, {}, [], 90
         self.bent = []                              # bus 0.29.0 paths, made as each forecast appeared
+        self.appeared = []                          # [(when it appeared, forecast, bent path)] - the fair comparison
 
 
 class Check:
@@ -209,6 +213,7 @@ class Check:
         self.scored = 0
         self.with_forecast = 0
         self.lines = {}                             # route line -> [(time, pace m/s)] of every bus on it (24 Nov)
+        self.shown = {'today': [], 'bent': []}      # fair comparison: signed metres at each report's moment
         self.fades = {'new forecasts': 0, 'today': 0, 'bent': 0, 'bent put straight on (over 600 m)': 0}
 
     def observe(self, items, area_of, now=None):
@@ -245,6 +250,7 @@ class Check:
                         self.fades['bent put straight on (over 600 m)'] += 1
                 b.forecasts.append(fc)
                 b.bent.append(path)
+                b.appeared = (b.appeared + [(now, fc, path)])[-12:]
             newest = max(b.reports)
             b.forecasts = [fc for fc in b.forecasts if newest - fc[0][0] <= KEEP_S]
             b.bent = b.bent[-len(b.forecasts):] if b.forecasts else b.bent[-1:]
@@ -254,6 +260,11 @@ class Check:
     def score(self, b, t2, m2):
         """A new report (t2, m2): score what was published before it."""
         self.scored += 1
+        had = [x for x in b.appeared if x[0] <= t2]
+        if had:
+            _, fc, path = had[-1]
+            self.shown['today'].append(along(fc, t2) - m2)
+            self.shown['bent'].append(along(path, t2) - m2)
         rep = sorted(b.reports.items())
         shown = along(rep, t2 - b.delay)            # today's map at t2: the replay, delay seconds behind
         self.today.append(shown - m2)
@@ -309,6 +320,10 @@ class Check:
             for meth, errs in rows:
                 if errs:
                     out.append(f'   {meth}: {self.sums(errs)}')
+        if self.shown['today']:
+            out.append(f"what the page would show at each report's moment (only what had appeared by then, n={len(self.shown['today'])}):")
+            out.append(f"   today's forecasts: {self.sums(self.shown['today'])}")
+            out.append(f"   bent paths: {self.sums(self.shown['bent'])}")
         n = self.fades['new forecasts']
         if n:
             out.append(f"fades at a new forecast (today's page rules): today's forecasts {self.fades['today']} of {n} "
