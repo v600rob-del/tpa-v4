@@ -120,6 +120,11 @@ def gtfs_seconds(text):
         return None
 
 
+def _route_key(text):
+    """0.27.0: a route number as compared between the bus and its timetable ('Beccles_Town' = 'Beccles Town' = 'beccles-town')."""
+    return ''.join(ch for ch in (text or '').lower() if ch not in ' _-\t')
+
+
 def service_day_and_seconds(iso_text):
     """A SIRI time ('2026-11-01T09:05:00+00:00') -> (local date 'YYYYMMDD', seconds after local midnight)."""
     try:
@@ -492,6 +497,13 @@ class Timetable:
             near = [c for c in look((-120, 120)) if c[1] == line.lower()]
             near = narrow(near)
             cands = near if len({c[0] for c in near}) == 1 or (near and len({c[1:4] + (c[5],) for c in near}) == 1) else []
+        # 0.27.0 (Rob 24 Nov 2026 10:52, after a public report: a Stagecoach 39 in Portsmouth shown as First's number 7):
+        # a journey whose route number AND bus company both differ from what the bus sends is never this bus. Measured
+        # 24 Nov 10:50 (tpa-matchcheck): 71 of 17,899 linked buses. A different company code alone is kept (~4,950 buses:
+        # companies publish timetables under another code), and so is a different route number alone (spellings).
+        if line and operator:
+            want_line, want_noc = _route_key(line), operator.upper()
+            cands = [c for c in cands if not (c[1] and c[3] and _route_key(c[1]) != want_line and c[3] != want_noc)]
         # 0.18.2 (owner 13 Nov 22:45: First Norfolk & Suffolk and First South Yorkshire publish each journey TWICE): copies
         # of the same journey - same route, company, end stop, times and number of stops - count as one (the first).
         if len({c[0] for c in cands}) > 1 and len({c[1:4] + (c[5],) for c in cands}) == 1:
