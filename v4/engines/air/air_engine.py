@@ -38,7 +38,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from urllib.request import Request, urlopen
 
-ENGINE_VERSION = '0.13.0'
+ENGINE_VERSION = '0.13.1'
 COMPONENT = 'air'
 CONTRACT = '1.0'
 ADSBLOL_POINT = 'https://api.adsb.lol/v2/point/{lat}/{lon}/{radius}'
@@ -1663,6 +1663,13 @@ def snapshot(view, world=False) -> dict:
                 if why and place not in WORLD['places']:
                     notice = notice or why
             extra = world_aircraft(now)
+            # 0.13.1 (Rob 24 Nov 19:22, egg over America: "the planes vanish at some levels of zoom"): zoomed in with the
+            # egg, the military aircraft already known stay in the answer while that area's all-planes look-round loads,
+            # and the military list keeps being refreshed while looking beyond the UK's own circle (same pace and allowance
+            # rules as the world view)
+            if not circle_covers(circle, view):
+                MIL['wantedAt'] = now
+            extra = extra + [a for a in MIL['aircraft'] if a['hex'] not in {x['hex'] for x in extra}] if MIL['aircraft'] else extra
             if extra:
                 merged = {a['hex']: a for a in aircraft}
                 for a in extra:
