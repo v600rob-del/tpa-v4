@@ -155,11 +155,14 @@ def bend(prev, target, made_at: float, lead_s: float = LEAD_S, catch_factor: flo
         out.append((tb, x))
     end = float(target[-1][0])
     t, last_kept = tb, tb
+    walk = _Walker(target)                            # 0.29.3: same answers as along(target, .), times only go on
+    was_aim = walk.at(t)
     while t < end - 1e-6:
         t1 = min(t + 1.0, end)
         dt = t1 - t
-        aim = along(target, t1)
-        pace = max(0.0, aim - along(target, t)) / dt      # metres a second
+        aim = walk.at(t1)
+        pace = max(0.0, aim - was_aim) / dt               # metres a second
+        was_aim = aim
         if x < aim - 0.5:                               # behind: catch up, never past where it should be
             x = min(aim, x + dt * min(max(pace * catch_factor, pace + catch_extra), catch_max))
         elif x > aim + 0.5:                             # ahead: carry on slowly until the forecast reaches it
@@ -177,6 +180,30 @@ def bend(prev, target, made_at: float, lead_s: float = LEAD_S, catch_factor: flo
     if end > out[-1][0]:
         out.append((end, x))
     return _tidy(out)
+
+
+class _Walker:
+    """bus 0.29.3 (Rob 25 Nov 2026 17:23 "B"; py-spy 17:21: bend 7.8% of publishing, `along` its busiest line): along(fc, t)
+    for times that only go on, keeping its place instead of searching from the start every second. Exactly the same
+    arithmetic and the same choice of piece (the first whose end time is not before t), so bend() gives identical paths."""
+    __slots__ = ('fc', 'k', 'n')
+
+    def __init__(self, fc):
+        self.fc, self.k, self.n = fc, 0, len(fc)
+
+    def at(self, t):
+        fc = self.fc
+        if t <= fc[0][0]:
+            return float(fc[0][1])
+        k, n = self.k, self.n
+        while k + 1 < n and t > fc[k + 1][0]:
+            k += 1
+        self.k = k
+        if k + 1 >= n:
+            return float(fc[-1][1])
+        t0, m0 = fc[k]
+        t1, m1 = fc[k + 1]
+        return m0 + (m1 - m0) * ((t - t0) / (t1 - t0) if t1 > t0 else 1.0)
 
 
 def _tidy(pts):
