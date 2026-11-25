@@ -46,6 +46,7 @@ GTFS_URL = 'https://data.bus-data.dft.gov.uk/timetable/download/gtfs-file/all/'
 NAPTAN_URL = 'https://naptan.api.dft.gov.uk/v1/access-nodes?dataFormat=csv'
 USER_AGENT = 'TPA-live-map/0.6 (bus engine timetables; tpaprojectuk@gmail.com)'
 FORMAT = 1
+ENDS_KEEP = 60000          # 0.29.2: journeys' ends kept (Timetable.trip_end)
 MAX_GTFS_BYTES = 4_000_000_000     # safety limit for the zip (1.3 GB in Sep 2026)
 MAX_NAPTAN_BYTES = 600_000_000
 MAX_DAYS = 7                       # rebuilt when older than this (BODS publishes daily)
@@ -435,6 +436,7 @@ class Timetable:
         import threading
         self.lock = threading.Lock()
         self.runs = {}                                   # (service_id, date) -> bool, small
+        self.ends = {}                                   # 0.29.2: trip_id -> trip_end answer (never changes in one timetable)
         # 0.22.1: timetables built before 0.22.1 have no 'near' column (filled at the next weekly rebuild)
         self.has_near = 'near' in [c[1] for c in self.db.execute('PRAGMA table_info(stops)')]
 
@@ -554,13 +556,24 @@ class Timetable:
 
     def trip_end(self, trip_id):
         """0.28.0: (first departure, last arrival - seconds after local midnight - and (lat, lon) of the last stop or None)
-        for one journey; None when not known."""
+        for one journey; None when not known.
+        0.29.2 (Rob 25 Nov 2026 12:07; py-spy 11:58: this lookup was 3.2% of all publishing, asked for every new report of
+        every timetabled bus): the answer is kept per journey - it cannot change within one timetable, and a new timetable
+        is a new Timetable. At most ENDS_KEEP kept (then started afresh; ~20,000 journeys run at once)."""
+        got = self.ends.get(trip_id, self)
+        if got is not self:
+            return got
         with self.lock:
             row = self.db.execute('SELECT e.first_dep, e.last_arr, s.lat, s.lon FROM trip_ends e '
                                   'LEFT JOIN stops s ON s.stop_id = e.last_stop WHERE e.trip_id=?', (trip_id,)).fetchone()
         if not row or row[0] is None or row[1] is None:
-            return None
-        return row[0], row[1], ((row[2], row[3]) if row[2] is not None and row[3] is not None else None)
+            out = None
+        else:
+            out = row[0], row[1], ((row[2], row[3]) if row[2] is not None and row[3] is not None else None)
+        if len(self.ends) >= ENDS_KEEP:
+            self.ends = {}
+        self.ends[trip_id] = out
+        return out
 
     def shape_id_of(self, trip_id):
         """0.17.0: the route line's own id for a journey ('' if none). Many journeys share one line."""

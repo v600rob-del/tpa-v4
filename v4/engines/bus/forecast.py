@@ -194,28 +194,6 @@ TOWN_STEP_M = 50.0           # sampled every 50 m along the route line...
 TOWN_TOLERANCE_M = 8.0       # ...then thinned where the road is straight (no point more than 8 m off the line)
 
 
-def _thin(pts, tol, xy):
-    """Douglas-Peucker on [(t, lon, lat)]: keeps the ends and any point further than tol metres from the chord."""
-    if len(pts) <= 2:
-        return pts
-    ax, ay = xy(pts[0]); bx, by = xy(pts[-1])
-    dx, dy = bx - ax, by - ay
-    L2 = dx * dx + dy * dy
-    worst, at = -1.0, 0
-    for k in range(1, len(pts) - 1):
-        px, py = xy(pts[k])
-        if L2 <= 1e-9:
-            d = ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
-        else:
-            u = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
-            d = ((px - ax - u * dx) ** 2 + (py - ay - u * dy) ** 2) ** 0.5
-        if d > worst:
-            worst, at = d, k
-    if worst <= tol:
-        return [pts[0], pts[-1]]
-    return _thin(pts[:at + 1], tol, xy)[:-1] + _thin(pts[at:], tol, xy)
-
-
 def town_path(fc, point_at, base_t, horizon_s=TOWN_HORIZON_S, step_m=TOWN_STEP_M, tol_m=TOWN_TOLERANCE_M):
     """bus 0.26.0 (Rob 18 Nov 06:16: "All levels need to be warm"): the forecast `fc` [(time, metres)] as positions, for the
     town-level tiles that carry no route line. Returns [[seconds after base_t, lon, lat], ...] from the newest report up to
@@ -240,12 +218,91 @@ def town_path(fc, point_at, base_t, horizon_s=TOWN_HORIZON_S, step_m=TOWN_STEP_M
             t = ta + (tb - ta) * i / n
             lo, la = point_at(m)
             seg.append((t, lo, la))
-        if mb > ma:
-            c = math.cos(math.radians(seg[0][2]))
-            seg = _thin(seg, tol_m, lambda q: (q[1] * 111320.0 * c, q[2] * 110540.0))
+        # 0.29.2: no thinning piece by piece any more - the whole path is thinned once below (_thin_timed)
         if out and seg and out[-1][0] == seg[0][0]:
             seg = seg[1:]
         out.extend(seg)
     if len(out) < 2:
         return None
+    out = _thin_timed(out, tol_m)
     return [[round(t - base_t, 1), round(lo, 6), round(la, 6)] for t, lo, la in out]
+
+
+def thin_line(seq, tol):
+    """bus 0.29.2: [[t, metres], ...] (times always later, metres never back) with the points on a steady stretch dropped:
+    a point goes only if, gliding evenly in time between the points kept either side (as the page does: bus-replay.js
+    alongAt), the bus is within tol metres of it. Start, end and every pause (the same metres twice) are kept. A subset of
+    seq, in order, so times stay later and metres never go back."""
+    n = len(seq)
+    if n <= 2:
+        return seq
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    for k in range(1, n):
+        if seq[k][1] == seq[k - 1][1]:
+            keep[k] = keep[k - 1] = True               # a pause: both ends stay
+    fixed = [k for k in range(n) if keep[k]]
+    for a, b in zip(fixed, fixed[1:]):
+        stack = [(a, b)]
+        while stack:
+            i, j = stack.pop()
+            if j - i < 2:
+                continue
+            ti, mi = seq[i]
+            tj, mj = seq[j]
+            rate = (mj - mi) / (tj - ti) if tj > ti else 0.0
+            worst, at = -1.0, i
+            for k in range(i + 1, j):
+                d = abs(mi + rate * (seq[k][0] - ti) - seq[k][1])
+                if d > worst:
+                    worst, at = d, k
+            if worst > tol:
+                keep[at] = True
+                stack.append((i, at))
+                stack.append((at, j))
+    return [q for q, k in zip(seq, keep) if k]
+
+
+def _thin_timed(pts, tol):
+    """bus 0.29.2 (Rob 25 Nov 2026 12:07; py-spy 11:58: town paths 11.5% of publishing): the town path thinned once over its
+    whole length, not piece by piece. A bent path (0.29.0) has a point every BEND_STEP_S while it eases, and each of those
+    short pieces was thinned on its own, so a bent bus carried ~12 town points instead of ~7 (measured on the real code).
+    The page glides evenly in TIME between points (hq.js townPathTrack), so a point is dropped only if the bus, moving
+    evenly in time between the points kept either side, is within tol metres of where it really is at that moment. Both
+    points of a wait at a stop (the same place twice) are always kept. pts: [(t, lon, lat)], times never going back."""
+    n = len(pts)
+    if n <= 2:
+        return pts
+    c = math.cos(math.radians(pts[0][2])) * 111320.0
+    ts = [p[0] for p in pts]
+    xs = [p[1] * c for p in pts]
+    ys = [p[2] * 110540.0 for p in pts]
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    for k in range(1, n):
+        if xs[k] == xs[k - 1] and ys[k] == ys[k - 1]:
+            keep[k] = keep[k - 1] = True               # a wait: both ends stay
+    tol2 = tol * tol
+    fixed = [k for k in range(n) if keep[k]]
+    hypot = math.hypot
+    for a, b in zip(fixed, fixed[1:]):
+        stack = [(a, b)]
+        while stack:
+            i, j = stack.pop()
+            if j - i < 2:
+                continue
+            ti, ax, ay = ts[i], xs[i], ys[i]
+            span = ts[j] - ti
+            dx, dy = xs[j] - ax, ys[j] - ay
+            worst, at = -1.0, i
+            for k in range(i + 1, j):
+                f = (ts[k] - ti) / span if span > 0 else 0.0
+                ex, ey = ax + dx * f - xs[k], ay + dy * f - ys[k]
+                d = ex * ex + ey * ey
+                if d > worst:
+                    worst, at = d, k
+            if worst > tol2:
+                keep[at] = True
+                stack.append((i, at))
+                stack.append((at, j))
+    return [p for p, k in zip(pts, keep) if k]

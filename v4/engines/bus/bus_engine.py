@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.29.1'
+ENGINE_VERSION = '0.29.2'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -1517,6 +1517,7 @@ ROUTE_USED: dict = {}                 # (build, line id) -> when a bus last used
 # on its line once and kept (FORECAST_KEEP journeys); at most FORECAST_BUILD_PER_ROUND new journeys a round.
 FORECAST_ON = os.environ.get('TPA_BUS_FORECAST', '1').strip() != '0'
 BEND_ON = os.environ.get('TPA_BUS_BEND', '1').strip() != '0'     # 0.29.0: cautious + bent paths (TPA_BUS_BEND=0: as 0.28.0)
+F_LINE_TOL_M = 0.5                 # 0.29.2: published street forecast `f`: points on a steady stretch dropped within this
 FORECAST_KNOTS: "OrderedDict[str, array]" = OrderedDict()   # trip_id -> metres, seconds after the first departure, ... (flat; ~0.7 KB)
 FORECAST_KEEP = 20000
 FORECAST_BUILD_PER_ROUND = 150
@@ -1695,7 +1696,12 @@ def bus_forecast(v, tid, sh, last, now=None):
         if out and t <= out[-1][0]:
             continue
         out.append([t, max(m, out[-1][1]) if out else m])
-    return out if len(out) >= 2 else None
+    if len(out) < 2:
+        return None
+    # 0.29.2 (Rob 25 Nov 2026 12:07, "only benefits"): a bent path eases in BEND_STEP_S pieces, so a bus at a steady pace
+    # carried a point every 5 s (17 points a bus measured live, 25 Nov 13:45); the page glides evenly in time between points
+    # (bus-replay.js alongAt / paceAt), so points on a steady stretch carry nothing. Dropped within F_LINE_TOL_M.
+    return forecast.thin_line(out, F_LINE_TOL_M)
 
 
 def bus_item(v, hist, now):
