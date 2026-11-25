@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.29.0'
+ENGINE_VERSION = '0.29.1'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -222,6 +222,35 @@ def parse_time(text: str) -> float | None:
         return t.timestamp()
     except (ValueError, AttributeError):
         return None
+
+
+# 0.29.1 (Rob 25 Nov 2026 00:54, "view for over a minute, you'll see what i do"): watched live at 00:58, 493 of 493 London
+# buses had a forecast whose next point was nearly a DAY ahead (23 h 40 m - 23 h 55 m); 0 of the others. After midnight
+# the journey's timetable came out a day in the future, so every London bus looked ten minutes early (the most allowed),
+# crept to its report and stood there until the next tile - "move 3 s, stand 7 s", all in step. Its journey cannot have
+# started more than JOURNEY_AHEAD_S after a report nor more than JOURNEY_BEHIND_S before one: the start is put on that day.
+JOURNEY_AHEAD_S = 4 * 3600
+JOURNEY_BEHIND_S = 20 * 3600
+
+
+def on_its_day(start, ref):
+    """`start` (a journey's start, epoch) moved by whole days to lie within (ref - JOURNEY_BEHIND_S, ref + JOURNEY_AHEAD_S]."""
+    if start is None or ref is None:
+        return start
+    while start > ref + JOURNEY_AHEAD_S:
+        start -= 86400
+    while start <= ref - JOURNEY_BEHIND_S:
+        start += 86400
+    return start
+
+
+def journey_start(v: dict):
+    """0.29.1: when this bus's journey left its first stop (epoch), on the day its reports say; None if unreadable."""
+    try:
+        ref = float(v.get('recorded'))
+    except (TypeError, ValueError):
+        ref = time.time()
+    return on_its_day(parse_time(v.get('dep') or ''), ref)
 
 
 _CTRL = re.compile(r'[\x00-\x1f\x7f]+')
@@ -1583,6 +1612,7 @@ def forecast_knots(trip_id: str, sh):
     try:
         rows = tt.stops_of(trip_id)
         stops, last = [], 0.0
+        rows = _unwrapped(rows)                        # 0.29.1: times across midnight kept in order
         for _sid, lat, lon, _name, _ind, arr, dep in rows:
             m = None
             if lat is not None and lon is not None:
@@ -1597,6 +1627,36 @@ def forecast_knots(trip_id: str, sh):
     while len(FORECAST_KNOTS) > FORECAST_KEEP:
         FORECAST_KNOTS.popitem(last=False)
     return kn
+
+
+def _unwrapped(rows):
+    """0.29.1: stop times that jump by most of a day from the stop before (a timetable writing one stop '00:53' and the
+    next '24:54', or the reverse) put back beside it, so a journey over midnight never has a stop a day away."""
+    out, before = [], None
+    for row in rows:
+        *head, arr, dep = row
+        if arr is None or dep is None:
+            out.append(row)
+            continue
+        if before is not None:
+            while arr - before > 43200:
+                arr, dep = arr - 86400, dep - 86400
+            while before - arr > 43200:
+                arr, dep = arr + 86400, dep + 86400
+        before = max(arr, dep)
+        out.append(tuple(head) + (arr, dep))
+    return out
+
+
+def _on_time_day(kn, t, m):
+    """0.29.1, a last guard: the timetable [(metres, epoch)] moved by whole days if it has the bus at m metres over 12 h
+    away from its report at t."""
+    lo, hi = forecast._timetabled(kn, m)
+    due = lo if math.isfinite(lo) else hi
+    if not math.isfinite(due) or abs(t - due) <= 43200:
+        return kn
+    shift = round((t - due) / 86400) * 86400
+    return [(mm, tt + shift) for mm, tt in kn]
 
 
 def _departed_at(dep_iso: str):
@@ -1617,10 +1677,11 @@ def bus_forecast(v, tid, sh, last, now=None):
     kn = forecast_knots(tid, sh)
     if not kn:
         return None
-    start = _departed_at(v.get('dep') or '')
+    start = journey_start(v)                           # 0.29.1: on the day its reports say
     if start is None:
         return None
-    fc = forecast.forecast(float(last[0]), float(last[1]), [(kn[k], start + kn[k + 1]) for k in range(0, len(kn), 2)])
+    knots = _on_time_day([(kn[k], start + kn[k + 1]) for k in range(0, len(kn), 2)], float(last[0]), float(last[1]))
+    fc = forecast.forecast(float(last[0]), float(last[1]), knots)
     if len(fc) < 2:
         return None
     if BEND_ON:
@@ -2719,7 +2780,9 @@ def journey_over(tt, v: dict, tid) -> bool:
         end = look(tid)
         if not end or not end[2]:
             return False
-        started = datetime.fromisoformat(str(v.get('dep') or '').replace('Z', '+00:00')).timestamp()
+        started = journey_start(v)                    # 0.29.1: on its own day
+        if started is None:
+            return False
         if float(v['recorded']) - started <= (end[1] - end[0]) + JOURNEY_OVER_SECONDS:
             return False
         lat, lon = float(v['lat']), float(v['lon'])
@@ -3010,7 +3073,7 @@ def _follow_bus(v: dict) -> None:
         hist = list(HISTORY.get(v['key']) or [(v['recorded'], v['lat'], v['lon'])])
     # 0.17.2: only reports from this journey (from 5 minutes before it was due to leave): a bus's last reports from its
     # previous journey (often the other way along the same road) placed it wrongly, or not at all
-    dep_t = parse_time(v.get('dep') or '')
+    dep_t = journey_start(v)                          # 0.29.1: on its own day
     if dep_t:
         hist = [h for h in hist if h[0] >= dep_t - 300] or hist[-1:]
     was = FOLLOW.get(v['key'])
@@ -3524,7 +3587,7 @@ def details(entity_id: str) -> dict:
     # the moment it is shown at (REPLAY_SECONDS behind its reports), on its journey's own clock
     shown_clock = None
     try:
-        started = datetime.fromisoformat(str(v.get('dep') or '').replace('Z', '+00:00')).timestamp()
+        started = journey_start(v)                    # 0.29.1: on its own day
         shown_clock = first[4] + (time.time() - delay_of(v['key']) - started)
     except (TypeError, ValueError):
         pass
