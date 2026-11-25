@@ -40,7 +40,7 @@ function busPlate(e,d){
   const v=String(row?.value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
   if(/^[A-Z0-9]{2,8}$/.test(v)&&/\d/.test(v)&&/[A-Z]/.test(v))return v;
   const tail=String(e.id||'').split(':').pop().toUpperCase().replace(/[^A-Z0-9]/g,'');
-  return /^[A-Z]{2}\d{2}[A-Z]{3}$/.test(tail)?tail:'';}            // London buses send their plate as their id
+  return /^(?!TMP)(?:[A-Z]{2}\d{2}[A-Z]{3}|[A-Z]{1,3}\d{1,4}|[A-Z]\d{1,3}[A-Z]{3}|[A-Z]{3}\d{1,3}[A-Z])$/.test(tail)?tail:'';}   // London buses send their plate as their id (4.106.2: LTZ1495 too)
 // 4.106.1 (Rob 23:54 "couldnt find one, clicked on a lot": the page stopped waiting after ~24 s and remembered "none"):
 // it keeps asking every 3 s while that bus's box is open (up to 3 minutes); if the box closes first nothing is
 // remembered, so the next time the bus is opened it asks again.

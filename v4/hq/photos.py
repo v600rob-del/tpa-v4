@@ -53,16 +53,32 @@ def norm(reg) -> str:
     return s if 2 <= len(s) <= 8 and re.search(r'\d', s) and re.search(r'[A-Z]', s) else ''
 
 
+RULES = 2       # 4.106.2: older "none" answers (made before older plates were matched) are looked up again
+
+
+def groups(n: str) -> list:
+    """'LTZ1495' -> ['LTZ', '1495']; 'A123BCD' -> ['A', '123', 'BCD']: the runs of letters and of digits."""
+    return re.findall(r'[A-Z]+|\d+', n)
+
+
 def pretty(n: str) -> str:
+    """How the plate is written: 'LK65 ENW' (today's plates); 4.106.2 (Rob 00:47 "still none": 11 of 18 central London buses
+    clicked were New Routemasters, 'LTZ 1495') older ones with a space where letters and digits meet ('LTZ 1495', 'A123 BCD')."""
     m = STD.match(n)
-    return f'{m.group(1)} {m.group(2)}' if m else n
+    if m:
+        return f'{m.group(1)} {m.group(2)}'
+    g = groups(n)
+    if len(g) == 3 and g[0].isalpha():
+        return f'{g[0]}{g[1]} {g[2]}'                 # prefix plates: A123 BCD
+    return ' '.join(g)
 
 
 def plate_pattern(n: str):
-    """The plate as it is written in titles and categories: 'LK65 ENW', 'LK65ENW', 'LK65_ENW', 'LK65-ENW' - on its own,
-    not inside a longer string of letters and digits."""
+    """The plate as it is written in titles and categories - 'LK65 ENW', 'LK65ENW', 'LK65_ENW', 'LTZ 1495', 'LTZ1495' - with
+    or without a space (or _ or -) where letters and digits meet, on its own, not inside a longer string."""
     m = STD.match(n)
-    body = re.escape(m.group(1)) + r'[ _-]?' + re.escape(m.group(2)) if m else re.escape(n)
+    parts = [m.group(1), m.group(2)] if m else groups(n)
+    body = r'[ _-]?'.join(re.escape(x) for x in parts)
     return re.compile(r'(?<![A-Z0-9])' + body + r'(?![A-Z0-9])', re.I)
 
 
@@ -115,6 +131,8 @@ class Finder:
         now = time.time()
         if rec:
             keep = FOUND_KEEP_S if rec.get('state') == 'found' else NONE_KEEP_S if rec.get('state') == 'none' else ERROR_KEEP_S
+            if rec.get('state') == 'none' and rec.get('rules', 1) < RULES:
+                keep = -1                                # 4.106.2: made with the older matching: look again
             if now - float(rec.get('at', 0)) <= keep:
                 return self.public(n, rec)
         self.enqueue(n)
@@ -149,7 +167,8 @@ class Finder:
             if not n:
                 continue
             rec = self.record(n)
-            if rec and time.time() - float(rec.get('at', 0)) <= (FOUND_KEEP_S if rec.get('state') == 'found' else NONE_KEEP_S):
+            if rec and time.time() - float(rec.get('at', 0)) <= (FOUND_KEEP_S if rec.get('state') == 'found' else NONE_KEEP_S) \
+                    and not (rec.get('state') == 'none' and rec.get('rules', 1) < RULES):
                 continue
             with self.lock:
                 if n in self.queue or n in self.later or n in self.busy or len(self.later) >= WARM_MAX:
@@ -242,6 +261,7 @@ class Finder:
         finally:
             with self.lock:
                 self.busy.discard(n)
+        rec['rules'] = RULES
         key = 'found' if rec['state'] == 'found' else 'none' if rec['state'] == 'none' else 'errors'
         with self.lock:
             self.counts[key] += 1
@@ -251,7 +271,7 @@ class Finder:
     def find(self, n):
         pat = plate_pattern(n)
         got = self.call(action='query', list='search', srnamespace=6, srlimit=20,
-                        srsearch=f'"{pretty(n)}" OR "{n}"')
+                        srsearch=f'"{pretty(n)}" OR "{n}"' + (f' OR "{" ".join(groups(n))}"' if " ".join(groups(n)) not in (pretty(n), n) else ''))
         titles = [x['title'] for x in (got.get('query') or {}).get('search', []) if x.get('title')]
         if not titles:
             return {'state': 'none', 'at': time.time()}
@@ -290,7 +310,7 @@ class Finder:
                 'credit': artist[:CREDIT_MAX], 'licence': lic, 'page': ii.get('descriptionurl', '')}
 
 
-PLATE_ID = re.compile(r'^[A-Z]{2}\d{2}[A-Z]{3}$')
+PLATE_ID = re.compile(r'^(?!TMP)(?:[A-Z]{2}\d{2}[A-Z]{3}|[A-Z]{1,3}\d{1,4}|[A-Z]\d{1,3}[A-Z]{3}|[A-Z]{3}\d{1,3}[A-Z])$')   # today's, and (4.106.2) LTZ1495, A123BCD, ABC123D
 
 
 def plates_from_tiles(root) -> list:
