@@ -39,7 +39,7 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.108.2'
+HQ_VERSION = '4.109.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
@@ -59,7 +59,7 @@ if _photo_api and not re.match(r'^http://127\.0\.0\.1:\d+/', _photo_api):
 PHOTOS = PHOTOS_MOD.Finder(os.environ.get('TPA_HQ_PHOTO_DIR', '').strip() or (Path(tempfile.gettempdir()) / 'tpa-photos'),
                            api=_photo_api or PHOTOS_MOD.API)
 # 4.108.0 (Rob 26 Nov 17:28 "yeah this sounds excellent!"): real plane photos by registration, the same way, own folder;
-# only with ?planephotos=1 until Rob has seen them. See photos.PlaneFinder.
+# 4.109.0 (Rob 19:14): for everyone (?planephotos=0 turns them off). See photos.PlaneFinder.
 def plane_type_name(pid):   # 4.108.1: the box's "Aircraft" line for a plane, from the planes engine (warm-up only); 4.108.2: and its operator
     raw,_=engine_get('air','/details?'+urlencode({'id':pid}),262144,10)
     rows={str(r.get('label','')):str(r.get('value','')) for r in (json.loads(raw).get('rows') or []) if isinstance(r,dict)}

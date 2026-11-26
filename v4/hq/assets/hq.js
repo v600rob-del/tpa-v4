@@ -56,9 +56,10 @@ function askPhoto(reg,tries,onFound,open,url,key){url=url||'/api/v4/photo?reg='+
   }).catch(()=>PHOTO_ANS.delete(key));}
 function busPhoto(reg,onFound,open){const a=PHOTO_ANS.get(reg);if(a)return a.state==='found'?a:null;
   PHOTO_ANS.set(reg,{state:'looking'});askPhoto(reg,0,onFound,open);return null;}
-// 4.108.0 (Rob 26 Nov 17:26-17:28, plane photos; preview ?planephotos=1 until Rob has seen them): the registration and the
-// type from the box ("Registration", "Aircraft"); the server only gives a photo that names that type (photos.PlaneFinder).
-const PLANE_PHOTOS_ON=!KIDS&&new URLSearchParams(location.search).get('planephotos')==='1';
+// 4.108.0 (Rob 26 Nov 17:26-17:28, plane photos): the registration and the type from the box ("Registration", "Aircraft");
+// the server only gives a photo that names that type (photos.PlaneFinder). 4.109.0 (Rob 19:14 "I'm happy with that,
+// switch to everyone"): for everyone; ?planephotos=0 turns them off. Never in Kids.
+const PLANE_PHOTOS_ON=!KIDS&&new URLSearchParams(location.search).get('planephotos')!=='0';
 function planeAsk(e,d){const rows=Array.isArray(d.rows)?d.rows:[],get=l=>String(rows.find(x=>x&&x.label===l)?.value||'').trim();
   const reg=get('Registration').toUpperCase().replace(/[^A-Z0-9-]/g,'');
   if(!/^[A-Z0-9]{1,2}-[A-Z0-9]{2,5}$|^[A-Z0-9]{3,7}$/.test(reg)||!/[A-Z]/.test(reg))return null;
