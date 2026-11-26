@@ -26,6 +26,7 @@ How it works:
 """
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import re
@@ -367,6 +368,12 @@ ICAO_WORDS = {'A19N': 'A319', 'A20N': 'A320', 'A21N': 'A321', 'B37M': '737', 'B3
               'A338': 'A330', 'BCS1': 'A220', 'BCS3': 'A220', 'E75L': '175', 'E75S': '175', 'E35L': 'Legacy'}
 
 
+# 4.108.1 (Rob 18:11 "How can we increase the number"): the same type written another way on Commons. Measured: 3 of
+# 116 planes had photos turned down only for this ("Embraer 190" for the box's "Embraer E190").
+TYPE_ALIASES = {'h135': ['ec135'], 'h145': ['ec145', 'bk117'], 'h125': ['as350'], 'h130': ['ec130'], 'h120': ['ec120'],
+                'h155': ['ec155'], 'h175': ['ec175'], 'c99': ['145'], 'erj': ['145'], 'aw169': ['az169'], 'aw189': ['az189']}
+
+
 def reg_norm(reg) -> str:
     """'g-eztz' -> 'G-EZTZ'; '' unless it looks like a registration or a military serial (with a letter)."""
     raw = str(reg or '').strip().upper()
@@ -385,7 +392,12 @@ def type_keys(name, code='') -> list:
     FGR4 ("British Aerospace Hawk 128 T.2" -> ['128', 't2'], so a "Hawk T2" photo counts and a "Hawk T1" one does not)."""
     first = type_key(name, code)
     marks = [m.lower() for m in re.findall(r'(?<![A-Za-z0-9])[A-Za-z]{1,3}\d{1,2}(?![A-Za-z0-9])', re.sub(r'[.]', '', str(name or ''))[:80])]
-    return list(dict.fromkeys([k for k in [first] + marks if k]))
+    keys = [k for k in [first] + marks if k]
+    for k in list(keys):                          # 4.108.1: other spellings of the same type (measured 18:15)
+        keys += TYPE_ALIASES.get(k, [])
+        if re.fullmatch(r'e\d{3}', k):            # Embraer E190 = Embraer 190 = ERJ-190
+            keys.append(k[1:])
+    return list(dict.fromkeys(keys))
 
 
 def type_key(name, code='') -> str:
@@ -422,19 +434,81 @@ def names_type(text: str, key: str) -> bool:
     return re.search(r'(?<![0-9])' + re.escape(key) + (r'(?![0-9])' if key[-1].isdigit() else r'(?![a-z])'), hay) is not None
 
 
+# 4.108.2 (Rob 26 Nov 18:21 "yes a"): a plane with no photo of its own may show a photo of ANOTHER plane of the same
+# operator and type, always labelled on the picture "Not this plane - one like it". Measured 18:15: 7 of the 20 planes with
+# nothing of their own were brand-new airliners (Ryanair 737 MAX, easyJet A320neo, Emirates A350, Air France A220).
+# Rules: the photo's title or categories must name the operator AND the type; a neo or MAX only by a neo or MAX photo and
+# the older ones never by one; whole plane, free licence, newest. One answer per operator + type, shared by every plane.
+SUFFIX = {'uk', 'europe', 'shuttle', 'international', 'ltd', 'limited', 'ireland', 'plc', 'regional'}
+
+
+def operator_names(op) -> list:
+    """'British Airways Shuttle' -> ['British Airways Shuttle', 'British Airways'] (same colours); '' -> []."""
+    op = re.sub(r'\s+', ' ', re.sub(r'[^A-Za-z0-9 .&-]', ' ', str(op or ''))).strip()[:40]
+    if len(op) < 3 or op.lower() in ('private', 'unknown'):
+        return []
+    out, words = [op], op.split(' ')
+    while len(words) > 1 and words[-1].lower().rstrip('.') in SUFFIX:
+        words = words[:-1]
+        out.append(' '.join(words))
+    return list(dict.fromkeys(out))
+
+
+def generation(name, code='') -> str:
+    """'max' / 'neo' / '' - the newer models look different, so a photo must be the same generation."""
+    t = f'{name} {code}'.lower()
+    if 'max' in t or re.search(r'\bb3[789x]m\b', t):
+        return 'max'
+    if 'neo' in t or re.search(r'\ba(19|20|21|33|39)n\b', t) or re.search(r'-2\d\dn\b', t):
+        return 'neo'
+    return ''
+
+
+MAKERS = {'airbus', 'boeing', 'embraer', 'agustawestland', 'leonardo', 'british', 'aerospace', 'systems', 'avions',
+          'transport', 'regional', 'bombardier', 'cessna', 'piper', 'beechcraft', 'dassault', 'gulfstream', 'pilatus',
+          'eurocopter', 'sikorsky', 'westland', 'lockheed', 'martin', 'mcdonnell', 'douglas', 'aerospatiale', 'helicopters',
+          'aircraft', 'diamond', 'tecnam', 'cirrus', 'textron', 'raytheon', 'hawker', 'fokker', 'saab', 'antonov', 'ilyushin',
+          'tupolev', 'mitsubishi', 'honda', 'daher', 'socata', 'robinson', 'schweizer', 'agusta', 'bell'}
+
+
+def model_words(name) -> list:
+    """4.108.2: the type's own name words, e.g. "AgustaWestland Wildcat AH.1" -> ['wildcat'] (makers and marks left out).
+    Measured 18:40: for an Army Wildcat the "one like it" search found an Apache AH1 - "AH1" alone is not enough."""
+    return [w.lower() for w in re.findall(r'(?<![A-Za-z0-9])[A-Za-z]{4,}(?![A-Za-z0-9])', str(name or ''))
+            if w.lower() not in MAKERS and w.lower() not in ('max', 'neo', 'dreamliner', 'jumbo')]
+
+
+def names_operator(text: str, op: str) -> bool:
+    return re.search(r'(?<![a-z0-9])' + re.escape(op.lower()) + r'(?![a-z0-9])', text.lower()) is not None
+
+
+PLANE_WARM_GAP_S = 5.0          # 4.108.1: one background plane lookup every 5 s (~720 an hour, two Commons asks each)
+PLANE_WARM_MAX = 800
+
+
 class PlaneFinder(Finder):
-    def __init__(self, folder, **kw):
+    def __init__(self, folder, namer=None, **kw):
+        kw.setdefault('warm_gap', PLANE_WARM_GAP_S)
         super().__init__(folder, **kw)
         self.types: dict[str, str] = {}           # registration -> the type word asked with it
+        self.ids: dict[str, tuple] = {}           # 4.108.1: registration -> (plane id, ICAO type code) for warm-up
+        self.namer = namer                        # 4.108.1: plane id -> the box's "Aircraft" line (asks the planes engine)
+        self.alike_for: dict[str, tuple] = {}     # 4.108.2: registration -> (operator, type name, code) for "one like it"
+        self.alike: dict[str, dict] = {}          # 4.108.2: operator + type -> the shared "one like it" answer
 
-    def answer(self, reg, typ='', code='') -> dict:
+    def answer(self, reg, typ='', code='', op='') -> dict:
         n, key = reg_norm(reg), ' '.join(type_keys(typ, code))
         if not n or not key:
             return {'state': 'none'}
+        with self.lock:
+            self.alike_for[n] = (str(op or '')[:40], str(typ or '')[:80], str(code or '')[:4])
+            if len(self.alike_for) > 5000:
+                self.alike_for.pop(next(iter(self.alike_for)))
         rec = self.record(reg_key(n))
         now = time.time()
         if rec and rec.get('type') == key:
-            keep = FOUND_KEEP_S if rec.get('state') == 'found' else NONE_KEEP_S if rec.get('state') == 'none' else ERROR_KEEP_S
+            keep = FOUND_KEEP_S if rec.get('state') == 'found' and not rec.get('like') else NONE_KEEP_S \
+                if rec.get('state') in ('none', 'found') else ERROR_KEEP_S   # 4.108.2: "one like it" asked again after a week
             if now - float(rec.get('at', 0)) <= keep:
                 return self.public(n, rec)
         with self.lock:
@@ -449,19 +523,51 @@ class PlaneFinder(Finder):
     def public(self, n, rec) -> dict:
         if rec.get('state') != 'found':
             return {'state': 'none'}
-        return {'state': 'found', 'src': '/api/v4/planephoto/img/' + rec['file'], 'credit': rec.get('credit', ''),
-                'licence': rec.get('licence', ''), 'page': rec.get('page', ''), 'plate': n}
+        out = {'state': 'found', 'src': '/api/v4/planephoto/img/' + rec['file'], 'credit': rec.get('credit', ''),
+               'licence': rec.get('licence', ''), 'page': rec.get('page', ''), 'plate': n}
+        if rec.get('like'):
+            out['like'] = str(rec['like'])[:90]   # 4.108.2: not this plane - the page labels it
+        return out
 
     def image(self, name: str):
-        if not re.fullmatch(r'[A-Z0-9_]{3,10}\.(jpg|png)', name or ''):
+        if not re.fullmatch(r'[A-Z0-9_]{3,15}\.(jpg|png)', name or ''):
             return None
         p = self.dir / name
         if not p.is_file():
             return None
         return p.read_bytes(), 'image/png' if name.endswith('.png') else 'image/jpeg'
 
-    def warm(self, regs) -> int:
-        return 0                                  # 4.108.0: clicked planes only, for now
+    def warm(self, planes) -> int:
+        """4.108.1 (Rob 18:11 "pre look up is a good idea"): planes on the map, as (registration, id, type code): any not
+        looked up yet (or due again) join the background queue, newest first in, one every PLANE_WARM_GAP_S."""
+        added = 0
+        now = time.time()
+        try:                                      # never fill the disk: no look-ahead with under 3 GB free (clicks still work)
+            import shutil
+            self.dir.mkdir(parents=True, exist_ok=True)
+            if shutil.disk_usage(self.dir).free < 3 * 1024 ** 3:
+                return 0
+        except OSError:
+            return 0
+        for reg, pid, code in planes:
+            n = reg_norm(reg)
+            if not n or not pid:
+                continue
+            rec = self.record(reg_key(n))
+            if rec and now - float(rec.get('at', 0)) <= (FOUND_KEEP_S if rec.get('state') == 'found' and not rec.get('like')
+                                                          else NONE_KEEP_S if rec.get('state') in ('none', 'found') else ERROR_KEEP_S):
+                continue
+            with self.lock:
+                self.ids[n] = (str(pid)[:60], str(code or '')[:4])
+                if len(self.ids) > 5000:
+                    self.ids.pop(next(iter(self.ids)))
+                if n in self.queue or n in self.later or n in self.busy or len(self.later) >= PLANE_WARM_MAX:
+                    continue
+                self.later.append(n)
+                added += 1
+        if added:
+            self.kick()
+        return added
 
     def record(self, n):
         return super().record(reg_key(n) if '-' in n else n)
@@ -475,9 +581,57 @@ class PlaneFinder(Finder):
 
     def find(self, n):
         key = self.types.get(n, '')
+        op, typ, code = self.alike_for.get(n, ('', '', ''))
+        if not key and n in self.ids and self.namer:       # 4.108.1: a warm-up plane: its type from the planes engine
+            pid, code = self.ids[n]
+            got = self.namer(pid)
+            typ, op = (got if isinstance(got, tuple) else (got, ''))
+            key = ' '.join(type_keys(typ, code))
         out = self._find(n, key)
+        if out.get('state') == 'none' and key and op:      # 4.108.2: no photo of its own: one like it, if there is one
+            out = dict(self.like_it(op, typ, code, key), at=time.time())
         out['type'] = key
         return out
+
+    def like_it(self, op, typ, code, key) -> dict:
+        """4.108.2: a photo of another plane of the same operator and type (shared by all of them, kept like the rest)."""
+        gen = generation(typ, code)
+        akey = re.sub(r'[^A-Z0-9]', '', f'{op}|{key}|{gen}'.upper())[:40]
+        name = 'L_' + hashlib.sha1(akey.encode()).hexdigest()[:12].upper()
+        rec = self.alike.get(name) or self.record(name)
+        if rec and time.time() - float(rec.get('at', 0)) <= (FOUND_KEEP_S if rec.get('state') == 'found' else NONE_KEEP_S):
+            return {k: v for k, v in rec.items() if k != 'at'}
+        rec = {'state': 'none'}
+        for who in operator_names(op):
+            first = key.split()[0]
+            got = self.call(action='query', generator='search', gsrsearch=f'"{who}" {first}' + (f' {gen}' if gen else ''),
+                            gsrnamespace=6, gsrlimit=40, prop='imageinfo|categories', iiprop='url|extmetadata|timestamp|mime',
+                            iiurlwidth=THUMB_W, cllimit='max', clshow='!hidden')
+            pages = []
+            for p in (got.get('query') or {}).get('pages', []):
+                said = ' '.join([p.get('title', '')] + [c.get('title', '') for c in p.get('categories', [])])
+                if not names_operator(said, who):
+                    continue
+                said_gen = 'max' if re.search(r'\bmax\b', said, re.I) else 'neo' if re.search(r'neo\b', said, re.I) else ''
+                if said_gen != gen:
+                    continue                      # a 737-800 never stands in for a MAX, nor a MAX for a 737-800
+                words = model_words(typ)
+                if words and not any(re.search(r'(?<![a-z])' + w, said.lower()) for w in words):
+                    continue                      # a Wildcat by a Wildcat, never an Apache
+                pages.append(p)
+            best = self._pick(pages, key)
+            if best:
+                kept = self._keep(name, best)
+                if kept.get('state') == 'found':
+                    shown = re.sub(r'\s+', ' ', f'{op} {typ}'.strip())[:80]
+                    rec = dict(kept, like=f'Not this plane: one like it ({shown})')
+                    break
+        rec['at'] = time.time()
+        super().save(name, rec)
+        self.alike[name] = rec
+        if len(self.alike) > 2000:
+            self.alike.pop(next(iter(self.alike)))
+        return {k: v for k, v in rec.items() if k != 'at'}
 
     def _find(self, n, key):
         if not key:
@@ -485,8 +639,19 @@ class PlaneFinder(Finder):
         info = self.call(action='query', generator='categorymembers', gcmtitle=f'Category:{n} (aircraft)', gcmtype='file',
                          gcmlimit='50', prop='imageinfo|categories', iiprop='url|extmetadata|timestamp|mime',
                          iiurlwidth=THUMB_W, cllimit='max', clshow='!hidden')
+        best = self._pick((info.get('query') or {}).get('pages', []), key)
+        if not best:
+            # 4.108.1: no folder of its own (or nothing usable in it): files whose NAME has the registration, same rules
+            pat = re.compile(r'(?<![A-Z0-9])' + r'[ _-]?'.join(re.escape(x) for x in n.split('-')) + r'(?![A-Z0-9])', re.I)
+            got = self.call(action='query', generator='search', gsrsearch=f'"{n}"', gsrnamespace=6, gsrlimit=20,
+                            prop='imageinfo|categories', iiprop='url|extmetadata|timestamp|mime', iiurlwidth=THUMB_W,
+                            cllimit='max', clshow='!hidden')
+            best = self._pick([p for p in (got.get('query') or {}).get('pages', []) if pat.search(p.get('title', ''))], key)
+        return self._keep(n, best)
+
+    def _pick(self, pages, key):
         best = []
-        for page in (info.get('query') or {}).get('pages', []):
+        for page in pages:
             title = page.get('title', '')
             cats = [c.get('title', '') for c in page.get('categories', [])]
             if CLOSE_UP.search(re.sub(r'^File:|\.\w+$', '', title)):
@@ -504,6 +669,9 @@ class PlaneFinder(Finder):
             when = text((meta.get('DateTimeOriginal') or {}).get('value'))
             year = re.search(r'(?:19|20)\d\d', when) or re.search(r'(?:19|20)\d\d', title) or re.search(r'(?:19|20)\d\d', ii.get('timestamp', ''))
             best.append((year.group(0) if year else '0000', ii.get('timestamp', ''), title, ii, meta, lic))
+        return best
+
+    def _keep(self, n, best):
         if not best:
             return {'state': 'none', 'at': time.time()}
         best.sort(key=lambda x: (x[0], x[1]), reverse=True)

@@ -62,7 +62,7 @@ const PLANE_PHOTOS_ON=!KIDS&&new URLSearchParams(location.search).get('planephot
 function planeAsk(e,d){const rows=Array.isArray(d.rows)?d.rows:[],get=l=>String(rows.find(x=>x&&x.label===l)?.value||'').trim();
   const reg=get('Registration').toUpperCase().replace(/[^A-Z0-9-]/g,'');
   if(!/^[A-Z0-9]{1,2}-[A-Z0-9]{2,5}$|^[A-Z0-9]{3,7}$/.test(reg)||!/[A-Z]/.test(reg))return null;
-  return {reg,url:'/api/v4/planephoto?reg='+encodeURIComponent(reg)+'&type='+encodeURIComponent(get('Aircraft').slice(0,80))+'&code='+encodeURIComponent(String(e.typeCode||'').slice(0,4))};}
+  return {reg,url:'/api/v4/planephoto?reg='+encodeURIComponent(reg)+'&type='+encodeURIComponent(get('Aircraft').slice(0,80))+'&code='+encodeURIComponent(String(e.typeCode||'').slice(0,4))+'&op='+encodeURIComponent((get('Operator')||get('Airline')).slice(0,40))};}   // 4.108.2: operator, for "one like it"
 function planePhoto(q,onFound,open){const key='p:'+q.reg,a=PHOTO_ANS.get(key);if(a)return a.state==='found'?a:null;
   PHOTO_ANS.set(key,{state:'looking'});askPhoto(q.reg,0,onFound,open,q.url,key);return null;}
 function realPhoto(box3,a,reg,what){
@@ -73,7 +73,9 @@ function realPhoto(box3,a,reg,what){
   if(credit.tagName==='A'){credit.href=a.page;credit.target='_blank';credit.rel='noopener noreferrer';}
   credit.textContent='Photo: '+String(a.credit||'unknown').slice(0,80)+(a.licence?', '+String(a.licence).slice(0,30):'')+', via Wikimedia Commons';
   img.addEventListener('error',()=>{img.replaceWith(old);credit.remove();box3.className=was;if(tag)box3.prepend(tag);},{once:true});   // back to Rob's picture
-  old.replaceWith(img);tag?.remove();box3.classList.remove('unknown');box3.classList.add('real');box3.append(credit);}if(LOOK2)document.documentElement.classList.add('look2');
+  old.replaceWith(img);tag?.remove();box3.classList.remove('unknown');box3.classList.add('real');box3.append(credit);
+  // 4.108.2 (Rob 26 Nov 18:21 "yes a"): a photo of ANOTHER plane like it always says so, on the picture
+  if(typeof a.like==='string'&&a.like){const t=document.createElement('span');t.className='pic-tag like-tag';t.textContent=a.like.slice(0,90);box3.append(t);img.alt='Photo of another aircraft like '+(a.plate||reg);}}if(LOOK2)document.documentElement.classList.add('look2');
 if(KIDS){document.documentElement.classList.add('kids-view');}
 if(PLANES){document.documentElement.classList.add('planes-view');}
 if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':PLANES?'TPA Planes · Live UK aircraft on a map':'TPA · Live UK trains, buses and planes on one map';

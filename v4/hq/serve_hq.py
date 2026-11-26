@@ -39,7 +39,7 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.108.0'
+HQ_VERSION = '4.108.2'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
@@ -60,8 +60,31 @@ PHOTOS = PHOTOS_MOD.Finder(os.environ.get('TPA_HQ_PHOTO_DIR', '').strip() or (Pa
                            api=_photo_api or PHOTOS_MOD.API)
 # 4.108.0 (Rob 26 Nov 17:28 "yeah this sounds excellent!"): real plane photos by registration, the same way, own folder;
 # only with ?planephotos=1 until Rob has seen them. See photos.PlaneFinder.
+def plane_type_name(pid):   # 4.108.1: the box's "Aircraft" line for a plane, from the planes engine (warm-up only); 4.108.2: and its operator
+    raw,_=engine_get('air','/details?'+urlencode({'id':pid}),262144,10)
+    rows={str(r.get('label','')):str(r.get('value','')) for r in (json.loads(raw).get('rows') or []) if isinstance(r,dict)}
+    return rows.get('Aircraft',''),rows.get('Operator') or rows.get('Airline') or ''
 PLANE_PHOTOS = PHOTOS_MOD.PlaneFinder(os.environ.get('TPA_HQ_PLANE_PHOTO_DIR', '').strip() or (Path(tempfile.gettempdir()) / 'tpa-plane-photos'),
-                                      api=_photo_api or PHOTOS_MOD.API)
+                                      api=_photo_api or PHOTOS_MOD.API, namer=plane_type_name)
+PLANE_WARM_EVERY = float(os.environ.get('TPA_HQ_PLANE_WARM_EVERY', '') or 300)   # tests only: shorter
+def plane_warm_loop():   # 4.108.1 (Rob 26 Nov 18:11 "pre look up is a good idea"): every 5 min, planes over the UK not yet looked up
+    time.sleep(min(45, PLANE_WARM_EVERY))
+    while True:
+        try:
+            raw,_=engine_get('air','/snapshot?west=-12&south=48&east=5&north=61.5',4_000_000,10)
+            planes=[]
+            for e in json.loads(raw).get('entities') or []:
+                if not isinstance(e,dict):continue
+                # the planes engine's label is "<flight> · <registration>", or one of them alone (air label_for): the
+                # second part when there are two; one alone only if it has a hyphen (G-EZTZ, never a flight like EZY12AB)
+                parts=[p.strip() for p in str(e.get('label','')).split(' · ')]
+                reg=parts[1] if len(parts)==2 else parts[0] if len(parts)==1 and '-' in parts[0] else ''
+                if not PHOTOS_MOD.reg_norm(reg):reg=''
+                if reg:planes.append((reg,e.get('id',''),e.get('typeCode','')))
+            PLANE_PHOTOS.warm(planes)
+        except Exception:
+            pass
+        time.sleep(PLANE_WARM_EVERY)
 def photo_warm_loop():   # 4.106.1: every 10 min, plates on the map never looked up join the slow background queue
     while True:
         time.sleep(30)
@@ -745,7 +768,7 @@ class HQHandler(SimpleHTTPRequestHandler):
                               'no-store' if ans['state']=='looking' else 'public, max-age=3600')
         if path=='/api/v4/planephoto':   # 4.108.0: a photo of this plane? (registration + the type the box shows)
             q=parse_qs(split.query)
-            ans=PLANE_PHOTOS.answer((q.get('reg') or [''])[0][:12],(q.get('type') or [''])[0][:80],(q.get('code') or [''])[0][:6])
+            ans=PLANE_PHOTOS.answer((q.get('reg') or [''])[0][:12],(q.get('type') or [''])[0][:80],(q.get('code') or [''])[0][:6],(q.get('op') or [''])[0][:40])
             return self.reply(200,json.dumps(ans,separators=(',',':')).encode('utf8'),'application/json; charset=utf-8',
                               'no-store' if ans['state']=='looking' else 'public, max-age=3600')
         if path.startswith('/api/v4/planephoto/img/'):
@@ -1015,6 +1038,7 @@ def serve(port=8775, lan=False):
     address=find_lan_ip() if lan else '127.0.0.1'
     threading.Thread(target=geoff_loop,daemon=True).start()   # 4.89.0
     threading.Thread(target=photo_warm_loop,daemon=True).start()   # 4.106.1: bus photos looked up ahead of clicks
+    if 'air' in ENGINES and 'air' not in PARKED:threading.Thread(target=plane_warm_loop,daemon=True).start()   # 4.108.1
     with HQServer((address,port),HQHandler) as server:
         url=f'http://{address}:{port}/'
         print('\n'+'='*68,flush=True)
