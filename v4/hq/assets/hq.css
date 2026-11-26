@@ -663,3 +663,5 @@ a.pic-credit:hover{text-decoration:underline}
 .map-controls .sat-toggle{width:auto;min-width:44px;padding:0 9px;font-size:12px;font-weight:700;letter-spacing:0}
 .map-controls .sat-toggle[aria-pressed="true"]{color:var(--amber,#ffb000)}
 body.sat-on .leaflet-pane.leaflet-satPhotos-pane{background:#0b1220}
+/* 4.110.1 (live check 21:48): Leaflet blends tiles with plus-lighter, which left faint light lines between photo tiles */
+.leaflet-container .leaflet-satPhotos-pane img.leaflet-tile,.leaflet-container .leaflet-satLabels-pane img.leaflet-tile{mix-blend-mode:normal}

@@ -2768,7 +2768,9 @@ function setupSatellite(sat){
     map.getPane('satPhotos').style.pointerEvents='none';map.getPane('satLabels').style.pointerEvents='none';}
   const credit=String(sat.attribution||'Powered by Esri').slice(0,300);
   satLayers=[L.tileLayer(sat.imagery,{pane:'satPhotos',maxZoom:19,maxNativeZoom:19,referrerPolicy:'origin',crossOrigin:false,attribution:credit,className:'sat-photos'})];
-  if(labelsOk)satLayers.push(L.tileLayer(sat.labels,{pane:'satLabels',maxZoom:19,maxNativeZoom:19,referrerPolicy:'origin',className:'sat-labels'}));
+  // 4.110.1 (live check 21:48): the names come as 512-pixel tiles; drawn as 256 the text was half size. 512 + one zoom
+  // level down puts them at normal size, in the right place (checked over Hull).
+  if(labelsOk)satLayers.push(L.tileLayer(sat.labels,{pane:'satLabels',tileSize:512,zoomOffset:-1,maxZoom:19,maxNativeZoom:19,referrerPolicy:'origin',className:'sat-labels'}));
   const box=document.querySelector('.map-controls');if(!box||document.getElementById('sat-toggle'))return;
   const btn=document.createElement('button');btn.type='button';btn.id='sat-toggle';btn.className='sat-toggle';
   const show=()=>{btn.textContent=satOn?'Map':'Satellite';btn.title=satOn?'Back to the street map':'Show satellite photos';btn.setAttribute('aria-pressed',satOn?'true':'false');};
