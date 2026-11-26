@@ -22,7 +22,7 @@
       "TPA is for interest only. Positions can be late, missing or wrong, so please don't rely on it for travel plans or anything safety-related; check with your operator.",
       "Your privacy: no accounts, no cookies, no adverts and no tracking. TPA doesn't record who you are or where you are; your browser only remembers small settings, like having seen this screen. The street map loads from OpenFreeMap, which sets no cookies.",
       "If you email us, we only use your message to reply. Get in touch: enquiries@tpalive.co.uk",
-      "Built from open data: Department for Transport (bus locations, timetables and stops), Transport for London (bus fleet), Network Rail, FlyItalyADSB, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
+      "Built from open data: Department for Transport (bus locations, timetables and stops), bus fleet lists (TfL and bus companies), Wikimedia Commons (bus photos), Network Rail, FlyItalyADSB, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
       "© 2026 Rob Burnett"
     ],
     "enterLabel": "Let's go!",
@@ -103,6 +103,17 @@
       "text": "Coming soon.",
       "url": "",
       "status": "Coming soon"
+    },
+    {
+      "layer": "Bus types outside London",
+      "text": "East Yorkshire buses: East Yorkshire Motor Services' published fleet list. Nottingham buses: Nottingham City Transport's published fleet list. They tell us which kind of bus each one is and its number plate. With thanks.",
+      "status": "In use"
+    },
+    {
+      "layer": "Bus photos",
+      "text": "Real photos of a bus, where one exists, come from Wikimedia Commons, matched by its number plate. Each one is free to reuse and is credited under the photo with the photographer's name and licence; it is kept and shown from TPA's own address, so your browser never contacts another site. Where there is no photo, TPA's own picture is shown.",
+      "url": "https://commons.wikimedia.org/",
+      "status": "In use"
     },
     {
       "layer": "Train and bus pictures, icons",

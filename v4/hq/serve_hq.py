@@ -39,7 +39,7 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.106.2'
+HQ_VERSION = '4.107.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
@@ -50,7 +50,8 @@ GEOFF = GEOFF_MOD.Picker(os.environ.get('TPA_HQ_GEOFF_TILES', '').strip() or TIL
                          Path(tempfile.gettempdir()) / 'geoff-today.json')
 # 4.106.0 (Rob 24 Nov 23:12-23:39): real bus photos by number plate from Wikimedia Commons (free, credited), kept in our own
 # folder and served from our own address; Rob's pictures where there is none. See photos.py. TPA_HQ_PHOTO_API: tests only
-# (a pretend Commons on 127.0.0.1). The page only asks with ?photos=1 until Rob has seen it.
+# (a pretend Commons on 127.0.0.1). 4.107.0: shown to everyone (?photos=0 turns them off); never for a plate that may
+# have been on another bus (photos.trusted).
 import photos as PHOTOS_MOD   # noqa: E402
 _photo_api = os.environ.get('TPA_HQ_PHOTO_API', '').strip()
 if _photo_api and not re.match(r'^http://127\.0\.0\.1:\d+/', _photo_api):

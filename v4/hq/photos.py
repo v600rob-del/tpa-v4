@@ -18,6 +18,11 @@ How it works:
     gave up after ~24 s while the queue was long): a plate someone has just clicked goes to the FRONT of the queue; and
     warm() looks up, slowly in the background (one every WARM_GAP_S), the plates of buses on the map that have never been
     looked up, so most answers are ready before anyone clicks.
+  - 4.107.0 (Rob 26 Nov 16:36 "yes": photos for everyone, with the wrong-bus fix first): personalised plates move from bus
+    to bus (A1EYD's Commons photo is an older East Yorkshire vehicle, no. 61; today A1EYD is double decker 20096). So only
+    plates that stay with one bus get a photo (trusted()): today's plates (LK65 ENW) and the long serial plates new buses
+    are given (LTZ 1495: three letters, four digits). Older-style and short plates (A1 EYD, A123 BCD, ABC 123D, EYM 1)
+    are never looked up and never shown - TPA's own picture instead - including any photo already kept for one.
 """
 from __future__ import annotations
 
@@ -51,6 +56,14 @@ def norm(reg) -> str:
     """'lk65 enw' -> 'LK65ENW'; '' unless it looks like a plate (2-8 letters and digits, with both)."""
     s = re.sub(r'[^A-Z0-9]', '', str(reg or '').upper())
     return s if 2 <= len(s) <= 8 and re.search(r'\d', s) and re.search(r'[A-Z]', s) else ''
+
+
+SERIAL = re.compile(r'^[A-Z]{3}\d{4}$')              # 4.107.0: LTZ1495 - issued in a series to new buses
+
+
+def trusted(n: str) -> bool:
+    """4.107.0: is a photo found by this plate safely THIS bus? Today's plates and long serial plates only (see above)."""
+    return bool(STD.match(n) or SERIAL.match(n))
 
 
 RULES = 2       # 4.106.2: older "none" answers (made before older plates were matched) are looked up again
@@ -125,7 +138,7 @@ class Finder:
     # ---- what the page asks
     def answer(self, reg) -> dict:
         n = norm(reg)
-        if not n:
+        if not n or not trusted(n):                     # 4.107.0: a plate that may have been on another bus: no photo
             return {'state': 'none'}
         rec = self.record(n)
         now = time.time()
@@ -141,7 +154,7 @@ class Finder:
         return {'state': 'looking'}
 
     def public(self, n, rec) -> dict:
-        if rec.get('state') != 'found':
+        if rec.get('state') != 'found' or not trusted(n):
             return {'state': 'none'}
         return {'state': 'found', 'src': '/api/v4/photo/img/' + rec['file'], 'credit': rec.get('credit', ''),
                 'licence': rec.get('licence', ''), 'page': rec.get('page', ''), 'plate': pretty(n)}
@@ -164,7 +177,7 @@ class Finder:
         added = 0
         for reg in regs:
             n = norm(reg)
-            if not n:
+            if not n or not trusted(n):                 # 4.107.0
                 continue
             rec = self.record(n)
             if rec and time.time() - float(rec.get('at', 0)) <= (FOUND_KEEP_S if rec.get('state') == 'found' else NONE_KEEP_S) \

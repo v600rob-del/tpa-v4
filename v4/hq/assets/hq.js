@@ -33,8 +33,9 @@ const LOOK2=!KIDS&&new URLSearchParams(location.search).get('look')!=='1';
 // 4.106.0 (Rob 24 Nov 23:12-23:39: "adding real bus pictures to our windows first, mine as a fallback ... matched by the
 // registration number"; "Sticking with free"): a real photo of THIS bus from Wikimedia Commons (found by its number plate
 // by our own server, kept and served from our own address, with the photographer's credit); Rob's picture otherwise.
-// Preview only (?photos=1) until Rob has seen it. Each plate is asked about once per visit.
-const PHOTOS_ON=!KIDS&&new URLSearchParams(location.search).get('photos')==='1',PHOTO_ANS=new Map();
+// 4.107.0 (Rob 26 Nov 16:36 "yes"): for everyone now (was a preview with ?photos=1); ?photos=0 turns them off. Each plate
+// is asked about once per visit. The server never gives a photo for a plate that may have been on another bus (photos.py).
+const PHOTOS_ON=!KIDS&&new URLSearchParams(location.search).get('photos')!=='0',PHOTO_ANS=new Map();
 function busPlate(e,d){
   const row=(Array.isArray(d.rows)?d.rows:[]).find(x=>x&&x.label==='Number plate');
   const v=String(row?.value||'').toUpperCase().replace(/[^A-Z0-9]/g,'');
@@ -220,7 +221,8 @@ function finished(e){return typeof e.label==='string'&&/(^|· )terminated at /.t
 // 4.98.0 (Rob 23 Nov 23:24, Hull Bus 10 with a report 3-6 min old "vanished about every 6 s"; 24 Nov "Yes, preview
 // first"): with ?lost=1, a vehicle that has faded away stays away until it reports again. Before, moving cleared its
 // search clock and the next pause faded it away at once, so a stale bus still carried on by its timetable blinked out and in.
-const LOST_STAY=new URLSearchParams(location.search).get('lost')==='1',GONE_ON=new Map();
+// 4.107.0 (Rob 26 Nov 16:36 "yes"): for everyone now; ?lost=0 is the way back to the old behaviour.
+const LOST_STAY=new URLSearchParams(location.search).get('lost')!=='0',GONE_ON=new Map();
 function lostState(e,k,keepIt,pos,now){
   if(!isLost(e)||finished(e)){SEARCHING.delete(k);GONE_ON.delete(k);return 0;}
   if(LOST_STAY&&!keepIt&&GONE_ON.get(k)===e.observedAt)return 2;
@@ -400,7 +402,7 @@ function planeShadow(art,ft){
 // Unlocked, the map may leave the UK box and the planes engine is asked with world=1: it then also fetches planes round
 // wherever the visitor looks (rationed by the engine). Nothing is saved: a refresh or a new visit is the UK again.
 // Five more clicks lock it again. Not advertised anywhere.
-let WORLD_PLANES=false,UK_LIMITS=null,eggClicks=[];const WORLD_MIN_ZOOM=2;
+let WORLD_PLANES=false,UK_LIMITS=null,eggClicks=[];const WORLD_MIN_ZOOM=2;const PLACE_AWAY={was:null,shown:null};   // 4.107.0
 function setWorldPlanes(on){
   if(!map||WORLD_PLANES===on)return;
   WORLD_PLANES=on;
@@ -2365,18 +2367,29 @@ const SLOT_MS=4000;   // = serve_hq.SHARE_SECONDS
 // is inside the asked area, but a plane is drawn ahead of its report, so close up a fast one dropped out of the data and its
 // icon went. While a plane is followed, planes are asked for at least FOLLOW_AIR_DEG (~45 km) round the middle of the screen.
 const FOLLOW_AIR_DEG=0.4;
-function viewBox(minDeg){
+// 4.107.0 (noticed 24 Nov, Rob 26 Nov "yes"): on a big or very wide screen the whole-UK view, with its margin, is more than
+// 18 degrees tall, and the planes engine (air WIDE_VIEW_SPAN) answered "Zoom in to see aircraft" with no planes at all. The UK
+// planes only ever cover the UK's two circles (air NATIONAL: 48-61 N, 12 W-5 E), so a view asking for more than that limit asks for
+// just that part. Views that worked before are asked exactly as before; the world egg is never trimmed.
+const AIR_UK_BOX={s:48,w:-12,n:61.5,e:5},AIR_MAX_SPAN=18;
+function viewBox(minDeg,trim){
   let w=-12.5,s=49,e=4.5,n=61.8;
   if(map&&typeof map.getBounds==='function'){const b=map.getBounds().pad(0.2);w=b.getWest();s=b.getSouth();e=b.getEast();n=b.getNorth();
     if(minDeg&&n-s<minDeg){const c=b.getCenter(),k=1/Math.max(0.2,Math.cos(c.lat*Math.PI/180));   // the same distance east-west
       s=Math.min(s,c.lat-minDeg/2);n=Math.max(n,c.lat+minDeg/2);w=Math.min(w,c.lng-minDeg*k/2);e=Math.max(e,c.lng+minDeg*k/2);}}
   s=clamp(s,-85,85);n=clamp(n,-85,85);w=clamp(w,-180,180);e=clamp(e,-180,180);
+  let out=roundToCells(w,s,e,n);
+  if(trim&&out.n-out.s>AIR_MAX_SPAN){const S=Math.max(s,trim.s),N=Math.min(n,trim.n),W=Math.max(w,trim.w),E=Math.min(e,trim.e);if(S<N&&W<E)out=roundToCells(W,S,E,N);}   // 4.107.0
+  return out;
+}
+function roundToCells(w,s,e,n){   // the box rounded out to whole cells, so viewers looking at nearly the same place ask the same question
   const g=Math.min(4,Math.max(1/1024,2**Math.floor(Math.log2(Math.max(n-s,1e-4)/4)))),gl=g*2;
   s=Math.max(-85,Math.floor(s/g)*g);n=Math.min(85,Math.ceil(n/g)*g);w=Math.max(-180,Math.floor(w/gl)*gl);e=Math.min(180,Math.ceil(e/gl)*gl);
   return {w,s,e,n,g};
 }
-function viewQuery(minDeg){
-  const {w,s,e,n,g}=viewBox(minDeg),f=v=>v.toFixed(4);
+window.TPA_HQ_AIR_ASK=()=>({plain:viewQuery(0).replace(/&t=\d+$/,''),air:viewQuery(0,WORLD_PLANES?null:AIR_UK_BOX).replace(/&t=\d+$/,'')});   // 4.107.0 (checks only)
+function viewQuery(minDeg,trim){
+  const {w,s,e,n,g}=viewBox(minDeg,trim),f=v=>v.toFixed(4);
   // and the 4-second time slot by the server's clock: a new question every slot, so a kept answer is never old,
   // however long a cache in between might keep it (Cloudflare's free plan may keep things for hours)
   return `west=${f(w)}&south=${f(s)}&east=${f(e)}&north=${f(n)}&cell=${g}&t=${Math.floor(serverNow()/SLOT_MS)}`;
@@ -2502,7 +2515,7 @@ async function getComponent(id){
     if(id==='bus'&&BUS_TILES.on){try{raw=await busTileFrame();BUS_TILES.used=true;}catch(_){raw=null;BUS_TILES.used=false;}}
     // 4.65.0: trains the same way (rail 1.6.0); the old per-visitor answer stays as the way back (?railtiles=0, or files missing/old)
     if(id==='rail'&&RAIL_TILES.on){try{raw=await railTileFrame();RAIL_TILES.used=true;}catch(_){raw=null;RAIL_TILES.used=false;}}
-    const f=checkFrame(id,raw||await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery(id==='air'&&follow&&follow.comp==='air'?FOLLOW_AIR_DEG:0)}${id==='air'&&WORLD_PLANES?'&world=1':''}`,1200000,6000));   // 4.85.0
+    const f=checkFrame(id,raw||await requestBounded(`/api/v4/components/${id}/snapshot?${viewQuery(id==='air'&&follow&&follow.comp==='air'?FOLLOW_AIR_DEG:0,id==='air'&&!WORLD_PLANES?AIR_UK_BOX:null)}${id==='air'&&WORLD_PLANES?'&world=1':''}`,1200000,6000));   // 4.85.0
     {const a=SPEED.ask[id]||(SPEED.ask[id]={n:0,sum:0,last:0});a.last=performance.now()-asked;a.n++;a.sum+=a.last;if(f.entities.length){speedMark(id+' shown');hasItems[id]=true;}}
     if(seq<(seqDone[id]||0))return;
     seqDone[id]=seq;
@@ -2657,6 +2670,13 @@ try{
   try{const v=JSON.parse(sessionStorage.getItem('tpa-view')||'null');
     if(v&&validNum(v.lat)&&validNum(v.lon)&&validNum(v.z)&&v.z>=3&&v.z<=18){map.setView([v.lat,v.lon],v.z,{animate:false});$('map-place').textContent='';}}catch(_){}
   map.on('moveend',()=>{try{const c=map.getCenter();sessionStorage.setItem('tpa-view',JSON.stringify({lat:+c.lat.toFixed(5),lon:+c.lng.toFixed(5),z:map.getZoom()}));}catch(_){}});
+  // 4.107.0 (noticed 24 Nov, Rob 26 Nov "yes"): the place name stayed "United Kingdom" while the plane egg showed the whole
+  // world (or anywhere else). Off the UK it now says "The world" when zoomed right out, and nothing elsewhere; back over the
+  // UK, the name it had comes back (unless something else has written a new one meanwhile).
+  map.on('moveend',()=>{try{const p=$('map-place'),c=map.getCenter(),b=map.getBounds();if(!p)return;
+    const far=WORLD_PLANES&&b.getEast()-b.getWest()>=120,away=far||!inBox(c.lng,c.lat,UK_BOX),mine=PLACE_AWAY.shown!==null&&p.textContent.trim().toLowerCase()===PLACE_AWAY.shown.toLowerCase();   // (the new-look words may re-case it)
+    if(away){if(!mine||PLACE_AWAY.was===null)PLACE_AWAY.was=mine?PLACE_AWAY.was:p.textContent;PLACE_AWAY.shown=far?'THE WORLD':'';p.textContent=PLACE_AWAY.shown;}
+    else if(PLACE_AWAY.was!==null){if(mine)p.textContent=PLACE_AWAY.was;PLACE_AWAY.was=null;PLACE_AWAY.shown=null;}}catch(_){}});
   // 4.38.0: zooming out stops once the whole UK box is on screen (a phone stops one step further out than a PC).
   const fitMinZoom=()=>{try{if(!ukBounds||typeof map.getBoundsZoom!=='function')return;minZ=clamp(map.getBoundsZoom(ukBounds,false),3,10);if(typeof map.setMinZoom==='function'&&!WORLD_PLANES)map.setMinZoom(minZ);}catch(_){}};
   fitMinZoom();if(typeof map.on==='function')map.on('resize',fitMinZoom);
