@@ -2754,8 +2754,34 @@ try{
   fetch('/hq-basemap',{cache:'no-store'}).then(r=>r.ok?r.json():null).catch(()=>null).then(cfg=>{
   const direct=cfg&&cfg.mode==='direct'&&cfg.style==='https://tiles.openfreemap.org/styles/liberty';
   window.TPA_BASEMAP.attach(map,{style:direct?cfg.style:via,fallbackStyle:direct?via:null,
-    attribution:'<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> | <a href="https://openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'});});
+    attribution:'<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> | <a href="https://openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'});
+  setupSatellite(cfg&&cfg.sat);});
 }catch(e){state.renderer='fallback';reportBrowser('map-constructor-error','leaflet-init',String(e?.message||e));map?.remove?.();map=null;diagnose();}}
+// 4.110.0 (Rob 26 Nov 21:03-21:08, satellite photos from Esri; preview ?sat=1 until Rob has seen it): a "Satellite" button
+// by the zoom buttons swaps the street map for photos with road and place names on top; vehicles, trails and traffic stay
+// above. Tiles come straight from Esri (like the street map from OpenFreeMap), sending only the site's name, never the page.
+const SAT_PREVIEW=new URLSearchParams(location.search).get('sat')==='1';let satLayers=null,satOn=false;
+function setupSatellite(sat){
+  if(!SAT_PREVIEW||!map||!sat||typeof sat.imagery!=='string'||!/^https:\/\/ibasemaps-api\.arcgis\.com\//.test(sat.imagery))return;
+  const labelsOk=typeof sat.labels==='string'&&/^https:\/\/static-map-tiles-api\.arcgis\.com\//.test(sat.labels);
+  if(!map.getPane('satPhotos')){map.createPane('satPhotos').style.zIndex=390;map.createPane('satLabels').style.zIndex=395;   // under trails/traffic (400) and vehicles
+    map.getPane('satPhotos').style.pointerEvents='none';map.getPane('satLabels').style.pointerEvents='none';}
+  const credit=String(sat.attribution||'Powered by Esri').slice(0,300);
+  satLayers=[L.tileLayer(sat.imagery,{pane:'satPhotos',maxZoom:19,maxNativeZoom:19,referrerPolicy:'origin',crossOrigin:false,attribution:credit,className:'sat-photos'})];
+  if(labelsOk)satLayers.push(L.tileLayer(sat.labels,{pane:'satLabels',maxZoom:19,maxNativeZoom:19,referrerPolicy:'origin',className:'sat-labels'}));
+  const box=document.querySelector('.map-controls');if(!box||document.getElementById('sat-toggle'))return;
+  const btn=document.createElement('button');btn.type='button';btn.id='sat-toggle';btn.className='sat-toggle';
+  const show=()=>{btn.textContent=satOn?'Map':'Satellite';btn.title=satOn?'Back to the street map':'Show satellite photos';btn.setAttribute('aria-pressed',satOn?'true':'false');};
+  btn.addEventListener('click',()=>setSatellite(!satOn,show));box.append(btn);show();
+  let was=false;try{was=sessionStorage.getItem('tpa-sat')==='1';}catch(_){}
+  if(was)setSatellite(true,show);}
+function setSatellite(on,show){if(!satLayers||!map)return;satOn=!!on;
+  for(const l of satLayers){if(satOn)l.addTo(map);else map.removeLayer(l);}
+  document.body.classList.toggle('sat-on',satOn);
+  for(const el of document.querySelectorAll('.leaflet-gl-layer'))el.style.visibility=satOn?'hidden':'';   // the street map rests meanwhile
+  liveCredit();
+  try{sessionStorage.setItem('tpa-sat',satOn?'1':'0');}catch(_){}show&&show();}
+window.TPA_HQ_SAT=()=>({available:!!satLayers,on:satOn});   // checks only
 const MAP_PIECE_ERRORS=[];Object.defineProperty(window,'TPA_MAP_PIECE_ERRORS',{value:()=>MAP_PIECE_ERRORS.slice(),writable:false});
 window.TPA_HQ_VECTOR_READY=()=>{speedMark('street map drawn');ready=true;state.renderer='leaflet-maplibre';state.mapErrors=0;
   document.body.classList.add('vector-ready');notice.classList.add('hidden');syncView();};
@@ -2943,11 +2969,11 @@ const shortCredit=Object.create(null);
 function liveCredit(){const box=$('map-credit');if(!box)return;
   const live=IDS.filter(id=>state.live[id]&&state.visible[id]&&!state.parked[id]&&(state.status[id]==='ready'||state.status[id]==='stale'))
     .map(id=>shortCredit[layerName(id)]).filter((c,i,all)=>c&&all.indexOf(c)===i);   // 4.54.0: each source once (bus stops and stations share theirs)
-  const text='© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'+(live.length?' · Live data: '+live.join(' · '):'');
+  const text=(satOn?'Satellite: Powered by Esri, Esri, Maxar, Earthstar Geographics · ':'')+'© OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors'+(live.length?' · Live data: '+live.join(' · '):'');   // 4.110.0
   if(box.textContent!==text){box.textContent=text;box.title=text;}
   // 4.66.0: the small credits button - the street map's credit, and TomTom's while the traffic is on the map
   const t=$('credit-toggle');if(t&&!KIDS){const road=state.live.road&&state.visible.road&&!state.parked.road&&(state.status.road==='ready'||state.status.road==='stale');
-    const short='© OpenStreetMap'+(road?' · © TomTom':'');if(t.dataset.short!==short){t.dataset.short=short;t.textContent=short;}}}   // 4.65.1: the whole line on hover (PC: one line, "..." if long)
+    const short=(satOn?'Esri · ':'')+'© OpenStreetMap'+(road?' · © TomTom':'');if(t.dataset.short!==short){t.dataset.short=short;t.textContent=short;}}}   // 4.65.1: the whole line on hover (PC: one line, "..." if long)
 // ---- 4.11.0 Kids mode ------------------------------------------------------------------------------------
 const KID_WORD={bus:['bus','buses'],rail:['train','trains'],air:['plane','planes']};
 let kidsMuted=false;try{kidsMuted=localStorage.getItem('tpa-kids-muted')==='1';}catch(_){}

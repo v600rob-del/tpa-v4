@@ -39,7 +39,7 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.109.0'
+HQ_VERSION = '4.110.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
@@ -60,6 +60,18 @@ PHOTOS = PHOTOS_MOD.Finder(os.environ.get('TPA_HQ_PHOTO_DIR', '').strip() or (Pa
                            api=_photo_api or PHOTOS_MOD.API)
 # 4.108.0 (Rob 26 Nov 17:28 "yeah this sounds excellent!"): real plane photos by registration, the same way, own folder;
 # 4.109.0 (Rob 19:14): for everyone (?planephotos=0 turns them off). See photos.PlaneFinder.
+# 4.110.0 (Rob 26 Nov 21:03-21:08 "is there any way of introducing the satellite image map"; "ok esri it is for a start"):
+# satellite photos from Esri (ArcGIS Location Platform free tier: 2M basemap tiles a month, paying switched off). The map
+# key lives only on the server (TPA_HQ_SAT_KEY, systemd drop-in tpa-hq.service.d/satellite.conf), never in the code; it
+# is locked at Esri to tpalive.co.uk, and the page sends just the site's name to Esri ("origin" referrer) so the lock works.
+SAT_KEY=os.environ.get('TPA_HQ_SAT_KEY','').strip()
+if not re.fullmatch(r'[A-Za-z0-9._-]{20,600}',SAT_KEY):SAT_KEY=''
+SAT_HOSTS='https://ibasemaps-api.arcgis.com https://static-map-tiles-api.arcgis.com'
+def sat_config():
+    if not SAT_KEY:return None
+    return {'imagery':'https://ibasemaps-api.arcgis.com/arcgis/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}?token='+SAT_KEY,
+            'labels':'https://static-map-tiles-api.arcgis.com/arcgis/rest/services/static-basemap-tiles-service/v1/arcgis/imagery/labels/static/tile/{z}/{y}/{x}?token='+SAT_KEY,
+            'attribution':'Powered by <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> | Esri, Maxar, Earthstar Geographics, and the GIS User Community'}
 def plane_type_name(pid):   # 4.108.1: the box's "Aircraft" line for a plane, from the planes engine (warm-up only); 4.108.2: and its operator
     raw,_=engine_get('air','/details?'+urlencode({'id':pid}),262144,10)
     rows={str(r.get('label','')):str(r.get('value','')) for r in (json.loads(raw).get('rows') or []) if isinstance(r,dict)}
@@ -717,7 +729,7 @@ class HQHandler(SimpleHTTPRequestHandler):
             ('Referrer-Policy','same-origin'),('Cross-Origin-Resource-Policy','same-origin'),
             ('Permissions-Policy','geolocation=(), camera=(), microphone=()'),
             ('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-             f"img-src 'self' data: blob:{' '+OFM if BASEMAP=='direct' else ''}; font-src 'self'; "
+             f"img-src 'self' data: blob:{' '+OFM if BASEMAP=='direct' else ''}{' '+SAT_HOSTS if SAT_KEY else ''}; font-src 'self'; "
              f"connect-src 'self'{' '+OFM if BASEMAP=='direct' else ''}; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")):
             self.send_header(name,value)
         # 4.1.0: the page's own files are re-checked on every visit (a quick "not modified"
@@ -915,8 +927,9 @@ class HQHandler(SimpleHTTPRequestHandler):
                 return self.send_error(502,'Pinned map asset unavailable; check hq-map-status')
         if path=='/hq-basemap':
             via='/basemap/openfreemap/styles/liberty'
-            return self.json_reply(200,{'mode':BASEMAP,'style':OFM+'/styles/liberty' if BASEMAP=='direct' else via,
-                                        'fallback':via if BASEMAP=='direct' else None})
+            ans={'mode':BASEMAP,'style':OFM+'/styles/liberty' if BASEMAP=='direct' else via,'fallback':via if BASEMAP=='direct' else None}
+            if SAT_KEY:ans['sat']=sat_config()   # 4.110.0: only when the server has the Esri key
+            return self.json_reply(200,ans)
         if path.startswith('/basemap/openfreemap/'):
             relative=path[len('/basemap/openfreemap'):]
             if split.query or not allowed_map_path(relative):
