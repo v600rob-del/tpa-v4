@@ -2757,10 +2757,13 @@ try{
     attribution:'<a href="https://openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> | <a href="https://openmaptiles.org/" target="_blank" rel="noopener">&copy; OpenMapTiles</a> | <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>'});
   setupSatellite(cfg&&cfg.sat);});
 }catch(e){state.renderer='fallback';reportBrowser('map-constructor-error','leaflet-init',String(e?.message||e));map?.remove?.();map=null;diagnose();}}
+// 4.111.0 (Rob 21:53 "thats great!!"): for everyone; ?sat=0 hides the button. Credits stay in the credits panel (Rob:
+// "keep all the credits together somewhere and not taking over the screen"); on the map only the small © line says Esri.
 // 4.110.0 (Rob 26 Nov 21:03-21:08, satellite photos from Esri; preview ?sat=1 until Rob has seen it): a "Satellite" button
 // by the zoom buttons swaps the street map for photos with road and place names on top; vehicles, trails and traffic stay
 // above. Tiles come straight from Esri (like the street map from OpenFreeMap), sending only the site's name, never the page.
-const SAT_PREVIEW=new URLSearchParams(location.search).get('sat')==='1';let satLayers=null,satOn=false;
+const SAT_PREVIEW=!KIDS&&new URLSearchParams(location.search).get('sat')!=='0';   // not in Kids (its map has no credit line)
+let satLayers=null,satOn=false;
 function setupSatellite(sat){
   if(!SAT_PREVIEW||!map||!sat||typeof sat.imagery!=='string'||!/^https:\/\/ibasemaps-api\.arcgis\.com\//.test(sat.imagery))return;
   const labelsOk=typeof sat.labels==='string'&&/^https:\/\/static-map-tiles-api\.arcgis\.com\//.test(sat.labels);

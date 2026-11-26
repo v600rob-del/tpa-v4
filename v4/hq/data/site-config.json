@@ -20,7 +20,7 @@
     ],
     "smallPrint": [
       "TPA is for interest only. Positions can be late, missing or wrong, so please don't rely on it for travel plans or anything safety-related; check with your operator.",
-      "Your privacy: no accounts, no cookies, no adverts and no tracking. TPA doesn't record who you are or where you are; your browser only remembers small settings, like having seen this screen. The street map loads from OpenFreeMap, which sets no cookies.",
+      "Your privacy: no accounts, no cookies, no adverts and no tracking. TPA doesn't record who you are or where you are; your browser only remembers small settings, like having seen this screen. The street map loads from OpenFreeMap (no cookies); satellite photos, only if you choose them, from Esri.",
       "If you email us, we only use your message to reply. Get in touch: enquiries@tpalive.co.uk",
       "Built from open data: Department for Transport (bus locations, timetables and stops), bus fleet lists (TfL and bus companies), Wikimedia Commons (photos), Network Rail, FlyItalyADSB, ADSB.lol, OpenStreetMap and TomTom. Full details under Data sources & credits.",
       "© 2026 Rob Burnett"
@@ -47,6 +47,12 @@
       "layer": "Map",
       "text": "Map © OpenFreeMap · © OpenMapTiles · © OpenStreetMap contributors (ODbL). The street map loads straight from OpenFreeMap, which sees your internet address as any website would and sets no cookies.",
       "url": "https://www.openstreetmap.org/copyright",
+      "status": "In use"
+    },
+    {
+      "layer": "Satellite photos",
+      "text": "Powered by Esri. Imagery: Esri, Maxar, Earthstar Geographics, and the GIS User Community; place names on the photos: Esri. Loaded only if you press Satellite: the photos then come straight from Esri, which sees your internet address as any website would and is told only that you are on tpalive.co.uk.",
+      "url": "https://www.esri.com/",
       "status": "In use"
     },
     {
