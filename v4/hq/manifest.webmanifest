@@ -1,0 +1,24 @@
+{
+  "id": "/",
+  "name": "TPA · Live UK transport map",
+  "short_name": "TPA",
+  "description": "Watch the UK's trains, buses and planes move on one free live map.",
+  "start_url": "/?app=1",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#080e1a",
+  "theme_color": "#080e1a",
+  "lang": "en-GB",
+  "dir": "ltr",
+  "categories": ["travel", "navigation"],
+  "icons": [
+    {"src": "/assets/app/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+    {"src": "/assets/app/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+    {"src": "/assets/app/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+  ],
+  "shortcuts": [
+    {"name": "Planes", "short_name": "Planes", "description": "The planes page", "url": "/planes?app=1",
+     "icons": [{"src": "/assets/app/icon-96.png", "sizes": "96x96", "type": "image/png"}]}
+  ]
+}

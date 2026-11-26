@@ -3186,3 +3186,13 @@ if(LOOK2){
   if(document.body)start();else addEventListener('DOMContentLoaded',start);
 }
 })();
+
+// 4.112.0: TPA as an installable app. Only when the page offers the app (the server adds the app file link: ?app=1
+// while in preview), the helper is switched on. Its only job is the "no internet" page; it never stores live data.
+(function(){
+  if(!('serviceWorker' in navigator))return;
+  if(!document.querySelector('link[rel="manifest"]'))return;
+  addEventListener('load',function(){
+    navigator.serviceWorker.register('/sw.js',{scope:'/'}).catch(function(){});
+  });
+})();

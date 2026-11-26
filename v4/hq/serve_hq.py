@@ -21,6 +21,7 @@ import zlib
 import json
 import mimetypes
 mimetypes.add_type('image/webp','.webp')   # 4.21.0: train pictures
+mimetypes.add_type('application/manifest+json','.webmanifest')   # 4.112.0: the app file
 import os
 import re
 import socket
@@ -39,7 +40,26 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.111.0'
+# 4.112.0 (Rob 26 Nov 23:37 "do step 1 now please"): TPA installable as an app (Chrome "Install", phones "Add to Home
+# Screen") - the app file, icons, and a helper whose only job is a "no internet" page (it never stores live data).
+PUBLIC |= {'/manifest.webmanifest', '/sw.js', '/offline.html'} | {'/assets/app/'+f for f in ('icon-192.png','icon-512.png','icon-96.png','icon-maskable-512.png','apple-touch-icon.png','favicon-32.png')}
+# Preview: the page only offers the app with ?app=1 (the installed app always opens with ?app=1). True = everyone.
+APP_FOR_ALL = False
+APP_TAGS = (b'<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials"/>\n'
+            b'  <link rel="icon" type="image/png" sizes="32x32" href="/assets/app/favicon-32.png"/>\n'
+            b'  <link rel="apple-touch-icon" href="/assets/app/apple-touch-icon.png"/>\n'
+            b'  <meta name="apple-mobile-web-app-title" content="TPA"/>\n'
+            b'  <meta name="mobile-web-app-capable" content="yes"/>\n'
+            b'  <meta name="apple-mobile-web-app-status-bar-style" content="black"/>\n</head>')
+
+
+def app_page(raw, query):
+    if APP_FOR_ALL or 'app=1' in query.split('&'):
+        return raw.replace(b'</head>', APP_TAGS, 1)
+    return raw
+
+
+HQ_VERSION = '4.112.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
@@ -729,7 +749,7 @@ class HQHandler(SimpleHTTPRequestHandler):
             ('Referrer-Policy','same-origin'),('Cross-Origin-Resource-Policy','same-origin'),
             ('Permissions-Policy','geolocation=(), camera=(), microphone=()'),
             ('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-             f"img-src 'self' data: blob:{' '+OFM if BASEMAP=='direct' else ''}{' '+SAT_HOSTS if SAT_KEY else ''}; font-src 'self'; "
+             f"img-src 'self' data: blob:{' '+OFM if BASEMAP=='direct' else ''}{' '+SAT_HOSTS if SAT_KEY else ''}; font-src 'self'; manifest-src 'self'; "
              f"connect-src 'self'{' '+OFM if BASEMAP=='direct' else ''}; worker-src 'self' blob:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'")):
             self.send_header(name,value)
         # 4.1.0: the page's own files are re-checked on every visit (a quick "not modified"
@@ -965,7 +985,7 @@ class HQHandler(SimpleHTTPRequestHandler):
             except (BrokenPipeError,ConnectionResetError):pass
             return
         if path in ('/','/planes') and DEFAULT_VIEW=='user':   # 4.94.0: the planes page too
-            raw=versioned_assets((ROOT/'index.html').read_bytes().replace(b'<html ',b'<html data-default-view="user" ',1))
+            raw=app_page(versioned_assets((ROOT/'index.html').read_bytes().replace(b'<html ',b'<html data-default-view="user" ',1)),split.query)
             # 4.76.0 (Rob 18 Nov 03:47 "i cant find anything on the map"; chose "Whole of Britain"): on the real site
             # addresses visitors start on the whole UK, not on Beverley (builders' tests on 127.0.0.1 keep Beverley)
             host=self.headers.get('Host','')
@@ -976,7 +996,7 @@ class HQHandler(SimpleHTTPRequestHandler):
             except (BrokenPipeError,ConnectionResetError):pass
             return
         if path in ('/','/user','/kids','/full','/planes','/index.html'):   # 4.75.1: the page itself, with version-tagged scripts
-            raw=versioned_assets((ROOT/'index.html').read_bytes())
+            raw=app_page(versioned_assets((ROOT/'index.html').read_bytes()),split.query)
             self.send_response(200);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(raw)))
             self.send_header('Cache-Control','no-cache');self._cache_set=True;self.end_headers()
             try:self.wfile.write(raw)
