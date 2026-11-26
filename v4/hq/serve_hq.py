@@ -39,7 +39,7 @@ PUBLIC = {'/', '/index.html', '/assets/hq.css', '/assets/tpa-theme.css', '/asset
 PUBLIC |= {'/assets/planes/shapes.json', '/assets/planes/SHAPES-LICENCE.txt'}   # 4.84.0: top-down shapes of unusual plane types (CC0)
 PUBLIC |= {'/assets/buses/geoff.webp'}   # 4.89.0: Geoff driving (Find Geoff)
 PUBLIC |= {'/assets/fonts/'+f for f in ('Barlow-Regular.woff','Barlow-Medium.woff','Barlow-SemiBold.woff','BarlowSemiCondensed-SemiBold.woff','BarlowSemiCondensed-Bold.woff','OFL.txt')}
-HQ_VERSION = '4.107.0'
+HQ_VERSION = '4.108.0'
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.
@@ -58,6 +58,10 @@ if _photo_api and not re.match(r'^http://127\.0\.0\.1:\d+/', _photo_api):
     raise SystemExit('TPA_HQ_PHOTO_API must point at 127.0.0.1 (testing only)')
 PHOTOS = PHOTOS_MOD.Finder(os.environ.get('TPA_HQ_PHOTO_DIR', '').strip() or (Path(tempfile.gettempdir()) / 'tpa-photos'),
                            api=_photo_api or PHOTOS_MOD.API)
+# 4.108.0 (Rob 26 Nov 17:28 "yeah this sounds excellent!"): real plane photos by registration, the same way, own folder;
+# only with ?planephotos=1 until Rob has seen them. See photos.PlaneFinder.
+PLANE_PHOTOS = PHOTOS_MOD.PlaneFinder(os.environ.get('TPA_HQ_PLANE_PHOTO_DIR', '').strip() or (Path(tempfile.gettempdir()) / 'tpa-plane-photos'),
+                                      api=_photo_api or PHOTOS_MOD.API)
 def photo_warm_loop():   # 4.106.1: every 10 min, plates on the map never looked up join the slow background queue
     while True:
         time.sleep(30)
@@ -733,12 +737,21 @@ class HQHandler(SimpleHTTPRequestHandler):
             return
         if path=='/hq-map-status':
             return self.json_reply(200,{'version':HQ_VERSION,'renderer':'Leaflet 1.9.4 + MapLibre GL 5.24.0 + bridge 0.1.4',
-                'source':'OpenFreeMap','mode':'MOCK-icon-review-only','networkDisabled':DISABLE_MAP_NETWORK,'photos':PHOTOS.status(),
+                'source':'OpenFreeMap','mode':'MOCK-icon-review-only','networkDisabled':DISABLE_MAP_NETWORK,'photos':PHOTOS.status(),'planePhotos':PLANE_PHOTOS.status(),
                 'upstreamErrors':dict(ERRORS),'lastFailedResource':dict(LAST_FAILURE),'resourceCounts':dict(RESOURCE_COUNTS),'browser':dict(BROWSER),'browserHistory':list(BROWSER_HISTORY),'vendorCached':{k:(CACHE_DIR/'vendor'/hashlib.sha256(k.encode()).hexdigest()).is_file() for k in VENDOR},'mapLibreAssetCached':(CACHE_DIR/'vendor'/hashlib.sha256('/assets/vendor/maplibre-gl.js'.encode()).hexdigest()).is_file()})
         if path=='/api/v4/photo':   # 4.106.0: a photo of this bus? found / none / looking (ask again shortly)
             ans=PHOTOS.answer((parse_qs(split.query).get('reg') or [''])[0][:20])
             return self.reply(200,json.dumps(ans,separators=(',',':')).encode('utf8'),'application/json; charset=utf-8',
                               'no-store' if ans['state']=='looking' else 'public, max-age=3600')
+        if path=='/api/v4/planephoto':   # 4.108.0: a photo of this plane? (registration + the type the box shows)
+            q=parse_qs(split.query)
+            ans=PLANE_PHOTOS.answer((q.get('reg') or [''])[0][:12],(q.get('type') or [''])[0][:80],(q.get('code') or [''])[0][:6])
+            return self.reply(200,json.dumps(ans,separators=(',',':')).encode('utf8'),'application/json; charset=utf-8',
+                              'no-store' if ans['state']=='looking' else 'public, max-age=3600')
+        if path.startswith('/api/v4/planephoto/img/'):
+            got=PLANE_PHOTOS.image(path[len('/api/v4/planephoto/img/'):])
+            if not got:return self.send_error(404)
+            return self.reply(200,got[0],got[1],'public, max-age=86400')
         if path.startswith('/api/v4/photo/img/'):
             got=PHOTOS.image(path[len('/api/v4/photo/img/'):])
             if not got:return self.send_error(404)

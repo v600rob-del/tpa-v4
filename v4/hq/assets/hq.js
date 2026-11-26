@@ -45,19 +45,29 @@ function busPlate(e,d){
 // 4.106.1 (Rob 23:54 "couldnt find one, clicked on a lot": the page stopped waiting after ~24 s and remembered "none"):
 // it keeps asking every 3 s while that bus's box is open (up to 3 minutes); if the box closes first nothing is
 // remembered, so the next time the bus is opened it asks again.
-function askPhoto(reg,tries,onFound,open){
-  fetch('/api/v4/photo?reg='+encodeURIComponent(reg)).then(r=>r.ok?r.json():{state:'none'}).then(ans=>{
+// 4.108.0: planes too (key 'p:'+registration, asked at /api/v4/planephoto with the type the box shows)
+function askPhoto(reg,tries,onFound,open,url,key){url=url||'/api/v4/photo?reg='+encodeURIComponent(reg);key=key||reg;
+  fetch(url).then(r=>r.ok?r.json():{state:'none'}).then(ans=>{
     if(ans&&ans.state==='looking'){
-      if(open()&&tries<60)setTimeout(()=>askPhoto(reg,tries+1,onFound,open),3000);else PHOTO_ANS.delete(reg);
+      if(open()&&tries<60)setTimeout(()=>askPhoto(reg,tries+1,onFound,open,url,key),3000);else PHOTO_ANS.delete(key);
       return;}
-    const ok=ans&&ans.state==='found'&&typeof ans.src==='string'&&ans.src.startsWith('/api/v4/photo/img/');
-    PHOTO_ANS.set(reg,ok?ans:{state:'none'});if(ok)onFound(ans);
-  }).catch(()=>PHOTO_ANS.delete(reg));}
+    const ok=ans&&ans.state==='found'&&typeof ans.src==='string'&&(ans.src.startsWith('/api/v4/photo/img/')||ans.src.startsWith('/api/v4/planephoto/img/'));
+    PHOTO_ANS.set(key,ok?ans:{state:'none'});if(ok)onFound(ans);
+  }).catch(()=>PHOTO_ANS.delete(key));}
 function busPhoto(reg,onFound,open){const a=PHOTO_ANS.get(reg);if(a)return a.state==='found'?a:null;
   PHOTO_ANS.set(reg,{state:'looking'});askPhoto(reg,0,onFound,open);return null;}
-function realPhoto(box3,a,reg){
+// 4.108.0 (Rob 26 Nov 17:26-17:28, plane photos; preview ?planephotos=1 until Rob has seen them): the registration and the
+// type from the box ("Registration", "Aircraft"); the server only gives a photo that names that type (photos.PlaneFinder).
+const PLANE_PHOTOS_ON=!KIDS&&new URLSearchParams(location.search).get('planephotos')==='1';
+function planeAsk(e,d){const rows=Array.isArray(d.rows)?d.rows:[],get=l=>String(rows.find(x=>x&&x.label===l)?.value||'').trim();
+  const reg=get('Registration').toUpperCase().replace(/[^A-Z0-9-]/g,'');
+  if(!/^[A-Z0-9]{1,2}-[A-Z0-9]{2,5}$|^[A-Z0-9]{3,7}$/.test(reg)||!/[A-Z]/.test(reg))return null;
+  return {reg,url:'/api/v4/planephoto?reg='+encodeURIComponent(reg)+'&type='+encodeURIComponent(get('Aircraft').slice(0,80))+'&code='+encodeURIComponent(String(e.typeCode||'').slice(0,4))};}
+function planePhoto(q,onFound,open){const key='p:'+q.reg,a=PHOTO_ANS.get(key);if(a)return a.state==='found'?a:null;
+  PHOTO_ANS.set(key,{state:'looking'});askPhoto(q.reg,0,onFound,open,q.url,key);return null;}
+function realPhoto(box3,a,reg,what){
   const old=box3.querySelector('img');if(!old||box3.classList.contains('real'))return;
-  const img=document.createElement('img');img.src=a.src;img.alt='Photo of bus '+(a.plate||reg);img.decoding='async';
+  const img=document.createElement('img');img.src=a.src;img.alt='Photo of '+(what||'bus')+' '+(a.plate||reg);img.decoding='async';
   const tag=box3.querySelector('.pic-tag'),was=box3.className;
   const credit=document.createElement(/^https:\/\//.test(a.page||'')?'a':'span');credit.className='pic-credit';
   if(credit.tagName==='A'){credit.href=a.page;credit.target='_blank';credit.rel='noopener noreferrer';}
@@ -637,7 +647,11 @@ async function loadDetails(e,box){
         img.alt=own?'Picture of the aircraft type: '+(typeof d.photoName==='string'?d.photoName:d.photo):kind?kind[1]:'Picture of an aircraft (type not known)';
         if(kind||unknown){const tag=document.createElement('span');tag.className='pic-tag';tag.textContent=kind?kind[1]:'Type not known';box4.append(tag);}
         if(unknown)box4.classList.add('unknown');
-        img.addEventListener('error',()=>box4.remove(),{once:true});box4.append(img);rows.unshift(box4);}}
+        img.addEventListener('error',()=>box4.remove(),{once:true});box4.append(img);rows.unshift(box4);
+        const q=PLANE_PHOTOS_ON?planeAsk(e,d):null;                     // 4.108.0: a real photo of this plane, if there is one
+        if(q){const open=()=>box.isConnected&&!!state.selected&&state.selected.id===e.id;
+          const ph=planePhoto(q,a=>{const live=box.querySelector('.detail-picture.air');if(live&&open())realPhoto(live,a,q.reg,'aircraft');},open);
+          if(ph)realPhoto(box4,ph,q.reg,'aircraft');}}}
     const keepScroll=[selected.scrollTop,box.querySelector('.board-list')?.scrollTop||0];
     box.replaceChildren(...rows);
     selected.scrollTop=keepScroll[0];const bl=box.querySelector('.board-list');if(bl)bl.scrollTop=keepScroll[1];

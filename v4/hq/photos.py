@@ -340,3 +340,183 @@ def plates_from_tiles(root) -> list:
             if PLATE_ID.match(tail):
                 out.append(tail)
     return out
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# HQ 4.108.0 - real PLANE photos by registration (Rob 26 Nov 2026 17:26 "how about plane photos?"; 17:28 "yeah this sounds
+# excellent!"). Measured 17:27-17:32: 113 of 142 planes on the map had photos on Commons, filed in a category per plane,
+# "Category:G-EZTZ (aircraft)". See claude/TPA-PLANE-PHOTOS-MEASURE-2026-11-26.
+#   - Only files in that plane's own category are considered (never a text search).
+#   - Wrong-plane guard: the photo's title or categories must name the type we already know for the plane (the box's
+#     "Aircraft" line, e.g. "Airbus A320-214" -> A320; "BAE Systems Hawk T2" -> T2). One file filed under Hawk T2 ZK020 was
+#     titled "Hawk T1". When no type is known, no photo.
+#   - Close-ups (tail fin, cockpit, cabin, engine, wing...) are skipped; the newest whole-plane photo wins.
+#   - Kept like bus photos, in their own folder, served from our own address with the photographer's credit.
+# ---------------------------------------------------------------------------------------------------------------------
+REG = re.compile(r'^[A-Z0-9]{1,2}-[A-Z0-9]{2,5}$|^[A-Z0-9]{3,7}$')
+CLOSE_UP = re.compile(r'tail ?fin|\btail\b|\bfin\b|cockpit|flight ?deck|cabin|interior|\bseats?\b|engine|nacelle|\bwings?\b|winglet|'
+                      r'\bnose\b|undercarriage|landing gear|\bgear\b|wheel|detail|close.?up|\blogo\b|\bdoor\b|galley|instrument|'
+                      r'propeller|rotor head|\bmodel\b|wreck|crash|accident|\bdiorama\b', re.I)
+GFDL = re.compile(r'^\s*gfdl(?:[ -][\d.]+)?\s*$', re.I)   # Commons' older free licence (credit and licence named)
+
+
+def free_plane(lic: str) -> bool:
+    return bool(FREE.match(lic) or GFDL.match(lic))
+ICAO_WORDS = {'A19N': 'A319', 'A20N': 'A320', 'A21N': 'A321', 'B37M': '737', 'B38M': '737', 'B39M': '737', 'B3XM': '737',
+              'B77W': '777', 'B77L': '777', 'B78X': '787', 'A35K': 'A350', 'A359': 'A350', 'A388': 'A380', 'A339': 'A330',
+              'A338': 'A330', 'BCS1': 'A220', 'BCS3': 'A220', 'E75L': '175', 'E75S': '175', 'E35L': 'Legacy'}
+
+
+def reg_norm(reg) -> str:
+    """'g-eztz' -> 'G-EZTZ'; '' unless it looks like a registration or a military serial (with a letter)."""
+    raw = str(reg or '').strip().upper()
+    if not re.fullmatch(r'[A-Z0-9-]{3,9}', raw):
+        return ''
+    ok = REG.match(raw) and re.search(r'[A-Z]', raw) and ('-' in raw or re.search(r'\d', raw))   # G-EZTZ, N787UA, ZK020
+    return raw if ok else ''
+
+
+def reg_key(n: str) -> str:
+    return n.replace('-', '_')
+
+
+def type_keys(name, code='') -> list:
+    """4.108.0: the model words, any of which a photo may name: the first model number (type_key) and a mark like T2 or
+    FGR4 ("British Aerospace Hawk 128 T.2" -> ['128', 't2'], so a "Hawk T2" photo counts and a "Hawk T1" one does not)."""
+    first = type_key(name, code)
+    marks = [m.lower() for m in re.findall(r'(?<![A-Za-z0-9])[A-Za-z]{1,3}\d{1,2}(?![A-Za-z0-9])', re.sub(r'[.]', '', str(name or ''))[:80])]
+    return list(dict.fromkeys([k for k in [first] + marks if k]))
+
+
+def type_key(name, code='') -> str:
+    """The word a photo of this plane must mention: the first model number in the type name ("Airbus A320-214" -> a320,
+    "Boeing 787-9 Dreamliner" -> 787, "Embraer ERJ-190-100SR" -> 190, "BAE Systems Hawk T2" -> t2, "Cessna 172S" -> 172);
+    without a number, the last long word ("Eurofighter Typhoon" -> typhoon); without a name, the ICAO type code
+    (A20N -> a320, B738 -> 737). '' when nothing usable."""
+    name = re.sub(r'[.]', '', str(name or ''))[:80]
+    for tok in re.split(r'[^A-Za-z0-9]+', name):
+        m = re.match(r'[A-Za-z]{0,3}\d+', tok)
+        if m and re.search(r'\d', tok):
+            return m.group(0).lower()
+    words = [w for w in re.findall(r'[A-Za-z]{4,}', name) if w.lower() not in ('aircraft', 'systems', 'aerospace', 'helicopter')]
+    if words:
+        return words[-1].lower()
+    code = re.sub(r'[^A-Z0-9]', '', str(code or '').upper())[:4]
+    if code in ICAO_WORDS:
+        return ICAO_WORDS[code].lower()
+    m = re.fullmatch(r'B7(\d)\d', code)
+    if m:
+        return f'7{m.group(1)}7'
+    m = re.fullmatch(r'(A3\d)\d', code)
+    if m:
+        return code.lower()
+    return ''
+
+
+def names_type(text: str, key: str) -> bool:
+    """Does this text (a photo's title and categories) name the model `key`? 'a320' in "A320-214", "A320neo"; '787' in
+    "Boeing 787-9", "B787" but not inside a longer number ("48787"); 't2' in "Hawk T.2"."""
+    if not key:
+        return False
+    hay = re.sub(r'[.]', '', text.lower())
+    return re.search(r'(?<![0-9])' + re.escape(key) + (r'(?![0-9])' if key[-1].isdigit() else r'(?![a-z])'), hay) is not None
+
+
+class PlaneFinder(Finder):
+    def __init__(self, folder, **kw):
+        super().__init__(folder, **kw)
+        self.types: dict[str, str] = {}           # registration -> the type word asked with it
+
+    def answer(self, reg, typ='', code='') -> dict:
+        n, key = reg_norm(reg), ' '.join(type_keys(typ, code))
+        if not n or not key:
+            return {'state': 'none'}
+        rec = self.record(reg_key(n))
+        now = time.time()
+        if rec and rec.get('type') == key:
+            keep = FOUND_KEEP_S if rec.get('state') == 'found' else NONE_KEEP_S if rec.get('state') == 'none' else ERROR_KEEP_S
+            if now - float(rec.get('at', 0)) <= keep:
+                return self.public(n, rec)
+        with self.lock:
+            self.types[n] = key
+            if len(self.types) > 5000:
+                self.types.pop(next(iter(self.types)))
+        self.enqueue(n)
+        if rec and rec.get('state') == 'found' and rec.get('type') == key:
+            return self.public(n, rec)
+        return {'state': 'looking'}
+
+    def public(self, n, rec) -> dict:
+        if rec.get('state') != 'found':
+            return {'state': 'none'}
+        return {'state': 'found', 'src': '/api/v4/planephoto/img/' + rec['file'], 'credit': rec.get('credit', ''),
+                'licence': rec.get('licence', ''), 'page': rec.get('page', ''), 'plate': n}
+
+    def image(self, name: str):
+        if not re.fullmatch(r'[A-Z0-9_]{3,10}\.(jpg|png)', name or ''):
+            return None
+        p = self.dir / name
+        if not p.is_file():
+            return None
+        return p.read_bytes(), 'image/png' if name.endswith('.png') else 'image/jpeg'
+
+    def warm(self, regs) -> int:
+        return 0                                  # 4.108.0: clicked planes only, for now
+
+    def record(self, n):
+        return super().record(reg_key(n) if '-' in n else n)
+
+    def save(self, n, rec):
+        return super().save(reg_key(n), rec)
+
+    def look(self, n):
+        rec = super().look(n)
+        return rec
+
+    def find(self, n):
+        key = self.types.get(n, '')
+        out = self._find(n, key)
+        out['type'] = key
+        return out
+
+    def _find(self, n, key):
+        if not key:
+            return {'state': 'none', 'at': time.time()}
+        info = self.call(action='query', generator='categorymembers', gcmtitle=f'Category:{n} (aircraft)', gcmtype='file',
+                         gcmlimit='50', prop='imageinfo|categories', iiprop='url|extmetadata|timestamp|mime',
+                         iiurlwidth=THUMB_W, cllimit='max', clshow='!hidden')
+        best = []
+        for page in (info.get('query') or {}).get('pages', []):
+            title = page.get('title', '')
+            cats = [c.get('title', '') for c in page.get('categories', [])]
+            if CLOSE_UP.search(re.sub(r'^File:|\.\w+$', '', title)):
+                continue
+            ii = (page.get('imageinfo') or [{}])[0]
+            meta = ii.get('extmetadata') or {}
+            said = ' '.join([title] + cats + [text((meta.get('ImageDescription') or {}).get('value'))[:300]])
+            if not any(names_type(said, k) for k in key.split()):
+                continue                              # wrong-plane guard
+            lic = text((meta.get('LicenseShortName') or {}).get('value'))
+            if not free_plane(lic) or text((meta.get('NonFree') or {}).get('value')).lower() == 'true':
+                continue
+            if ii.get('mime') not in ('image/jpeg', 'image/png') or not ii.get('thumburl'):
+                continue
+            when = text((meta.get('DateTimeOriginal') or {}).get('value'))
+            year = re.search(r'(?:19|20)\d\d', when) or re.search(r'(?:19|20)\d\d', title) or re.search(r'(?:19|20)\d\d', ii.get('timestamp', ''))
+            best.append((year.group(0) if year else '0000', ii.get('timestamp', ''), title, ii, meta, lic))
+        if not best:
+            return {'state': 'none', 'at': time.time()}
+        best.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        _, _, title, ii, meta, lic = best[0]
+        raw = self.fetch(ii['thumburl'], MAX_BYTES)
+        ext = 'png' if raw[:8] == b'\x89PNG\r\n\x1a\n' else 'jpg' if raw[:3] == b'\xff\xd8\xff' else ''
+        if not ext:
+            return {'state': 'none', 'at': time.time()}
+        k = reg_key(n)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        tmp = self.dir / f'{k}.{ext}.tmp'
+        tmp.write_bytes(raw)
+        tmp.replace(self.dir / f'{k}.{ext}')
+        artist = text((meta.get('Artist') or {}).get('value')) or 'Unknown photographer'
+        return {'state': 'found', 'at': time.time(), 'file': f'{k}.{ext}', 'title': title,
+                'credit': artist[:CREDIT_MAX], 'licence': lic, 'page': ii.get('descriptionurl', '')}
