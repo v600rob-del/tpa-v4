@@ -1089,7 +1089,8 @@ const TRAIL={id:'',pts:[],line:null,svg:null,drawn:[],base:null,raf:0};
 // towards each new report (4.42.0), so it can be a way off it for a while.
 // 4.113.0 (Rob 27 Nov 00:12: "the plane trails, can they be on the main map when a plane is highlighted please"): the
 // trail is drawn on the main map too. Preview: ?trails=1 (the planes page always has it).
-const TRAILS=PLANES||(!KIDS&&new URLSearchParams(location.search).get('trails')==='1');
+// 4.114.0 (Rob 27 Nov 00:39 "update for all users"): for everyone; ?trails=0 switches it off on the main map.
+const TRAILS=PLANES||(!KIDS&&new URLSearchParams(location.search).get('trails')!=='0');
 const TRAIL2=TRAILS&&new URLSearchParams(location.search).get('trail')!=='1';   // 4.105.0: normal now; ?trail=1 = the old trail
 function trailFrom(e,d){
   if(!Array.isArray(d.trail))return;
@@ -1372,7 +1373,8 @@ function keepAboveSheet(e){
 // 4.113.0 (Rob 27 Nov 00:10: "The pop up box for planes trains etc, can it be moveable?"; he chose computers and tablets,
 // and "stays where you put it" for the visit): drag the box by its title bar; double-click the title bar sends it back to
 // its corner. Phones keep the pull-up panel. The place is kept for this browser tab only. Preview: ?move=1.
-const MOVE_BOX=!KIDS&&new URLSearchParams(location.search).get('move')==='1';
+// 4.114.0 (Rob 27 Nov 00:39 "update for all users"): for everyone; ?move=0 switches it off.
+const MOVE_BOX=!KIDS&&new URLSearchParams(location.search).get('move')!=='0';
 let boxPos=null;
 try{const v=JSON.parse(sessionStorage.getItem('tpa-box')||'null');if(v&&Number.isFinite(v.x)&&Number.isFinite(v.y))boxPos={x:v.x,y:v.y};}catch(_){}
 function placeBox(){
