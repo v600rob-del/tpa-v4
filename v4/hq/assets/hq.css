@@ -661,6 +661,9 @@ a.pic-credit:hover{text-decoration:underline}
 /* 4.115.0 (Rob 27 Nov 11:22): a real photo opens bigger on a click, and goes back on a click */
 .detail-picture.real img{cursor:zoom-in}
 .detail-picture.real img:focus-visible{outline:2px solid var(--amber);outline-offset:-2px}
+/* 4.116.0: link to Flickr's search for the bus's number plate */
+.photo-look{display:block;margin:-6px 0 10px;font-size:12px;color:var(--teal,#5fd0c4);text-decoration:none}
+.photo-look:hover{text-decoration:underline}
 /* 4.115.1 (Rob 27 Nov 12:22 "the text completely overshadows the picture"): the credit shows in the big view, not over the
    small photo; the "Not this plane" tag is one small line in the corner */
 .detail-picture.real .pic-credit{display:none}

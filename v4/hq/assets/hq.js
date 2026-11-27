@@ -690,7 +690,13 @@ async function loadDetails(e,box){
       if(reg){const open=()=>box.isConnected&&!!state.selected&&state.selected.id===e.id;
         const ph=busPhoto(reg,a=>{const live=box.querySelector('.detail-picture.bus');if(live&&open())realPhoto(live,a,reg);},open);
         if(ph)realPhoto(box3,ph,reg);}
-      rows.unshift(box3);}
+      // 4.116.0 (Rob 27 Nov 13:05, "yes please" to a link): a plain link to Flickr's own search for this bus's number plate,
+      // in a new tab. Nothing is copied or shown on TPA (photos found there stay the photographers' own, on Flickr).
+      const plate=!KIDS&&!geoff?busPlate(e,d):'';let look=null;
+      if(plate){const words=/^[A-Z]{2}\d{2}[A-Z]{3}$/.test(plate)?plate.slice(0,4)+' '+plate.slice(4):plate;
+        look=document.createElement('a');look.className='photo-look';look.href='https://www.flickr.com/search/?text='+encodeURIComponent(words);
+        look.target='_blank';look.rel='noopener noreferrer';look.textContent='Look for photos of this bus on Flickr \u2197';}
+      rows.unshift(...[box3,look].filter(Boolean));}
     // 4.43.0 (owner 11 Nov 15:43: "I would like to add plane pictures ... static ones"): TPA's own picture of the plane's type
     // (made by the owner, neutral colours, no logos) on the same light panel as trains and buses; none when the type has
     // no picture yet - never a picture of the wrong type. Left out if it fails to load.
