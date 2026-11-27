@@ -665,3 +665,6 @@ a.pic-credit:hover{text-decoration:underline}
 body.sat-on .leaflet-pane.leaflet-satPhotos-pane{background:#0b1220}
 /* 4.110.1 (live check 21:48): Leaflet blends tiles with plus-lighter, which left faint light lines between photo tiles */
 .leaflet-container .leaflet-satPhotos-pane img.leaflet-tile,.leaflet-container .leaflet-satLabels-pane img.leaflet-tile{mix-blend-mode:normal}
+/* 4.113.0: the vehicle box can be dragged by its title bar on computers and tablets (preview ?move=1) */
+.map-selection.movable .box-title{cursor:move;user-select:none;-webkit-user-select:none;touch-action:none}
+.map-selection.dragging{box-shadow:0 10px 30px #0009;opacity:.96}

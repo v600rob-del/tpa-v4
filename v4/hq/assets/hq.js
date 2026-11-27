@@ -540,7 +540,7 @@ async function loadDetails(e,box){
         let at=rest.findIndex(r=>r.label==='Kind');if(at<0)at=rest.findIndex(r=>r.more===true)-1;if(at<-1)at=rest.length-1;
         rest.splice(at+1,0,...sq);wanted=rest;}
     }
-    if(e.component==='air'&&PLANES)trailFrom(e,d);
+    if(e.component==='air'&&TRAILS)trailFrom(e,d);
     for(const row of wanted.slice(0,PLANES?48:24)){
       const line=document.createElement('div');line.className='detail-row';
       const k=document.createElement('span');k.className='detail-label';k.textContent=String(row.label||'').slice(0,30);
@@ -840,7 +840,7 @@ function selectEntity(e){
   // registration) under the small picture, when it is known
   if(frow){const fp=el('span','follow-pic'),th=el('span','follow-thumb'),pl=el('span','follow-plate');th.hidden=true;pl.hidden=true;
     th.setAttribute('aria-hidden','true');fp.append(th,pl);frow.append(fb,fp);}
-  selected.replaceChildren(...[grab,h,info,frow,more,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');
+  selected.replaceChildren(...[grab,h,info,frow,more,rb,warning,close].filter(Boolean));if(!isFollowing(e))stopFollow();updateFollowUI();selected.classList.remove('hidden');placeBox();   // 4.113.0
   if(isPhone())requestAnimationFrame(()=>keepAboveSheet(e));
   $('map-place').textContent=e.label.toUpperCase();paint();
   loadDetails(e,more);
@@ -1087,7 +1087,10 @@ const TRAIL={id:'',pts:[],line:null,svg:null,drawn:[],base:null,raf:0};
 // meets the plane; the line is a gentle curve through the reports (a light average evens out rough ground-station (MLAT)
 // positions, then corner-cutting). The kink came from the trail ending at the last REPORT while the icon glides gently
 // towards each new report (4.42.0), so it can be a way off it for a while.
-const TRAIL2=PLANES&&new URLSearchParams(location.search).get('trail')!=='1';   // 4.105.0: normal now; ?trail=1 = the old trail
+// 4.113.0 (Rob 27 Nov 00:12: "the plane trails, can they be on the main map when a plane is highlighted please"): the
+// trail is drawn on the main map too. Preview: ?trails=1 (the planes page always has it).
+const TRAILS=PLANES||(!KIDS&&new URLSearchParams(location.search).get('trails')==='1');
+const TRAIL2=TRAILS&&new URLSearchParams(location.search).get('trail')!=='1';   // 4.105.0: normal now; ?trail=1 = the old trail
 function trailFrom(e,d){
   if(!Array.isArray(d.trail))return;
   const pts=d.trail.filter(p=>Array.isArray(p)&&validNum(p[0])&&validNum(p[1])&&Math.abs(p[0])<=180&&Math.abs(p[1])<=90).slice(-200).map(p=>[p[1],p[0]]);
@@ -1122,7 +1125,7 @@ function trailLine(pin){   // 4.100.0: reports up to where the icon's own path b
     TRAIL.base=trailSmooth([...TRAIL.pts.slice(0,cut),...D.map(q=>[q[0],q[1]])]);}
   return [...TRAIL.base,[pin.lat,pin.lon]];}
 function syncTrail(){
-  if(!PLANES||!map||!window.L||typeof L.polyline!=='function')return;
+  if(!TRAILS||!map||!window.L||typeof L.polyline!=='function')return;
   const sel=state.selected,pin=sel&&sel.component==='air'?pins.get('air:'+sel.id):null;
   const want=!!sel&&sel.component==='air'&&TRAIL.id===sel.id&&TRAIL.pts.length>=1&&!!pin&&pin.lat!=null&&state.visible.air;
   if(!want){if(TRAIL.line){TRAIL.line.remove();TRAIL.line=null;}if(!sel||sel.id!==TRAIL.id){TRAIL.id='';TRAIL.pts=[];TRAIL.drawn=[];TRAIL.base=null;}return;}
@@ -1366,6 +1369,43 @@ function keepAboveSheet(e){
     const g=selected.querySelector('.sheet-grab');if(!g)return;
     if(dy<-35&&!selected.classList.contains('open'))g.click();else if(dy>35&&selected.classList.contains('open'))g.click();},{passive:true});
 })();
+// 4.113.0 (Rob 27 Nov 00:10: "The pop up box for planes trains etc, can it be moveable?"; he chose computers and tablets,
+// and "stays where you put it" for the visit): drag the box by its title bar; double-click the title bar sends it back to
+// its corner. Phones keep the pull-up panel. The place is kept for this browser tab only. Preview: ?move=1.
+const MOVE_BOX=!KIDS&&new URLSearchParams(location.search).get('move')==='1';
+let boxPos=null;
+try{const v=JSON.parse(sessionStorage.getItem('tpa-box')||'null');if(v&&Number.isFinite(v.x)&&Number.isFinite(v.y))boxPos={x:v.x,y:v.y};}catch(_){}
+function placeBox(){
+  if(!MOVE_BOX)return;
+  const can=!isPhone();selected.classList.toggle('movable',can);
+  const t=selected.querySelector('.box-title');if(t)t.title=can?'Drag to move this box. Double-click to put it back.':'';
+  const st=selected.style;
+  if(!can||!boxPos||selected.classList.contains('hidden')){st.left=st.top=st.right=st.bottom=st.maxHeight='';return;}
+  const m=selected.offsetParent;if(!m)return;
+  const W=m.clientWidth,H=m.clientHeight,w=selected.offsetWidth||260;
+  boxPos={x:clamp(boxPos.x,8,Math.max(8,W-w-8)),y:clamp(boxPos.y,8,Math.max(8,H-128))};
+  st.right='auto';st.bottom='auto';st.left=boxPos.x+'px';st.top=boxPos.y+'px';st.maxHeight=(H-boxPos.y-8)+'px';
+}
+function saveBox(){try{if(boxPos)sessionStorage.setItem('tpa-box',JSON.stringify(boxPos));else sessionStorage.removeItem('tpa-box');}catch(_){}}
+if(MOVE_BOX){
+  selected.addEventListener('pointerdown',ev=>{
+    if(isPhone()||ev.button!==0||!ev.target.closest||!ev.target.closest('.box-title'))return;
+    const m=selected.offsetParent;if(!m)return;
+    ev.preventDefault();ev.stopPropagation();
+    const r=selected.getBoundingClientRect(),mr=m.getBoundingClientRect(),dx=ev.clientX-r.left,dy=ev.clientY-r.top;
+    let moved=false;   // held only once it really moves, so a double-click still reaches the title bar
+    const mv=e2=>{if(e2.pointerId!==ev.pointerId)return;if(!moved&&Math.hypot(e2.clientX-ev.clientX,e2.clientY-ev.clientY)<4)return;
+      if(!moved){try{selected.setPointerCapture(ev.pointerId);}catch(_){}}
+      moved=true;selected.classList.add('dragging');boxPos={x:e2.clientX-mr.left-dx,y:e2.clientY-mr.top-dy};placeBox();};
+    const up=e3=>{if(e3.pointerId!==ev.pointerId)return;removeEventListener('pointermove',mv,true);removeEventListener('pointerup',up,true);
+      removeEventListener('pointercancel',up,true);selected.classList.remove('dragging');if(moved)saveBox();};
+    // followed across the whole page, so a quick flick off the box is still a drag
+    addEventListener('pointermove',mv,true);addEventListener('pointerup',up,true);addEventListener('pointercancel',up,true);
+  });
+  selected.addEventListener('dblclick',ev=>{if(isPhone()||!ev.target.closest||!ev.target.closest('.box-title'))return;
+    boxPos=null;saveBox();placeBox();});
+  addEventListener('resize',()=>placeBox());
+}
 // the panel being up is known to the page (phones tuck the credits away under it)
 new MutationObserver(()=>document.body.classList.toggle('sheet-up',!selected.classList.contains('hidden'))).observe(selected,{attributes:true,attributeFilter:['class']});
 // 4.51.0: on phones the credits sit behind a small (c) button
