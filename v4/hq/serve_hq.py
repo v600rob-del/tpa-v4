@@ -61,7 +61,7 @@ def app_page(raw, query, path=''):
     return raw
 
 
-HQ_VERSION = '4.114.1'   # 4.114.1: bustimes.org credit (site-config only)
+HQ_VERSION = '4.115.0'   # 4.114.1: bustimes.org credit (site-config only); 4.115.0: real photos open bigger on a click
 TILES_DIR = os.environ.get('TPA_HQ_TILES_DIR', '').strip()   # 4.56.0: tests only
 # 4.89.0 (Rob 18 Nov 18:17-18:31, "Find Geoff"): one Geoff bus per nation each day, picked from the bus engine's
 # published city files (read only; the bus engine is not asked anything). See geoff.py.

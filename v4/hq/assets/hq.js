@@ -66,6 +66,51 @@ function planeAsk(e,d){const rows=Array.isArray(d.rows)?d.rows:[],get=l=>String(
   return {reg,url:'/api/v4/planephoto?reg='+encodeURIComponent(reg)+'&type='+encodeURIComponent(get('Aircraft').slice(0,80))+'&code='+encodeURIComponent(String(e.typeCode||'').slice(0,4))+'&op='+encodeURIComponent((get('Operator')||get('Airline')).slice(0,40))};}   // 4.108.2: operator, for "one like it"
 function planePhoto(q,onFound,open){const key='p:'+q.reg,a=PHOTO_ANS.get(key);if(a)return a.state==='found'?a:null;
   PHOTO_ANS.set(key,{state:'looking'});askPhoto(q.reg,0,onFound,open,q.url,key);return null;}
+// 4.115.0 (Rob 27 Nov 11:22: "any of the "real" photographs we use open up as a larger image when you click on them, and go
+// back in their box when you click on the larger image"): a real photo grows out of its box to its full kept size (640 px
+// wide, never stretched past that, so it stays sharp) over a dimmed map, with its credit and any "one like it" label; a
+// click or tap anywhere on it (or Escape) shrinks it back into its box. Rob's own pictures and drawings are not enlarged.
+let BIG=null;
+function bigPhotoOn(img,box3){
+  img.tabIndex=0;img.setAttribute('role','button');img.title='Click to see this photo bigger';
+  const go=ev=>{ev.preventDefault();ev.stopPropagation();bigPhotoOpen(img,box3);};
+  img.addEventListener('click',go);
+  img.addEventListener('keydown',ev=>{if(ev.key==='Enter'||ev.key===' ')go(ev);});}
+function bigPhotoOpen(img,box3){
+  if(BIG||!img.isConnected||!img.complete||!img.naturalWidth)return;
+  const back=document.createElement('div');back.className='big-photo-back';back.setAttribute('role','dialog');back.setAttribute('aria-modal','true');
+  back.setAttribute('aria-label','Photo, bigger. Click or press Escape to put it back.');
+  const fig=document.createElement('figure');fig.className='big-photo';
+  const big=document.createElement('img');big.src=img.currentSrc||img.src;big.alt=img.alt;big.draggable=false;
+  const vw=innerWidth,vh=innerHeight,nw=img.naturalWidth,nh=img.naturalHeight;
+  const k=Math.min(1,(vw*0.94)/nw,(vh*0.8)/nh);big.width=Math.round(nw*k);big.height=Math.round(nh*k);
+  fig.append(big);
+  const like=box3.querySelector('.like-tag');if(like){const t=document.createElement('span');t.className='big-like';t.textContent=like.textContent;fig.append(t);}
+  const cr=box3.querySelector('.pic-credit');
+  if(cr){const c=document.createElement(cr.tagName==='A'?'a':'figcaption');c.className='big-credit';c.textContent=cr.textContent;
+    if(cr.tagName==='A'){c.href=cr.href;c.target='_blank';c.rel='noopener noreferrer';c.addEventListener('click',ev=>ev.stopPropagation());}
+    fig.append(c);}
+  back.append(fig);document.body.append(back);
+  BIG={back,big,img,focus:document.activeElement};
+  back.addEventListener('click',()=>bigPhotoClose());
+  // grows out of the photo in the box (and shrinks back into it); people who ask for less motion get a plain fade
+  const calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  requestAnimationFrame(()=>{
+    const from=img.getBoundingClientRect(),to=big.getBoundingClientRect();
+    back.classList.add('shown');
+    if(!calm&&to.width&&big.animate)big.animate([{transform:fromTo(from,to)},{transform:'none'}],{duration:220,easing:'cubic-bezier(.2,.7,.2,1)'});});
+  back.tabIndex=-1;back.focus({preventScroll:true});}
+function fromTo(from,to){return `translate(${from.left+from.width/2-(to.left+to.width/2)}px,${from.top+from.height/2-(to.top+to.height/2)}px) scale(${from.width/to.width},${from.height/to.height})`;}
+function bigPhotoClose(){
+  if(!BIG)return;const {back,big,img,focus}=BIG;BIG=null;
+  const done=()=>{back.remove();if(focus&&focus.isConnected&&focus.focus)focus.focus({preventScroll:true});};
+  back.classList.remove('shown');
+  const calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  if(!calm&&img.isConnected&&big.animate){const a=big.animate([{transform:'none'},{transform:fromTo(img.getBoundingClientRect(),big.getBoundingClientRect())}],
+    {duration:200,easing:'cubic-bezier(.4,0,.8,.6)',fill:'forwards'});a.onfinish=done;a.oncancel=done;setTimeout(done,400);}
+  else done();}
+addEventListener('keydown',ev=>{if(BIG&&ev.key==='Escape'){ev.preventDefault();ev.stopImmediatePropagation();bigPhotoClose();}},true);   // only the photo, not the box too
+addEventListener('resize',()=>bigPhotoClose());
 function realPhoto(box3,a,reg,what){
   const old=box3.querySelector('img');if(!old||box3.classList.contains('real'))return;
   const img=document.createElement('img');img.src=a.src;img.alt='Photo of '+(what||'bus')+' '+(a.plate||reg);img.decoding='async';
@@ -75,6 +120,7 @@ function realPhoto(box3,a,reg,what){
   credit.textContent='Photo: '+String(a.credit||'unknown').slice(0,80)+(a.licence?', '+String(a.licence).slice(0,30):'')+', via Wikimedia Commons';
   img.addEventListener('error',()=>{img.replaceWith(old);credit.remove();box3.className=was;if(tag)box3.prepend(tag);},{once:true});   // back to Rob's picture
   old.replaceWith(img);tag?.remove();box3.classList.remove('unknown');box3.classList.add('real');box3.append(credit);
+  bigPhotoOn(img,box3);   // 4.115.0
   // 4.108.2 (Rob 26 Nov 18:21 "yes a"): a photo of ANOTHER plane like it always says so, on the picture
   if(typeof a.like==='string'&&a.like){const t=document.createElement('span');t.className='pic-tag like-tag';t.textContent=a.like.slice(0,90);box3.append(t);img.alt='Photo of another aircraft like '+(a.plate||reg);}}if(LOOK2)document.documentElement.classList.add('look2');
 if(KIDS){document.documentElement.classList.add('kids-view');}
