@@ -85,7 +85,7 @@ function bigPhotoOpen(img,box3){
   const vw=innerWidth,vh=innerHeight,nw=img.naturalWidth,nh=img.naturalHeight;
   const k=Math.min(1,(vw*0.94)/nw,(vh*0.8)/nh);big.width=Math.round(nw*k);big.height=Math.round(nh*k);
   fig.append(big);
-  const like=box3.querySelector('.like-tag');if(like){const t=document.createElement('span');t.className='big-like';t.textContent=like.textContent;fig.append(t);}
+  const like=box3.querySelector('.like-tag');if(like){const t=document.createElement('span');t.className='big-like';t.textContent=like.dataset.full||like.textContent;fig.append(t);}
   const cr=box3.querySelector('.pic-credit');
   if(cr){const c=document.createElement(cr.tagName==='A'?'a':'figcaption');c.className='big-credit';c.textContent=cr.textContent;
     if(cr.tagName==='A'){c.href=cr.href;c.target='_blank';c.rel='noopener noreferrer';c.addEventListener('click',ev=>ev.stopPropagation());}
@@ -121,8 +121,14 @@ function realPhoto(box3,a,reg,what){
   img.addEventListener('error',()=>{img.replaceWith(old);credit.remove();box3.className=was;if(tag)box3.prepend(tag);},{once:true});   // back to Rob's picture
   old.replaceWith(img);tag?.remove();box3.classList.remove('unknown');box3.classList.add('real');box3.append(credit);
   bigPhotoOn(img,box3);   // 4.115.0
+  // 4.115.1 (Rob 27 Nov 12:22, a small photo with the long label and the credit over it: "the text completely overshadows
+  // the picture"; 12:2x: "photo credits appear when you enlarge the pics"): in the box the credit is not shown over the
+  // photo (it is in the big view, and on hover); a photo of another plane keeps a small one-line "Not this plane" tag
+  // (26 Nov: it always says so, on the picture) and the full wording shows in the big view.
+  img.title=credit.textContent+'. Click to see it bigger.';
   // 4.108.2 (Rob 26 Nov 18:21 "yes a"): a photo of ANOTHER plane like it always says so, on the picture
-  if(typeof a.like==='string'&&a.like){const t=document.createElement('span');t.className='pic-tag like-tag';t.textContent=a.like.slice(0,90);box3.append(t);img.alt='Photo of another aircraft like '+(a.plate||reg);}}if(LOOK2)document.documentElement.classList.add('look2');
+  if(typeof a.like==='string'&&a.like){const t=document.createElement('span');t.className='pic-tag like-tag';const full=a.like.slice(0,90);
+    t.dataset.full=full;t.title=full;t.textContent=(full.split(':')[0]||full).slice(0,30);box3.append(t);img.alt='Photo of another aircraft like '+(a.plate||reg);}}if(LOOK2)document.documentElement.classList.add('look2');
 if(KIDS){document.documentElement.classList.add('kids-view');}
 if(PLANES){document.documentElement.classList.add('planes-view');}
 if(USER_VIEW){document.documentElement.classList.add('user-view');document.title=KIDS?'TPA Kids':PLANES?'TPA Planes · Live UK aircraft on a map':'TPA · Live UK trains, buses and planes on one map';

@@ -123,7 +123,7 @@
     },
     {
       "layer": "Bus and plane photos",
-      "text": "Real photos of a bus or plane, where one exists, come from Wikimedia Commons, matched by its number plate or registration. Each is free to reuse and credited under the photo (photographer and licence). A plane with no photo of its own may show one like it, always labelled \"Not this plane\". Photos are kept and shown from TPA's own address, so your browser never contacts another site.",
+      "text": "Real photos of a bus or plane, where there is one, come from Wikimedia Commons, matched by number plate or registration. Each is free to reuse. Click a photo to see it bigger, with its credit (photographer and licence). A plane with no photo of its own may show one like it, always labelled \"Not this plane\". Photos are kept and shown from TPA's own address: your browser never contacts another site.",
       "url": "https://commons.wikimedia.org/",
       "status": "In use"
     },
