@@ -252,3 +252,178 @@ def counts() -> dict:
     with LOCK:
         return {k: {'buses': len(v.get('rows') or {}), 'skipped': v.get('skipped', 0), 'fetchedAt': v.get('fetchedAt', 0)}
                 for k, v in LISTS.items()}
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# bus engine 0.30.0 (Rob 27 Nov 2026 10:56-11:10): bustimes.org's vehicle list, with written permission from bustimes.org
+# (Josh Goodwin, 27 Nov 09:43, answering Rob's 21 Nov email asking to keep a copy and refresh it now and again): "that all
+# sounds ok. please credit "bustimes.org contributors" - the only thing that would be a problem would be making lots of
+# requests in parallel". So: one request at a time, a pause between requests, each company about once a week, a copy kept
+# on disk. Rob chose (tick boxes): bus type, number plate, fuel, livery name, special features, the right bus picture,
+# and withdrawn buses skipped. Exact matches only (company + fleet number, or the plate in the bus's own ID); a number
+# two buses share is used for neither. The details are contributed by bus enthusiasts: credited as theirs.
+BT_API = 'https://bustimes.org/api/vehicles/'
+BT_WHOSE = 'bustimes.org contributors'
+BT_PAUSE = 3.0                 # seconds between requests (never in parallel)
+BT_PAGE = 1000                 # their largest page
+BT_MAX_PAGES = 30              # per company per refresh
+BT_RETRY_HOURS = 24            # a company that failed is tried again after this
+BT_MAX_COMPANIES = 800
+BT: dict = {}                  # company code -> {'fetchedAt', 'rows': {fleet: row}, 'regs': {plate: fleet}, 'error'}
+BT_STYLE = {'': ('sd', 'Single decker'), 'double decker': ('dd', 'Double decker'), 'minibus': ('mini', 'Minibus'),
+            'coach': ('coach', 'Coach'), 'decker coach': ('coach', 'Double decker coach'),
+            'articulated': ('sd', 'Articulated single decker (bendy bus)')}   # their trains, trams, amphibious: no
+BT_FUEL = {'diesel': 'Diesel', 'electric': 'Electric', 'hybrid': 'Hybrid', 'hydrogen': 'Hydrogen', 'gas': 'Gas'}
+
+
+def bt_url(noc: str) -> str:
+    return f'{BT_API}?operator={noc}&withdrawn=false&limit={BT_PAGE}&format=json'
+
+
+def _s(value, n=60) -> str:
+    return ' '.join(str(value).split())[:n] if isinstance(value, (str, int)) and not isinstance(value, bool) else ''
+
+
+def bt_row(v: dict):
+    """One bustimes.org vehicle -> (fleet number, row) or None (withdrawn, or no fleet number)."""
+    if not isinstance(v, dict) or v.get('withdrawn'):
+        return None
+    fleet = _s(v.get('fleet_code'), 24) or _s(v.get('fleet_number'), 24)
+    if not re.fullmatch(r'[A-Za-z0-9/ ._-]{1,24}', fleet or ''):
+        fleet = ''
+    vt = v.get('vehicle_type') if isinstance(v.get('vehicle_type'), dict) else {}
+    model = _s(vt.get('name'))
+    picture, kind = BT_STYLE.get(vt.get('style') if isinstance(vt.get('style'), str) else '?', ('', '')) if model else ('', '')
+    livery = v.get('livery') if isinstance(v.get('livery'), dict) else {}
+    feats = v.get('special_features') if isinstance(v.get('special_features'), list) else []
+    reg = _s(v.get('reg'), 24)
+    row = {'picture': picture, 'kind': kind, 'model': model,
+           'power': BT_FUEL.get(vt.get('fuel') if isinstance(vt.get('fuel'), str) else '', '') if model else '',
+           'livery': _s(livery.get('name')), 'features': ', '.join(x for x in (_s(f, 40) for f in feats) if x)[:80],
+           'plate': plate(reg) if re.fullmatch(r'[A-Z0-9]{2,8}', norm(reg)) else '', 'fleet': fleet}
+    return fleet, {k: val for k, val in row.items() if val}
+
+
+def bt_parse(raw: bytes, noc: str) -> tuple:
+    """One page of bustimes.org's answer -> ([(fleet, row)], next page address or '')."""
+    data = json.loads(raw.decode('utf-8'))
+    if not isinstance(data, dict) or not isinstance(data.get('results'), list):
+        raise ValueError('not a vehicle list')
+    out = []
+    for v in data['results']:
+        op = v.get('operator') if isinstance(v, dict) else None
+        if isinstance(op, dict) and str(op.get('id', '')).upper() != noc.upper():
+            continue                                   # only ever this company's buses
+        got = bt_row(v)
+        if got:
+            out.append(got)
+    nxt = data.get('next') if isinstance(data.get('next'), str) else ''
+    return out, (nxt if nxt.startswith(BT_API + '?') else '')
+
+
+def bt_index(pairs: list) -> tuple:
+    """[(fleet, row)] -> (rows by fleet number, fleet number by plate). A number or plate two buses share is dropped."""
+    rows, regs, twice, twice_reg = {}, {}, set(), set()
+    for fleet, row in pairs:
+        if fleet:
+            if fleet in rows:
+                twice.add(fleet)
+            rows[fleet] = row
+        p = norm(row.get('plate', ''))
+        if p and fleet:
+            if p in regs:
+                twice_reg.add(p)
+            regs[p] = fleet
+    for f in twice:
+        rows.pop(f, None)
+    for p in twice_reg:
+        regs.pop(p, None)
+    return rows, {p: f for p, f in regs.items() if f in rows}
+
+
+def bt_load(data_dir: Path) -> None:
+    try:
+        saved = json.loads((Path(data_dir) / 'bustimes-fleet.json').read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(saved, dict):
+        with LOCK:
+            BT.clear()
+            BT.update({k: v for k, v in saved.items() if isinstance(v, dict) and isinstance(v.get('rows'), dict)})
+
+
+def bt_save(data_dir: Path) -> None:
+    path = Path(data_dir) / 'bustimes-fleet.json'
+    with LOCK:
+        text = json.dumps(BT, separators=(',', ':'))
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(text)
+    tmp.replace(path)
+
+
+def bt_due(nocs, now=None) -> list:
+    """The companies to ask now: never asked, asked over REFRESH_DAYS ago, or failed over BT_RETRY_HOURS ago."""
+    now = time.time() if now is None else now
+    out = []
+    with LOCK:
+        for noc in sorted({n.upper() for n in nocs if re.fullmatch(r'[A-Za-z0-9]{2,8}', n or '')})[:BT_MAX_COMPANIES]:
+            have = BT.get(noc)
+            if not have:
+                out.append(noc)
+            elif have.get('error'):
+                if now - have.get('triedAt', 0) >= BT_RETRY_HOURS * 3600:
+                    out.append(noc)
+            elif now - have.get('fetchedAt', 0) >= REFRESH_DAYS * 86400:
+                out.append(noc)
+    return out
+
+
+def bt_refresh(data_dir: Path, nocs, download, status=lambda **kw: None, sleep=time.sleep, pause=BT_PAUSE) -> int:
+    """Ask bustimes.org about each company that is due, strictly one request at a time with a pause before each.
+    A failure keeps the copy we have. Returns how many requests were made."""
+    asked = 0
+    for noc in bt_due(nocs):
+        pairs, url, error = [], bt_url(noc), ''
+        try:
+            for _ in range(BT_MAX_PAGES):
+                sleep(pause)
+                asked += 1
+                got, url = bt_parse(download(url), noc)
+                pairs.extend(got)
+                if not url:
+                    break
+        except Exception as exc:     # never breaks the layer
+            error = type(exc).__name__ + ': ' + str(exc)[:80]
+        with LOCK:
+            if error:
+                have = BT.get(noc) or {'fetchedAt': 0, 'rows': {}, 'regs': {}}
+                BT[noc] = dict(have, error=error, triedAt=time.time())
+            else:
+                rows, regs = bt_index(pairs)
+                BT[noc] = {'fetchedAt': time.time(), 'triedAt': time.time(), 'rows': rows, 'regs': regs, 'error': ''}
+        bt_save(data_dir)
+        status(noc=noc, rows=len((BT.get(noc) or {}).get('rows', {})), error=error)
+    return asked
+
+
+def bt_lookup(noc: str, fleets, plate_text: str = ''):
+    """bustimes.org's row for one bus (exact matches only), or None."""
+    with LOCK:
+        have = BT.get((noc or '').upper()) or {}
+        rows, regs = have.get('rows') or {}, have.get('regs') or {}
+        for f in fleets:
+            f = (f or '').strip()
+            if f and f in rows:
+                return rows[f]
+        p = norm(plate_text)
+        if p and regs.get(p) in rows:
+            return rows[regs[p]]
+    return None
+
+
+def bt_counts() -> dict:
+    with LOCK:
+        done = [v for v in BT.values() if v.get('fetchedAt')]
+        return {'companies': len(done), 'buses': sum(len(v.get('rows') or {}) for v in done),
+                'failed': sorted(k for k, v in BT.items() if v.get('error'))[:20],
+                'oldest': min((v['fetchedAt'] for v in done), default=0)}

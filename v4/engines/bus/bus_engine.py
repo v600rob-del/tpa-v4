@@ -61,7 +61,7 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError, iterparse
 
-ENGINE_VERSION = '0.29.3'
+ENGINE_VERSION = '0.30.0'
 COMPONENT = 'bus'
 CONTRACT = '1.0'
 BODS_AREA_URL = 'https://data.bus-data.dft.gov.uk/api/v1/datafeed/'
@@ -165,6 +165,10 @@ _spec.loader.exec_module(fleet_lists)
 FLEET_LISTS = [n for n in (os.environ.get('TPA_BUS_FLEET_LISTS', 'tfl') or '').replace(' ', '').lower().split(',')
                if n in fleet_lists.SOURCES]
 FLEET_STATUS: dict = {}
+# 0.30.0 (Rob 27 Nov 2026 11:10, with bustimes.org's written OK of 09:43): bustimes.org's vehicle list (fleet_lists.bt_*),
+# credited "bustimes.org contributors"; asked one request at a time. TPA_BUS_BUSTIMES=0 switches it off.
+BUSTIMES_ON = (os.environ.get('TPA_BUS_BUSTIMES', '1') or '1').strip() != '0'
+BUSTIMES_STATUS: dict = {}
 # 0.7.0 (owner 1 Nov 11:37: "option 1. remember the goal is about the user experience"): buses matched
 # to their timetabled journey are replayed REPLAY_SECONDS behind real time along their real route,
 # between the positions they really reported (replay.py). Unmatched buses move as before.
@@ -3491,7 +3495,38 @@ def bus_kind(key: str) -> tuple:
     return picture, words, more
 
 
+BT_ROWS = (('Model', 'model'), ('Power', 'power'), ('Livery', 'livery'), ('Features', 'features'), ('Fleet number', 'fleet'),
+           ('Number plate', 'plate'))
+
+
+def bustimes_row(noc: str, vehicle: str):
+    """0.30.0: bustimes.org's details for this bus (exact matches only), or None."""
+    if not BUSTIMES_ON:
+        return None
+    plate, fleet = plate_in_id(vehicle)
+    fleets = [vehicle, fleet, plain_fleet_number(vehicle), vehicle.rsplit('-', 1)[-1]]
+    return fleet_lists.bt_lookup(noc, [f for f in fleets if f], plate)
+
+
 def _bus_kind(key: str) -> tuple:
+    """0.30.0: as _bus_kind_rules, with bustimes.org's details for buses the published lists don't know: its type
+    (when it names one) comes before the fleet-number rules; its plate, livery and features are added either way."""
+    noc, _, vehicle = key.partition(':')
+    noc = noc.upper()
+    if fleet_lists.lookup(noc, vehicle, FLEET_LISTS)[1]:
+        return _bus_kind_rules(key)
+    bt = bustimes_row(noc, vehicle)
+    if not bt:
+        return _bus_kind_rules(key)
+    more = [{'label': label, 'value': str(bt.get(k) or '')[:80]} for label, k in BT_ROWS if bt.get(k)]
+    if bt.get('picture') and bt.get('kind'):
+        return bt['picture'], f"{bt['kind']} (from {fleet_lists.BT_WHOSE})", more
+    picture, words, rule_more = _bus_kind_rules(key)
+    labels = {r['label'] for r in rule_more}
+    return picture, words, rule_more + [r for r in more if r['label'] not in labels and r['label'] not in ('Model', 'Power')]
+
+
+def _bus_kind_rules(key: str) -> tuple:
     """(picture, words for the box, more rows) for one bus: dd / sd / coach / mini / '' (not known)."""
     noc, _, vehicle = key.partition(':')
     noc = noc.upper()
@@ -3523,15 +3558,27 @@ def _bus_kind(key: str) -> tuple:
 def fleet_keeper() -> None:
     """0.11.0: the fleet lists kept on disk are used at once; on the server they are refreshed about weekly."""
     fleet_lists.load(DATA_DIR)
-    if TIMETABLE_MODE != 'download' or not FLEET_LISTS:
+    fleet_lists.bt_load(DATA_DIR)
+    if TIMETABLE_MODE != 'download' or not (FLEET_LISTS or BUSTIMES_ON):
         return
     time.sleep(float(os.environ.get('TPA_BUS_FLEET_START_DELAY', '300')))
 
     def note(**kw):
         with LOCK:
             FLEET_STATUS[kw['name']] = {'buses': kw['rows'], 'error': kw['error'], 'skipped': kw.get('skipped', 0)}
+    def bt_note(**kw):
+        with LOCK:
+            BUSTIMES_STATUS.update(last=kw['noc'], rows=kw['rows'], error=kw['error'], at=round(time.time()))
     while True:
         fleet_lists.refresh(DATA_DIR, FLEET_LISTS, download, note)
+        if BUSTIMES_ON:     # 0.30.0: the companies on the map now (London's TFLO buses are under their own companies there)
+            with LOCK:
+                nocs = {v['key'].partition(':')[0] for v in STATE['vehicles']} - {'TFLO'}
+            try:
+                fleet_lists.bt_refresh(DATA_DIR, nocs, download, bt_note)
+            except Exception as exc:
+                with LOCK:
+                    BUSTIMES_STATUS.update(error=type(exc).__name__)
         time.sleep(6 * 3600)
 
 
@@ -3890,7 +3937,8 @@ class Handler(BaseHTTPRequestHandler):
                                         'timetable': STATE.get('timetable'), 'timetableDetail': STATE.get('timetableDetail'),
                                         'timetableUpdate': STATE.get('timetableUpdate'), 'timetableError': STATE.get('timetableError'),
                                         'timetableMatch': STATE.get('timetableMatch'), 'replaySeconds': REPLAY_SECONDS,
-                                        'fleetLists': {'on': FLEET_LISTS, 'have': fleet_lists.counts(), 'last': dict(FLEET_STATUS)},
+                                        'fleetLists': {'on': FLEET_LISTS, 'have': fleet_lists.counts(), 'last': dict(FLEET_STATUS),
+                                                       'bustimes': {'on': BUSTIMES_ON, **fleet_lists.bt_counts(), 'last': dict(BUSTIMES_STATUS)}},
                                         'journeyRound': STATE.get('journeyRound'),
                                         'stopBoards': {'index': STOPS['state'], 'detail': STOPS['detail'], 'error': STOPS['error'], 'made': STOPS['boards'], 'shared': STOPS['shared']},
                                         'replayMemo': {'made': STATE.get('replayMemoMade', 0), 'reused': STATE.get('replayMemoHits', 0)},
